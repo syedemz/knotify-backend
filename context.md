@@ -14,3 +14,4 @@ None yet.
 
 ## Recent changes
 - 2026-05-21: project created via /start-project
+- 2026-05-21: GitHub repo bootstrapped via /setup-repo (visibility: public, url: https://github.com/syedemz/knotify-backend)
