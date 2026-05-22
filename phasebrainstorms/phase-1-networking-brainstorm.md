@@ -69,3 +69,45 @@ Minor clarifications also worth adding:
 - Recommend executing 1.4 before 1.3 (allowed by depends_on, catches module bugs cheaply)
 
 If the user wants the smoothest path: edit the PRD to address A/B/C, then re-run. If they want to proceed, the subagent for 1.3 will need explicit per-dispatch instructions to cover A (defer prod) and B (use `environments/<env>/terraform.tfstate` key); and the deploy.yml gap (C) will sit unresolved until a later phase.
+
+## 2026-05-22 14:43 brainstorm (re-run)
+
+PRD re-read after edits. The five stories now in `implementationplan/phase-1-networking.md` are 1.1, 1.2, 1.3, 1.4, 1.5. Comparing against the prior findings:
+
+### Prior concerns — status
+
+| # | Story | Prior issue | Status |
+|---|-------|-------------|--------|
+| A | 1.3 | Prod-side init/plan unsatisfiable | **Addressed.** AC #6 now scopes the init+plan requirement to dev only against the real dev backend. AC #7 explicitly defers prod-side init+plan per `docs/PROD_CUTOVER.md`; prod files are authored for layout symmetry. Matches the dev-only-validation pattern from phase 0.5. |
+| B | 1.3 | State key unspecified — risk of per-phase divergence | **Addressed.** AC #3 pins `key = "dev/terraform.tfstate"` with an inline note that this single state file holds ALL dev infra across phases 1–11. AC #4 mirrors for prod with `key = "prod/terraform.tfstate"`. The story `notes` reinforce that phases 2–11 add modules to the same `environments/<env>/main.tf` and write to this same key. End-state single-state-file goal is now locked in. |
+| C | n/a | No deploy.yml story — push-to-development won't deploy anything after phase 1 | **Addressed.** New story 1.5 ships `.github/workflows/deploy.yml` per architecture §10.2 with the full job graph (validate / plan matrix / test / apply-dev / apply-prod), terraform 1.9.8 pinned to match phase 0, three-layer prod pause preserved (plan-prod + apply-prod both gated on `vars.DEPLOY_PROD=='true'`), environment-scoped AWS secrets, PR-time verification path enumerated in AC. |
+| Minor | 1.1 | IGW intent not explicit | **Addressed.** AC #4 now states "No aws_nat_gateway, no aws_internet_gateway resource at all, no eip" with reference to architecture §6.1/§6.4. |
+| Minor | 1.1 | AZ slicing non-deterministic | **Addressed.** AC #2 now requires deterministic slicing from `data.aws_availability_zones.available.names` with the explicit "no hardcoded AZ names" qualifier. |
+| Minor | 1.3 | "destructive diff" wording unclear | **Addressed.** AC #6 now reads "no destructive diff against any existing object in s3://knotify-dev-tfstate/dev/terraform.tfstate (which is the empty starting state)" — verifiable and correct given the smoke state was destroyed in phase 0.6. |
+| Minor | 1.4 | `terraform test` runner mode unspecified | **Addressed.** AC #2 now requires `command = plan` for all test runs (hermetic, no credentials, CI-friendly). |
+| Minor | exec order | Recommend 1.4 before 1.3 | **Captured.** Story 1.4's `notes:` records the recommendation; `depends_on` permits either order. Dispatch order will be 1.1 → 1.2 → 1.4 → 1.3 → 1.5. |
+
+### New observations on story 1.5
+
+- **AC alignment with smoke-test.yml is good.** Same Terraform version (1.9.8), same env-scoped secrets pattern (`environment: dev/prod` + `${{ secrets.AWS_ACCESS_KEY_ID }}`), same prod gate idiom (`vars.DEPLOY_PROD == 'true'`). Subagent has a working reference to copy from.
+- **Test job iteration scope is sound.** "Iterate `infrastructure/modules/*/tests` and run `terraform -chdir=<module-dir> test` for each" matches Terraform's module-test discovery model. With only networking having tests in phase 1, the loop must still exit 0 — that's covered by the AC explicitly.
+- **PR-time verification AC is unambiguous.** Concrete pass/skip outcomes per job are listed (validate=success, plan(dev)=success, plan(prod)=skipped, test=success, apply-*=skipped). The story can be verified objectively from the PR check run.
+- **Permissions block (`contents: read, id-token: write`)** is forward-looking for OIDC adoption; harmless today since we still use long-lived keys, and explicit `id-token: write` does not weaken anything.
+- **Apply-dev gating: `github.event_name == 'push' && github.ref == 'refs/heads/development'`.** This means PR check runs never apply, only merges. Correct for the end-state goal.
+
+### Residual concerns / risks
+
+- **`tflint` and `tfsec` are introduced for the first time in 1.5's validate job.** Phase 0 only ran `terraform fmt -check`. If either tool flags an issue against the networking module that wasn't caught locally, the PR check will fail and we'll iterate. Not a blocker — that's exactly what the validate job is for. Worth flagging to the 1.5 subagent so it tests locally before pushing.
+- **`infrastructure/environments/dev/backend.tf` is inline (not partial).** Phase 0 used partial backends with `-backend-config=backend-dev.hcl`. The 1.3 AC moves to inline backends. This is the right call for per-env directories (no flag juggling) but it's a deliberate divergence from the smoke pattern — the 1.3 subagent must not copy the smoke pattern.
+- **5-story phase is the largest so far.** All `backenddeveloper`. Strict-serial means ~5 sequential dispatches. Expected and acceptable.
+- **`terraform plan` in 1.3 requires real dev AWS credentials.** Same condition that satisfied phase 0; carries forward. The 1.3 subagent will run `aws sts get-caller-identity` first per its usual hygiene.
+
+### Drift since prior brainstorm (none significant)
+
+- Phase 0 is now fully merged and tagged (`phase-0-complete` on `064ff25`); branch `feat/phase-0-smoke-test` deleted local+remote; dev state bucket holds only the empty `dev/` key prefix today (smoke state was destroyed in 0.6). All assumptions used to write the PRD edits are intact.
+
+### Summary
+
+All three prior blockers (A, B, C) and all four minor clarifications are addressed in the current PRD. No new blockers identified. The phase is ready to dispatch.
+
+Recommendation: **proceed**. Dispatch order 1.1 → 1.2 → 1.4 → 1.3 → 1.5.
