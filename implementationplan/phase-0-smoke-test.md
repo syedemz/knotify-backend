@@ -37,7 +37,7 @@ stories:
   - id: 0.3
     title: GitHub Actions smoke-test workflow
     agent: backenddeveloper
-    done: false
+    done: true
     tracking_issue: 4
     depends_on: []
     acceptance_criteria:
