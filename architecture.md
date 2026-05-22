@@ -1815,7 +1815,7 @@ output "bucket_name" { value = aws_s3_bucket.smoke.id }
 1. **Set up AWS Organization** with two member accounts (dev, prod) manually in the console
 2. **In each member account, create an IAM user** with programmatic access keys (or, recommended, set up OIDC trust to GitHub — §3.2)
 3. **Manually create the Terraform backend** in each account:
-   - One S3 bucket for state (`knotify-tfstate-dev`, `knotify-tfstate-prod`) with versioning enabled
+   - One S3 bucket for state (`knotify-dev-tfstate`, `knotify-prod-tfstate`) with versioning enabled
    - One DynamoDB table for state locking (`knotify-tfstate-lock`)
    - These are bootstrap resources and are NOT managed by Terraform (chicken-and-egg)
 4. **Configure GitHub repository** with:

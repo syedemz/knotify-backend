@@ -30,7 +30,7 @@ Execute these in order. Each step has a clear stop condition.
 - [ ] Create the prod IAM admin role and confirm console login works via the Organization's IAM Identity Center.
 
 ### 2. Bootstrap the prod Terraform backend
-- [ ] Create `knotify-tfstate-prod` S3 bucket (versioning ON, public access blocked, SSE-KMS).
+- [ ] Create `knotify-prod-tfstate` S3 bucket (versioning ON, public access blocked, SSE-KMS).
 - [ ] Confirm `knotify-tfstate-lock` DynamoDB table exists in the prod account (or share the dev one — decide before this step).
 - [ ] Verify `infrastructure/smoke/backend-prod.hcl` and every `environments/prod/backend.hcl` in later phases point at the correct bucket + region.
 

@@ -3,7 +3,7 @@ title: Pipeline smoke test
 last_updated: 2026-05-22
 
 context_summary: |
-  Validates the end-to-end deployment pipeline (GitHub Actions → Terraform → AWS) by deploying a single S3 bucket per §10.6 of architecture.md. Per the owner's production-deploy pause (see docs/PROD_CUTOVER.md), this phase ships with **dev-only validation**; the prod-side smoke (story 0.5) and the prod cleanup half of 0.6 are deferred until the prod AWS account is provisioned and the prod deploy gate is opened. Bootstrap prerequisites needed NOW (dev only): AWS Organization + dev member account, dev IAM user with static access key, knotify-tfstate-dev bucket with versioning, knotify-tfstate-lock DynamoDB table, GitHub Environment "dev" with AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY, AND a GitHub Environment "prod" created with required-reviewer protection (no AWS secrets yet — the empty gate is what enforces the pause). The workflow file written in 0.3 still declares the prod job; it simply never gets approved. Phase exits when 0.1–0.4 and the dev portion of 0.6 are green and PIPELINE_VALIDATED.md is committed. Subsequent phases assume the dev pipeline works; they will plan against prod but never apply.
+  Validates the end-to-end deployment pipeline (GitHub Actions → Terraform → AWS) by deploying a single S3 bucket per §10.6 of architecture.md. Per the owner's production-deploy pause (see docs/PROD_CUTOVER.md), this phase ships with **dev-only validation**; the prod-side smoke (story 0.5) and the prod cleanup half of 0.6 are deferred until the prod AWS account is provisioned and the prod deploy gate is opened. Bootstrap prerequisites needed NOW (dev only): AWS Organization + dev member account, dev IAM user with static access key, knotify-dev-tfstate bucket with versioning, knotify-tfstate-lock DynamoDB table, GitHub Environment "dev" with AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY, AND a GitHub Environment "prod" created with required-reviewer protection (no AWS secrets yet — the empty gate is what enforces the pause). The workflow file written in 0.3 still declares the prod job; it simply never gets approved. Phase exits when 0.1–0.4 and the dev portion of 0.6 are green and PIPELINE_VALIDATED.md is committed. Subsequent phases assume the dev pipeline works; they will plan against prod but never apply.
 
 stories:
   - id: 0.1
@@ -25,8 +25,8 @@ stories:
     done: false
     depends_on: [0.1]
     acceptance_criteria:
-      - File infrastructure/smoke/backend-dev.hcl exists configuring S3 backend with bucket=knotify-tfstate-dev, key=smoke/terraform.tfstate, region=eu-central-1, dynamodb_table=knotify-tfstate-lock
-      - File infrastructure/smoke/backend-prod.hcl exists with the prod equivalents (bucket=knotify-tfstate-prod)
+      - File infrastructure/smoke/backend-dev.hcl exists configuring S3 backend with bucket=knotify-dev-tfstate, key=smoke/terraform.tfstate, region=eu-central-1, dynamodb_table=knotify-tfstate-lock
+      - File infrastructure/smoke/backend-prod.hcl exists with the prod equivalents (bucket=knotify-prod-tfstate)
       - File infrastructure/smoke/dev.tfvars sets environment="dev"
       - File infrastructure/smoke/prod.tfvars sets environment="prod"
       - README within infrastructure/smoke/ documents the invocation pattern "terraform init -backend-config=backend-<env>.hcl"
@@ -54,7 +54,7 @@ stories:
     acceptance_criteria:
       - A branch named smoke-test/dev is pushed to the remote and the smoke-dev job completes with conclusion=success in GitHub Actions
       - The deployed bucket appears in the dev AWS account with name matching "knotify-smoke-dev-*" and has BlockPublicAcls=true confirmed via aws s3api get-public-access-block
-      - The dev Terraform state object exists at s3://knotify-tfstate-dev/smoke/terraform.tfstate
+      - The dev Terraform state object exists at s3://knotify-dev-tfstate/smoke/terraform.tfstate
     notes: ""
 
   - id: 0.5
@@ -66,7 +66,7 @@ stories:
       - DEFERRED — do not execute. Re-open per docs/PROD_CUTOVER.md once the prod AWS account is provisioned. Original criteria preserved below.
       - "(deferred) A branch named smoke-test/prod is pushed to the remote, the smoke-prod job blocks on the prod GitHub Environment approval gate, and after owner approval the job completes with conclusion=success"
       - "(deferred) The deployed bucket appears in the prod AWS account with name matching 'knotify-smoke-prod-*'"
-      - "(deferred) The prod Terraform state object exists at s3://knotify-tfstate-prod/smoke/terraform.tfstate"
+      - "(deferred) The prod Terraform state object exists at s3://knotify-prod-tfstate/smoke/terraform.tfstate"
     notes: "Marked done=true to allow phase 0 to close on dev-only validation. This story is deferred, not completed. Re-flip to done=false and execute when the prod gate is opened — tracked in docs/PROD_CUTOVER.md."
 
   - id: 0.6
