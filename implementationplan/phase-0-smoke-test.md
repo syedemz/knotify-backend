@@ -9,7 +9,7 @@ stories:
   - id: 0.1
     title: Smoke S3 Terraform module
     agent: backenddeveloper
-    done: false
+    done: true
     tracking_issue: 2
     depends_on: []
     acceptance_criteria:
