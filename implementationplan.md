@@ -13,7 +13,7 @@ phases:
   title: Networking foundations
   file: implementationplan/phase-1-networking.md
   ready: true
-  done: false
+  done: true
 
 - phase: 2
   title: Data layer (Aurora + DynamoDB)
