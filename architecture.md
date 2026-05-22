@@ -1,14 +1,29 @@
 # Knotify Backend — Architecture
 
-**Status:** Draft v1.5
+**Status:** Draft v1.6
 **Owner:** Project owner (single developer)
 **Last updated:** May 2026
 **Intended consumer of this document:** `superpowers:brainstorm` agent for detailed analysis and phase split.
 
+**Changes since v1.5:**
+
+- Owner-resolved open questions during `/create-plan` cross-phase brainstorm:
+  - §13 #1 GitHub OIDC vs. static keys → **static keys for v1**, OIDC deferred to pre-launch hardening phase
+  - §13 #4 `deck_view` strategy → **materialized view**
+  - §13 #5 gender isolation → **PostgreSQL Row-Level Security (RLS)**
+  - §13 #7 push provider → **Expo Push Notifications**
+  - §13 #8 account deletion → **soft delete** (`deleted_at` timestamp) with 30-day retention then hard purge
+  - §13 #21 ChatMessages on user deletion → **anonymize `sender_id`** (preserve text, display as "Deleted User")
+  - §13 #18 observability stack → **CloudWatch only** with a **dedicated late-stage observability phase**; per-phase Lambdas ship with Powertools instrumentation from birth (hybrid Option C originally proposed, owner picked Option A — dedicated phase consolidation); **all CloudWatch log groups have a 7-day retention** in both dev and prod to keep storage costs minimal
+- Cross-phase sequencing decisions (consumed by `/create-plan` Step 2):
+  - Cognito post-confirmation trigger Lambda is **sequenced after** the Aurora schema and Lambda-foundations phases — it is built and unit-tested before Cognito ships, then wired as the final step of the Cognito phase (no half-broken signup state)
+  - Chat ships as a **single phase** after the friendships/blocks domain Lambdas exist; the DynamoDB chat data plane and the AppSync GraphQL API plane are not split across phases
+- §3.2, §5.1, §5.2, §9.3, §11.1, §11.2 updated inline to reflect the resolutions.
+
 **Changes since v1.4:**
 
 - §10.2 GitHub Actions pipeline rewritten with a complete, valid YAML workflow file (was pseudo-YAML), including explicit `apply-dev`/`apply-prod` jobs gated by branch.
-- §10.3 expanded with a worked day-to-day developer flow showing exactly how branch choice → environment routing works (feature branch → develop → main → approval).
+- §10.3 expanded with a worked day-to-day developer flow showing exactly how branch choice → environment routing works (feature branch → development → main → approval).
 - §10.4 corrected: secrets are stored as **GitHub Environment secrets** with the same name (`AWS_ACCESS_KEY_ID`) across environments — the environment scope is what picks the right value. Previous draft mistakenly suggested `_DEV`/`_PROD` suffixed repo-level secrets.
 - §10.6 smoke-test YAML updated for consistency with the corrected secret-naming approach.
 
@@ -136,22 +151,25 @@ Two fully isolated environments, one AWS account each, under one AWS Organizatio
 ### 3.1 Decision
 
 - **AWS Organization** with two member accounts:
-  - `knotify-dev` (develop environment)
+  - `knotify-dev` (development environment)
   - `knotify-prod` (production environment)
 - **No AWS SSO / IAM Identity Center** for now (explicit owner preference).
 - **Access**: dedicated IAM users with programmatic access keys per account, used by GitHub Actions OIDC or stored as repository secrets.
 - **Root account**: management account only — no workloads.
 - **Billing**: consolidated under the management (root) account.
 
-### 3.2 Recommended improvement (flagged for brainstorm)
+### 3.2 RESOLVED — static keys for v1, OIDC deferred
 
-Even without SSO, the GitHub Actions credentials should ideally use **OIDC federation** (GitHub → IAM Role assumption), not static access keys. Static keys are a liability if leaked. OIDC is free, requires no rotation, and is supported by GitHub Actions out of the box. This is a small departure from the owner's stated preference and is flagged here for explicit decision.
+**Decision:** static IAM access keys for v1. OIDC federation deferred to the pre-launch hardening phase.
 
-If static keys are kept for v1, mitigations:
+OIDC is the safer long-term choice (no static secrets to leak, no rotation needed), but for v1 the owner has chosen static keys to keep the bootstrap surface small. Mitigations applied:
 
 - Rotate quarterly via a manual ritual
 - Scope IAM policy to least privilege (Terraform state bucket + Terraform-created resources only)
 - Enable CloudTrail in both accounts; alert on root or unusual API activity
+- Store keys exclusively as GitHub Environment secrets, never repository secrets (§10.4)
+
+OIDC migration is scheduled as a story in the pre-launch hardening phase; the GitHub Actions workflow (§10.2) is structured so the swap is a credentials change, not a workflow rewrite.
 
 ### 3.3 Cross-account concerns
 
@@ -563,7 +581,7 @@ WHERE deleted_at IS NULL AND profile_complete_verified = true;
 CREATE UNIQUE INDEX idx_deck_user ON deck_view (user_id);
 ```
 
-Refreshed on profile update via trigger or periodic job. Alternative: a regular view (no refresh needed but slower). **Decision deferred — see §13.**
+Refreshed on profile update via trigger or periodic job. **RESOLVED:** materialized view chosen (per owner decision) — trades a refresh-on-write cost for fast deck-read latency, which matches the access pattern (deck is read constantly; profile mutations are rare). The refresh strategy (per-row trigger vs. scheduled `REFRESH MATERIALIZED VIEW CONCURRENTLY`) is decided inside the Aurora schema phase.
 
 ### 5.2 Gender-isolation: separate tables vs. row-level filtering
 
@@ -601,7 +619,7 @@ cur.execute("SET LOCAL app.requesting_user_sex = %s", (user_sex,))
 
 This is **defense in depth** — even a SQL injection that bypassed `WHERE` clauses would still be filtered by RLS.
 
-**Decision flagged for brainstorm:** confirm RLS approach, or evaluate whether physical separation is worth the schema duplication cost.
+**RESOLVED:** RLS approach adopted (per owner decision). Single `users` table with PostgreSQL Row-Level Security enforcing opposite-sex visibility, set per request via the `app.requesting_user_sex` session GUC. Application-layer `WHERE sex = ?` clauses remain in every query as defense in depth — RLS is the backstop, not the only fence.
 
 ### 5.3 What goes in DynamoDB vs. Aurora
 
@@ -1434,7 +1452,7 @@ See §5.4.2 Channel B. Triggered via DynamoDB Streams on both `ChatMessages` and
 
 If the app is bare React Native (not Expo), use **AWS SNS Mobile Push**.
 
-**Decision flagged for brainstorm (§13 #7).**
+**RESOLVED: Expo Push** (per owner decision). The mobile app is Expo-managed, so `expo-notifications` on the client and Expo's HTTP push API on the backend is the natural fit. The `PushFanout` Lambda's outbound call targets Expo. SNS Mobile Push remains a viable swap if Expo limits become an issue — only the outbound call inside the Lambda changes.
 
 ### 9.4 Push token storage
 
@@ -1483,9 +1501,9 @@ infrastructure/
 
 | Trigger                                                 | Target environment | Notes                                               |
 | ------------------------------------------------------- | ------------------ | --------------------------------------------------- |
-| Push to `develop` branch                                | dev AWS account    | Auto-deploys after tests pass                       |
+| Push to `development` branch                            | dev AWS account    | Auto-deploys after tests pass                       |
 | Push to `main` branch                                   | prod AWS account   | Auto-deploys after **manual approval** in GitHub UI |
-| Pull request opened/updated against `develop` or `main` | Neither            | Runs validate + plan + test only; never applies     |
+| Pull request opened/updated against `development` or `main` | Neither            | Runs validate + plan + test only; never applies     |
 | Any other branch (`feat/*`, etc.)                       | Neither            | No CI fires unless a PR is opened                   |
 
 **Full workflow file** (`.github/workflows/deploy.yml`):
@@ -1494,9 +1512,9 @@ infrastructure/
 name: Deploy
 on:
   push:
-    branches: [main, develop]
+    branches: [main, development]
   pull_request:
-    branches: [main, develop]
+    branches: [main, development]
 
 permissions:
   contents: read
@@ -1554,7 +1572,7 @@ jobs:
 
   apply-dev:
     needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/development'
     runs-on: ubuntu-latest
     environment: dev
     steps:
@@ -1593,7 +1611,7 @@ jobs:
 
 **Key mechanics:**
 
-- The `if:` conditions on `apply-dev` and `apply-prod` are how the branch decides the environment — `develop` only triggers `apply-dev`, `main` only triggers `apply-prod`. A push to any other branch triggers nothing past validation.
+- The `if:` conditions on `apply-dev` and `apply-prod` are how the branch decides the environment — `development` only triggers `apply-dev`, `main` only triggers `apply-prod`. A push to any other branch triggers nothing past validation.
 - `environment: dev` / `environment: prod` activates the corresponding GitHub Environment, which is what supplies the right secrets and enforces the manual approval gate (only configured on `prod`).
 - The plan job runs for **both** environments on every push/PR — this lets you see "what would change in dev _and_ what would change in prod" before merging. Important: even when changing dev-only Terraform, the prod plan should show "no changes."
 
@@ -1610,13 +1628,13 @@ A typical iteration looks like:
    git push -u origin feat/add-blocks-endpoint
    → CI runs: validate + plan (both envs) + test. No deploy.
 
-2. Open PR to develop
-   gh pr create --base develop
+2. Open PR to development
+   gh pr create --base development
    → Same checks re-run. Reviewer (you) sees plan output in PR comments.
    → Merge when satisfied.
 
 3. Merge triggers dev deploy
-   → Push to develop fires the full pipeline.
+   → Push to development fires the full pipeline.
    → apply-dev job runs automatically. Dev AWS account updated.
    → No approval needed for dev.
 
@@ -1624,7 +1642,7 @@ A typical iteration looks like:
    → Real React Native app pointed at dev API. Manually verify.
 
 5. Promote to prod
-   gh pr create --base main --head develop --title "Release v1.2.0"
+   gh pr create --base main --head development --title "Release v1.2.0"
    → CI runs again on the promotion PR. Plan shows what will change in prod.
    → Merge.
 
@@ -1637,13 +1655,13 @@ A typical iteration looks like:
 
 **The choice points where you have direct control:**
 
-- Which branch you merge into (`develop` vs. `main`) — picks the target
+- Which branch you merge into (`development` vs. `main`) — picks the target
 - Whether to approve the prod gate when it appears — final go/no-go
 
 **Branch protection rules** (configured manually in GitHub repo settings):
 
 - `main` branch: require PR, require status checks (validate, plan, test) to pass, no direct pushes
-- `develop` branch: same, but slightly looser if you want (e.g., allow your own direct pushes for fast iteration)
+- `development` branch: same, but slightly looser if you want (e.g., allow your own direct pushes for fast iteration)
 
 ### 10.4 Secrets in GitHub Actions
 
@@ -1696,7 +1714,7 @@ No post-deployment smoke tests in v1 per owner preference.
 | Region is configured correctly                        | Bucket created in expected region (recommend `eu-central-1` for owner's location)                |
 | Provider versions resolve                             | `terraform init` downloads providers without conflicts                                           |
 | Plan → Apply flow works end-to-end                    | `terraform apply` completes without manual intervention                                          |
-| Environment separation works                          | Pushing to `develop` deploys to dev account only; pushing to `main` deploys to prod account only |
+| Environment separation works                          | Pushing to `development` deploys to dev account only; pushing to `main` deploys to prod account only |
 | Manual approval gate on prod works                    | The prod job blocks until approved in GitHub Environments UI                                     |
 | Destroy works (cleanup)                               | A `terraform destroy` job can run on demand to remove the smoke-test bucket                      |
 
@@ -1833,9 +1851,12 @@ Owner-specified requirement: when a user deletes their account, all their data i
 Triggered by `DELETE /v1/profile/me`:
 
 1. **Cognito**: delete the user from the user pool (or disable + schedule deletion)
-2. **Aurora** (single transaction):
-   - `DELETE FROM users WHERE user_id = :id` — cascades to siblings, friendships, friend_requests, bookmarks, blocks via `ON DELETE CASCADE`
-   - Alternative: soft-delete (`UPDATE users SET deleted_at = NOW() ...`) for audit/legal compliance — **flagged for decision**
+2. **Aurora** — **soft delete chosen** (per owner decision, §13 #8):
+   - `UPDATE users SET deleted_at = NOW(), email = NULL, phone_number = NULL, photo_url = NULL, chosen_profile_avatar = NULL, preferences = '{}'::jsonb, preference_vector = NULL WHERE user_id = :id` — strips PII immediately while preserving the row for referential integrity (friendships, bookmarks, blocks, friend_requests remain intact for the surviving party's view; the soft-deleted user is filtered from every read by the existing `WHERE deleted_at IS NULL` predicate and the `deck_view` definition)
+   - The `users` row also receives a sentinel for display: `username = '[deleted-user]'`, `first_name = 'Deleted'`, `last_name = 'User'` — so any surviving denormalized references render gracefully
+   - Soft-deleted rows are purged by a **scheduled Lambda** after a fixed retention window of **30 days** — long enough to recover from accidental deletion, short enough to satisfy GDPR "reasonable timeframe"
+   - On final purge: `DELETE FROM users WHERE deleted_at < NOW() - INTERVAL '30 days'` — `ON DELETE CASCADE` then removes siblings, friendships, friend_requests, bookmarks, blocks
+   - Hard delete remains the fallback for explicit GDPR "right to be forgotten" requests requiring immediate purge — the same Step Functions workflow accepts a `purge_immediately: true` flag that skips the 30-day wait
 3. **DynamoDB**:
    - For each room in `ChatRooms` where user is participant:
      - Set `status = 'deactivated'`, `deactivated_reason = 'user_deleted_account'`
@@ -1933,7 +1954,7 @@ The deletion is implemented as an **AWS Step Functions Standard workflow**. A RE
 
 3. **Chat rooms are deactivated, not deleted** — preserves message history for the remaining participant. The remaining user sees a "User has deleted their account" message in the room. Messages remain readable; new messages are rejected at the AppSync resolver level (room status check).
 
-4. **ChatMessages sender_id handling** — open question (flagged §13): delete the user's messages entirely (cleaner but breaks conversation context for the other party), or anonymize sender_id to a sentinel value (preserves context but retains text). Recommendation: anonymize, with the sender displayed as "Deleted User" in the UI.
+4. **ChatMessages sender_id handling** — **RESOLVED: anonymize** (per owner decision, §13 #21). The `DeleteDynamoDBData` step rewrites each of the deleted user's `ChatMessages` rows: `sender_id` → sentinel `'[deleted-user]'`, leaving `content`, `delivered_at`, `room_id`, and the sort key intact. The surviving participant continues to read the room normally; the mobile UI substitutes "Deleted User" wherever `sender_id == '[deleted-user]'`. This preserves conversation continuity for the surviving party while satisfying PII removal (the original `sender_id` UUID is no longer reachable from the message row).
 
 5. **Parallel cleanup** — Aurora, DynamoDB, and S3 deletes are independent and run concurrently to minimize total deletion time. If one fails, Step Functions routes to the global `Catch` without rolling back the others — partial cleanup is preferable to no cleanup, and the workflow can be re-run idempotently.
 
@@ -2015,14 +2036,14 @@ Two environments = roughly **2× the dev cost** during development, since prod i
 
 The following decisions are explicitly deferred. The brainstorm agent should probe them and recommend resolution before implementation begins.
 
-1. **GitHub OIDC vs. static keys** (§3.2). Recommend OIDC despite owner preference; verify owner agrees.
+1. ~~**GitHub OIDC vs. static keys** (§3.2).~~ **RESOLVED**: static keys for v1; OIDC migration deferred to the pre-launch hardening phase. See §3.2.
 2. ~~Lambda runtime: Python 3.12 or Node.js 20?~~ **RESOLVED**: Python 3.14 on ARM64 (Graviton) for all Lambdas including AppSync resolvers, Step Functions tasks, and Cognito triggers. Owner confirmed.
 3. **One Lambda per domain vs. per route**: trade off cold start surface vs. deployment granularity. Current proposal: per-domain (§4.2 migration map).
-4. **`deck_view`**: materialized view (refresh cost) vs. regular view (query cost) vs. denormalized table maintained by triggers?
-5. **Gender isolation**: confirm RLS-based approach is acceptable, vs. physical table separation.
+4. ~~**`deck_view`**: materialized view vs. regular view vs. denormalized table?~~ **RESOLVED**: materialized view. See §5.1.
+5. ~~**Gender isolation**: RLS vs. physical table separation?~~ **RESOLVED**: PostgreSQL Row-Level Security on a single `users` table. See §5.2.
 6. ~~Notifications inbox: DynamoDB vs. Aurora~~ **RESOLVED**: DynamoDB (confirmed by old schema review — §5.4, §5.6).
-7. **Push notifications**: Expo vs. SNS — depends on whether the React Native app is Expo-managed or bare.
-8. **Account deletion**: hard delete (GDPR-friendly) vs. soft delete (audit-friendly), and chosen retention window.
+7. ~~**Push notifications**: Expo vs. SNS?~~ **RESOLVED**: Expo Push (Expo-managed mobile app). See §9.3.
+8. ~~**Account deletion**: hard delete vs. soft delete?~~ **RESOLVED**: soft delete with 30-day retention, followed by hard purge via a scheduled Lambda. Immediate hard delete remains available via a `purge_immediately` flag for GDPR right-to-be-forgotten requests. See §11.1.
 9. **HMAC request signing**: include in v1 or defer? Recommendation: defer; rely on TLS + JWT + pinning.
 10. **Custom domain naming**: `api.knotify.app` / `chat.knotify.app` — confirm owner has domain control.
 11. ~~API surface~~ **PARTIALLY RESOLVED**: derived from the old OpenAPI spec and adapted to HTTP API conventions (§4.2 migration map). Owner to confirm endpoint list; specifically the role of `GET /v1/feed` (old `/newsFeed`) is unclear and may be removable.
@@ -2032,10 +2053,10 @@ The following decisions are explicitly deferred. The brainstorm agent should pro
 15. **Profanity / content moderation for chat**: defer to v2 or include in v1?
 16. **GIF provider**: Giphy, Tenor, or own curation? Affects URL whitelisting.
 17. **Backup strategy for DynamoDB**: PITR + on-demand backups, and retention?
-18. **Observability stack**: CloudWatch only, or add Sentry / Datadog? Out of v1 scope unless flagged.
+18. ~~**Observability stack**: CloudWatch only, or add Sentry / Datadog?~~ **RESOLVED**: CloudWatch only for v1. Implementation strategy: every Lambda ships from birth with the AWS Lambda Powertools structured-logging layer, correlation IDs, and metric emission. A dedicated late-stage observability phase consolidates CloudWatch alarms (Lambda errors > 1%, throttles, p99 duration anomalies, Aurora CPU/connections, DynamoDB throttles, API Gateway 5xx), SNS topic + email subscription for alarm routing, and one CloudWatch dashboard per environment. **Log retention: 7 days for all CloudWatch log groups in both dev and prod** (per owner cost-control directive — storage accumulation avoided). Sentry/Datadog deferred indefinitely.
 19. **Rate limiting per user (not just per IP)**: implemented in Lambda authorizer using DynamoDB counters? (Requires moving from built-in JWT authorizer to Lambda authorizer for the affected routes.)
 20. **Email/SMS for transactional notifications** (e.g., "your account was deleted"): SES setup needed?
-21. **ChatMessages on user deletion**: delete the deleted user's messages entirely, or anonymize `sender_id` and preserve text? (Affects conversation continuity for the remaining party.) Recommendation: anonymize.
+21. ~~**ChatMessages on user deletion**: delete vs. anonymize?~~ **RESOLVED**: anonymize `sender_id` to the sentinel `'[deleted-user]'`; preserve `content`, `delivered_at`, and message ordering. UI substitutes "Deleted User" on display. See §11.2 #4.
 22. **CloudFront origin secret rotation**: how often is the secret header between CloudFront and HTTP API rotated, and via what mechanism (manual, Secrets Manager + Lambda)?
 23. **`/v1/feed` endpoint** (old `/newsFeed?feedtype=...`): purpose unclear from the old OpenAPI spec. Possibly an announcements/admin feed? May be removable from v2 scope. Owner to confirm.
 24. **`/userverificationdocs` endpoint** (old): document upload — what kind of documents and verification? Deferred to phase 2 (S3 + photo uploads), but the verification flow itself is undefined. Manual admin review? Automated ML?
