@@ -1,5 +1,5 @@
 project: knotify-backend
-last_updated: 2026-05-22
+last_updated: 2026-05-23
 
 phases:
 
@@ -18,7 +18,7 @@ phases:
 - phase: 2
   title: Data layer (Aurora + DynamoDB)
   file: implementationplan/phase-2-data-layer.md
-  ready: false
+  ready: true
   done: false
 
 - phase: 3
