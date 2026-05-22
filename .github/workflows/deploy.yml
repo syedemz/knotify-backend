@@ -40,7 +40,7 @@ jobs:
         uses: terraform-linters/setup-tflint@v4
 
       - name: Run tflint
-        run: tflint --recursive infrastructure/
+        run: tflint --chdir=infrastructure --recursive
 
       - name: Run tfsec
         uses: aquasecurity/tfsec-action@v1.0.3
