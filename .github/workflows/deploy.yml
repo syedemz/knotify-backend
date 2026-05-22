@@ -21,7 +21,7 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: "1.9.8"
+          terraform_version: "1.11.4"
 
       - name: Terraform fmt check
         run: terraform fmt -check -recursive infrastructure/
@@ -69,7 +69,7 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: "1.9.8"
+          terraform_version: "1.11.4"
 
       - name: Terraform init
         run: terraform -chdir=infrastructure/environments/dev init
@@ -102,7 +102,7 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: "1.9.8"
+          terraform_version: "1.11.4"
 
       - name: Terraform init
         run: terraform -chdir=infrastructure/environments/prod init
@@ -129,7 +129,7 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: "1.9.8"
+          terraform_version: "1.11.4"
 
       - name: Run module tests
         run: |
@@ -164,7 +164,7 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: "1.9.8"
+          terraform_version: "1.11.4"
 
       - name: Download dev plan artifact
         uses: actions/download-artifact@v4
@@ -198,7 +198,7 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: "1.9.8"
+          terraform_version: "1.11.4"
 
       - name: Download prod plan artifact
         uses: actions/download-artifact@v4
