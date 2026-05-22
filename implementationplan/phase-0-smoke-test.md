@@ -1,6 +1,6 @@
 phase: 0
 title: Pipeline smoke test
-last_updated: 2026-05-22
+last_updated: 2026-05-22 (story 0.6)
 
 context_summary: |
   Validates the end-to-end deployment pipeline (GitHub Actions → Terraform → AWS) by deploying a single S3 bucket per §10.6 of architecture.md. Per the owner's production-deploy pause (see docs/PROD_CUTOVER.md), this phase ships with **dev-only validation**; the prod-side smoke (story 0.5) and the prod cleanup half of 0.6 are deferred until the prod AWS account is provisioned and the prod deploy gate is opened. Bootstrap prerequisites needed NOW (dev only): AWS Organization + dev member account, dev IAM user with static access key, knotify-dev-tfstate bucket with versioning, knotify-tfstate-lock DynamoDB table, GitHub Environment "dev" with AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY, AND a GitHub Environment "prod" created with required-reviewer protection (no AWS secrets yet — the empty gate is what enforces the pause). The workflow file written in 0.3 still declares the prod job; it simply never gets approved. Phase exits when 0.1–0.4 and the dev portion of 0.6 are green and PIPELINE_VALIDATED.md is committed. Subsequent phases assume the dev pipeline works; they will plan against prod but never apply.
@@ -76,11 +76,11 @@ stories:
   - id: 0.6
     title: Cleanup destroy and PIPELINE_VALIDATED.md
     agent: backenddeveloper
-    done: false
+    done: true
     tracking_issue: 6
     depends_on: [0.4]
     acceptance_criteria:
       - terraform destroy executed against backend-dev.hcl leaves zero remaining knotify-smoke-dev-* buckets in the dev AWS account
       - File PIPELINE_VALIDATED.md committed at the repo root containing the date, the dev bucket name that was deployed, a one-line confirmation that dev destroy completed, and an explicit "PROD VALIDATION DEFERRED — see docs/PROD_CUTOVER.md" line
       - The smoke-test/dev branch is deleted from the remote
-    notes: "Prod cleanup is part of the deferred 0.5 work; it will run when prod is brought online."
+    notes: "Prod cleanup is part of the deferred 0.5 work; it will run when prod is brought online. Completed 2026-05-22: terraform destroy removed all 4 resources (bucket knotify-smoke-dev-ce43afa2 + public-access-block + SSE config + random_id.suffix); zero knotify-smoke-dev-* buckets confirmed; PIPELINE_VALIDATED.md committed (43c4558); smoke-test/dev branch deleted from remote."
