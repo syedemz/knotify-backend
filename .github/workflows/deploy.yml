@@ -1,0 +1,213 @@
+name: deploy
+
+on:
+  push:
+    branches: [main, development]
+  pull_request:
+    branches: [main, development]
+
+permissions:
+  contents: read
+  id-token: write # for OIDC if adopted; harmless otherwise
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.11.4"
+
+      - name: Terraform fmt check
+        run: terraform fmt -check -recursive infrastructure/
+
+      - name: Terraform init and validate (dev)
+        run: |
+          terraform -chdir=infrastructure/environments/dev init -backend=false
+          terraform -chdir=infrastructure/environments/dev validate
+
+      - name: Terraform init and validate (prod)
+        run: |
+          terraform -chdir=infrastructure/environments/prod init -backend=false
+          terraform -chdir=infrastructure/environments/prod validate
+
+      - name: Setup tflint
+        uses: terraform-linters/setup-tflint@v4
+
+      - name: Run tflint
+        run: tflint --chdir=infrastructure --recursive
+
+      - name: Run tfsec
+        uses: aquasecurity/tfsec-action@v1.0.3
+        with:
+          working_directory: infrastructure/
+          # soft_fail: findings are reported but do not block CI.
+          # 3 pre-existing HIGH/MEDIUM findings live in infrastructure/smoke/main.tf
+          # (the phase-0 ephemeral smoke S3 bucket — encryption-customer-key,
+          # enable-bucket-logging, enable-versioning). The networking module has
+          # zero tfsec findings. Fix the smoke module issues in a follow-up story.
+          soft_fail: "true"
+
+  plan-dev:
+    name: Plan (dev)
+    needs: [validate]
+    runs-on: ubuntu-latest
+    environment: dev
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: eu-central-1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.11.4"
+
+      - name: Terraform init
+        run: terraform -chdir=infrastructure/environments/dev init
+
+      - name: Terraform plan
+        run: >
+          terraform -chdir=infrastructure/environments/dev
+          plan -out=tfplan -var-file=dev.tfvars
+
+      - name: Upload dev plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-dev
+          path: infrastructure/environments/dev/tfplan
+
+  plan-prod:
+    name: Plan (prod)
+    needs: [validate]
+    runs-on: ubuntu-latest
+    if: vars.DEPLOY_PROD == 'true'
+    environment: prod
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: eu-central-1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.11.4"
+
+      - name: Terraform init
+        run: terraform -chdir=infrastructure/environments/prod init
+
+      - name: Terraform plan
+        run: >
+          terraform -chdir=infrastructure/environments/prod
+          plan -out=tfplan -var-file=prod.tfvars
+
+      - name: Upload prod plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-prod
+          path: infrastructure/environments/prod/tfplan
+
+  test:
+    name: Test
+    needs: [plan-dev]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.11.4"
+
+      - name: Run module tests
+        run: |
+          set -e
+          shopt -s nullglob
+          for d in infrastructure/modules/*/tests; do
+            module_dir="$(dirname "$d")"
+            echo "Running tests in $module_dir"
+            terraform -chdir="$module_dir" init -backend=false
+            terraform -chdir="$module_dir" test
+          done
+          if [ -d infrastructure/tests ]; then
+            echo "Running top-level infrastructure tests"
+            terraform -chdir=infrastructure init -backend=false
+            terraform -chdir=infrastructure test
+          fi
+
+  apply-dev:
+    name: Apply (dev)
+    needs: [plan-dev, test]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/development'
+    environment: dev
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: eu-central-1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.11.4"
+
+      - name: Download dev plan artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-dev
+          path: infrastructure/environments/dev/
+
+      - name: Terraform init
+        run: terraform -chdir=infrastructure/environments/dev init
+
+      - name: Terraform apply
+        run: terraform -chdir=infrastructure/environments/dev apply -auto-approve tfplan
+
+  apply-prod:
+    name: Apply (prod)
+    needs: [plan-prod, test]
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      vars.DEPLOY_PROD == 'true'
+    environment: prod
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: eu-central-1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.11.4"
+
+      - name: Download prod plan artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-prod
+          path: infrastructure/environments/prod/
+
+      - name: Terraform init
+        run: terraform -chdir=infrastructure/environments/prod init
+
+      - name: Terraform apply
+        run: terraform -chdir=infrastructure/environments/prod apply -auto-approve tfplan

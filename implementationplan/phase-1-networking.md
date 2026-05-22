@@ -1,7 +1,7 @@
 phase: 1
 title: Networking foundations
-last_updated: 2026-05-22
-
+last_updated: 2026-05-22 (story 1.5)
+done: true
 context_summary: |
   Establishes the per-environment VPC, subnets, route tables, and security groups that all subsequent phases consume. Implements §6 of architecture.md verbatim: VPC 10.0.0.0/16 with public (10.0.1.0/24, 10.0.2.0/24), private (10.0.11.0/24, 10.0.12.0/24), and DB (10.0.21.0/24, 10.0.22.0/24) subnets across two AZs, security groups sg-lambda and sg-aurora with Lambda→Aurora 5432 the only allowed flow, and no NAT Gateway (Lambdas have no internet egress in v1). Subsequent phases (Aurora, Lambdas, AppSync) attach to these networking primitives.
 
@@ -9,8 +9,9 @@ stories:
   - id: 1.1
     title: Networking Terraform module
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: []
+    tracking_issue: 8
     acceptance_criteria:
       - File infrastructure/modules/networking/main.tf declares an aws_vpc with cidr_block=10.0.0.0/16 and enable_dns_hostnames=true
       - Two public subnets (10.0.1.0/24, 10.0.2.0/24), two private subnets (10.0.11.0/24, 10.0.12.0/24), and two DB subnets (10.0.21.0/24, 10.0.22.0/24) are created across the first two AZs from data.aws_availability_zones.available.names (sliced deterministically — no hardcoded AZ names)
@@ -22,8 +23,9 @@ stories:
   - id: 1.2
     title: Security groups for Lambda and Aurora
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [1.1]
+    tracking_issue: 9
     acceptance_criteria:
       - Module creates aws_security_group "sg-lambda" inside the VPC with zero inbound rules and an outbound rule allowing all traffic (placeholder; tightened later)
       - Module creates aws_security_group "sg-aurora" with a single inbound rule allowing TCP 5432 from sg-lambda's security_group_id only, and zero outbound rules
@@ -34,8 +36,9 @@ stories:
   - id: 1.3
     title: Per-environment instantiation
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [1.1, 1.2]
+    tracking_issue: 10
     acceptance_criteria:
       - File infrastructure/environments/dev/main.tf instantiates module.networking with environment="dev" and region="eu-central-1"
       - File infrastructure/environments/prod/main.tf instantiates module.networking with environment="prod" and region="eu-central-1"
@@ -49,8 +52,9 @@ stories:
   - id: 1.4
     title: Terraform tests for networking module
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [1.1, 1.2]
+    tracking_issue: 11
     acceptance_criteria:
       - File infrastructure/modules/networking/tests/networking.tftest.hcl exists with at least three test cases
       - All test runs use `command = plan` so tests are hermetic — no AWS credentials required, no apply executed, runs cleanly in CI
@@ -63,8 +67,9 @@ stories:
   - id: 1.5
     title: deploy.yml auto-deploy workflow on push to development
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [1.3, 1.4]
+    tracking_issue: 12
     acceptance_criteria:
       - File .github/workflows/deploy.yml exists, structured per architecture §10.2 with jobs validate, plan (matrix over [dev, prod]), test, apply-dev, apply-prod
       - Triggers are `on.push.branches: [main, development]` and `on.pull_request.branches: [main, development]`
