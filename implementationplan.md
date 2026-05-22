@@ -12,7 +12,7 @@ phases:
 - phase: 1
   title: Networking foundations
   file: implementationplan/phase-1-networking.md
-  ready: false
+  ready: true
   done: false
 
 - phase: 2
