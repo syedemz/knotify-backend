@@ -21,7 +21,6 @@ run "six_subnets_with_correct_cidrs" {
 
   variables {
     environment = "test"
-    region      = "eu-central-1"
   }
 
   assert {
@@ -63,7 +62,6 @@ run "vpc_cidr_and_dns" {
 
   variables {
     environment = "test"
-    region      = "eu-central-1"
   }
 
   assert {
@@ -90,7 +88,6 @@ run "sg_lambda_name_and_description" {
 
   variables {
     environment = "test"
-    region      = "eu-central-1"
   }
 
   assert {
@@ -131,7 +128,6 @@ run "sg_aurora_ingress_rule_attributes" {
 
   variables {
     environment = "test"
-    region      = "eu-central-1"
   }
 
   # Supply mock IDs so cross-resource reference comparisons are evaluable at
@@ -214,7 +210,6 @@ run "db_subnet_group_and_private_subnet_count" {
 
   variables {
     environment = "test"
-    region      = "eu-central-1"
   }
 
   assert {
@@ -262,7 +257,6 @@ run "no_nat_igw_and_no_default_route_from_private_subnets" {
 
   variables {
     environment = "test"
-    region      = "eu-central-1"
   }
 
   # Make the computed route attribute evaluable at plan time.

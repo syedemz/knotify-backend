@@ -14,5 +14,4 @@ provider "aws" {
 module "networking" {
   source      = "../../modules/networking"
   environment = var.environment
-  region      = "eu-central-1"
 }
