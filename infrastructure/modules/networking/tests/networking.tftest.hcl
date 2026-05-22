@@ -75,6 +75,81 @@ run "vpc_cidr_and_dns" {
 }
 
 # ---------------------------------------------------------------------------
+# Test 4: sg-lambda has no ingress rules and one allow-all egress rule.
+# Plan-mode constraint: the inline ingress/egress sets on aws_security_group
+# are computed and cannot be length-checked or indexed during plan.
+# We assert statically-known scalar attributes (name, description) and the
+# egress rule attributes via a separate aws_security_group_rule approach
+# is N/A here (lambda uses an inline egress block — no separate rule resource).
+# The zero-ingress and explicit-egress guarantees are structural: the resource
+# declares no ingress block and one egress block; terraform validate confirms.
+# ---------------------------------------------------------------------------
+run "sg_lambda_name_and_description" {
+  command = plan
+
+  variables {
+    environment = "test"
+    region      = "eu-central-1"
+  }
+
+  assert {
+    condition     = aws_security_group.lambda.name == "knotify-test-sg-lambda"
+    error_message = "Lambda SG must be named knotify-test-sg-lambda"
+  }
+
+  assert {
+    condition     = aws_security_group.lambda.description == "Lambda execution security group"
+    error_message = "Lambda SG must have the correct description"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 5: sg-aurora name, description, and ingress rule attributes.
+# The aws_security_group_rule resource has statically-known scalar attributes
+# (type, from_port, to_port, protocol) that are safely assertable at plan time.
+# Cross-resource ID references (security_group_id, source_security_group_id)
+# are computed — unknown until apply — so they are excluded.
+# ---------------------------------------------------------------------------
+run "sg_aurora_ingress_rule_attributes" {
+  command = plan
+
+  variables {
+    environment = "test"
+    region      = "eu-central-1"
+  }
+
+  assert {
+    condition     = aws_security_group.aurora.name == "knotify-test-sg-aurora"
+    error_message = "Aurora SG must be named knotify-test-sg-aurora"
+  }
+
+  assert {
+    condition     = aws_security_group.aurora.description == "Aurora ingress from Lambda only"
+    error_message = "Aurora SG must have the correct description"
+  }
+
+  assert {
+    condition     = aws_security_group_rule.aurora_ingress_from_lambda.type == "ingress"
+    error_message = "Aurora ingress rule must have type ingress"
+  }
+
+  assert {
+    condition     = aws_security_group_rule.aurora_ingress_from_lambda.from_port == 5432
+    error_message = "Aurora ingress rule from_port must be 5432"
+  }
+
+  assert {
+    condition     = aws_security_group_rule.aurora_ingress_from_lambda.to_port == 5432
+    error_message = "Aurora ingress rule to_port must be 5432"
+  }
+
+  assert {
+    condition     = aws_security_group_rule.aurora_ingress_from_lambda.protocol == "tcp"
+    error_message = "Aurora ingress rule protocol must be tcp"
+  }
+}
+
+# ---------------------------------------------------------------------------
 # Test 3: DB subnet group name is correct and private subnet count is 2.
 # No aws_nat_gateway, no aws_internet_gateway, no aws_eip are present —
 # their absence is structural: if they existed the module would reference

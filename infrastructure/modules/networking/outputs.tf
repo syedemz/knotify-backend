@@ -12,3 +12,13 @@ output "db_subnet_group_name" {
   description = "Name of the Aurora DB subnet group"
   value       = aws_db_subnet_group.this.name
 }
+
+output "lambda_security_group_id" {
+  description = "ID of the Lambda execution security group"
+  value       = aws_security_group.lambda.id
+}
+
+output "aurora_security_group_id" {
+  description = "ID of the Aurora security group"
+  value       = aws_security_group.aurora.id
+}

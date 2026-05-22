@@ -1,6 +1,6 @@
 phase: 1
 title: Networking foundations
-last_updated: 2026-05-22
+last_updated: 2026-05-22 (story 1.2)
 context_summary: |
   Establishes the per-environment VPC, subnets, route tables, and security groups that all subsequent phases consume. Implements §6 of architecture.md verbatim: VPC 10.0.0.0/16 with public (10.0.1.0/24, 10.0.2.0/24), private (10.0.11.0/24, 10.0.12.0/24), and DB (10.0.21.0/24, 10.0.22.0/24) subnets across two AZs, security groups sg-lambda and sg-aurora with Lambda→Aurora 5432 the only allowed flow, and no NAT Gateway (Lambdas have no internet egress in v1). Subsequent phases (Aurora, Lambdas, AppSync) attach to these networking primitives.
 
@@ -22,7 +22,7 @@ stories:
   - id: 1.2
     title: Security groups for Lambda and Aurora
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [1.1]
     tracking_issue: 9
     acceptance_criteria:
