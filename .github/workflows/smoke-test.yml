@@ -1,0 +1,74 @@
+name: smoke-test
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "smoke-test/**"
+
+jobs:
+  smoke-dev:
+    name: Smoke — dev
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/smoke-test/dev'
+    environment: dev
+    defaults:
+      run:
+        working-directory: infrastructure/smoke
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: eu-central-1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+
+      - name: Terraform fmt check
+        run: terraform fmt -check
+
+      - name: Terraform init
+        run: terraform init -backend-config=backend-dev.hcl
+
+      - name: Terraform plan
+        run: terraform plan -var-file=dev.tfvars -out=tfplan
+
+      - name: Terraform apply
+        run: terraform apply -auto-approve tfplan
+
+  smoke-prod:
+    name: Smoke — prod
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/smoke-test/prod' && vars.DEPLOY_PROD == 'true'
+    environment: prod
+    defaults:
+      run:
+        working-directory: infrastructure/smoke
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: eu-central-1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+
+      - name: Terraform fmt check
+        run: terraform fmt -check
+
+      - name: Terraform init
+        run: terraform init -backend-config=backend-prod.hcl
+
+      - name: Terraform plan
+        run: terraform plan -var-file=prod.tfvars -out=tfplan
+
+      - name: Terraform apply
+        run: terraform apply -auto-approve tfplan
