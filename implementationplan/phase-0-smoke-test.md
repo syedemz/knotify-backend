@@ -52,14 +52,14 @@ stories:
   - id: 0.4
     title: Dev smoke deploy and bucket verification
     agent: backenddeveloper
-    done: false
+    done: true
     tracking_issue: 5
     depends_on: [0.1, 0.2, 0.3]
     acceptance_criteria:
       - A branch named smoke-test/dev is pushed to the remote and the smoke-dev job completes with conclusion=success in GitHub Actions
       - The deployed bucket appears in the dev AWS account with name matching "knotify-smoke-dev-*" and has BlockPublicAcls=true confirmed via aws s3api get-public-access-block
       - The dev Terraform state object exists at s3://knotify-dev-tfstate/smoke/terraform.tfstate
-    notes: ""
+    notes: "Completed 2026-05-22. Workflow run https://github.com/syedemz/knotify-backend/actions/runs/26279114489 conclusion=success. Bucket knotify-smoke-dev-ce43afa2 deployed with all four public-access-block flags true. State at s3://knotify-dev-tfstate/smoke/terraform.tfstate (5447 bytes)."
 
   - id: 0.5
     title: Prod smoke deploy and bucket verification
