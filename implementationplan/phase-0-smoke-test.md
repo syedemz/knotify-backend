@@ -23,7 +23,7 @@ stories:
   - id: 0.2
     title: Per-environment backend configuration for smoke scope
     agent: backenddeveloper
-    done: false
+    done: true
     tracking_issue: 3
     depends_on: [0.1]
     acceptance_criteria:
