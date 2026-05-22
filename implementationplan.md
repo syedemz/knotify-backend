@@ -1,5 +1,5 @@
 project: knotify-backend
-last_updated: 2026-05-21
+last_updated: 2026-05-22
 
 phases:
 
@@ -7,7 +7,7 @@ phases:
   title: Pipeline smoke test
   file: implementationplan/phase-0-smoke-test.md
   ready: true
-  done: false
+  done: true
 
 - phase: 1
   title: Networking foundations
