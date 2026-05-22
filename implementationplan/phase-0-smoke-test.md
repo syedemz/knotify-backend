@@ -10,6 +10,7 @@ stories:
     title: Smoke S3 Terraform module
     agent: backenddeveloper
     done: false
+    tracking_issue: 2
     depends_on: []
     acceptance_criteria:
       - File infrastructure/smoke/main.tf exists and declares aws + random providers pinned per architecture.md §10.6, an aws_s3_bucket named with pattern "knotify-smoke-${var.environment}-${random_id.suffix.hex}", an aws_s3_bucket_public_access_block with all four block flags true, and an aws_s3_bucket_server_side_encryption_configuration applying AES256
@@ -23,6 +24,7 @@ stories:
     title: Per-environment backend configuration for smoke scope
     agent: backenddeveloper
     done: false
+    tracking_issue: 3
     depends_on: [0.1]
     acceptance_criteria:
       - File infrastructure/smoke/backend-dev.hcl exists configuring S3 backend with bucket=knotify-dev-tfstate, key=smoke/terraform.tfstate, region=eu-central-1, dynamodb_table=knotify-tfstate-lock
@@ -36,6 +38,7 @@ stories:
     title: GitHub Actions smoke-test workflow
     agent: backenddeveloper
     done: false
+    tracking_issue: 4
     depends_on: []
     acceptance_criteria:
       - File .github/workflows/smoke-test.yml exists with on.workflow_dispatch and on.push.branches=[smoke-test/*]
@@ -50,6 +53,7 @@ stories:
     title: Dev smoke deploy and bucket verification
     agent: backenddeveloper
     done: false
+    tracking_issue: 5
     depends_on: [0.1, 0.2, 0.3]
     acceptance_criteria:
       - A branch named smoke-test/dev is pushed to the remote and the smoke-dev job completes with conclusion=success in GitHub Actions
@@ -73,6 +77,7 @@ stories:
     title: Cleanup destroy and PIPELINE_VALIDATED.md
     agent: backenddeveloper
     done: false
+    tracking_issue: 6
     depends_on: [0.4]
     acceptance_criteria:
       - terraform destroy executed against backend-dev.hcl leaves zero remaining knotify-smoke-dev-* buckets in the dev AWS account

@@ -1,0 +1,40 @@
+# Claude Code local configuration — never commit
+.claude/
+
+# Terraform working directories and state
+**/.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfvars.json
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Environment and secrets — never commit
+.env
+.env.*
+*.pem
+*.key
+
+# OS artefacts
+.DS_Store
+Thumbs.db
