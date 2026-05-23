@@ -22,3 +22,13 @@ output "chat_messages_stream_arn" {
   description = "DynamoDB stream ARN for the ChatMessages table, consumed by the Phase 8 chat fan-out Lambda"
   value       = aws_dynamodb_table.chat_messages.stream_arn
 }
+
+output "notifications_table_name" {
+  description = "Name of the Notifications DynamoDB table"
+  value       = aws_dynamodb_table.notifications.name
+}
+
+output "notifications_stream_arn" {
+  description = "DynamoDB stream ARN for the Notifications table, consumed by the Phase 8 push fan-out Lambda"
+  value       = aws_dynamodb_table.notifications.stream_arn
+}

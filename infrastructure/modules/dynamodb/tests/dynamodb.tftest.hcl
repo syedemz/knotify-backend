@@ -443,3 +443,215 @@ run "new_tables_tags" {
     error_message = "MessageReads Project tag must be knotify"
   }
 }
+
+# ---------------------------------------------------------------------------
+# Test 14: Notifications hash key, range key, and billing mode
+# Satisfies AC: PK user_id (S), SK created_at_notification_id (S),
+#               billing_mode PAY_PER_REQUEST
+# ---------------------------------------------------------------------------
+run "notifications_keys_and_billing" {
+  command = plan
+
+  variables {
+    environment                    = "dev"
+    point_in_time_recovery_enabled = false
+    deletion_protection_enabled    = false
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.notifications.billing_mode == "PAY_PER_REQUEST"
+    error_message = "Notifications billing_mode must be PAY_PER_REQUEST"
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.notifications.hash_key == "user_id"
+    error_message = "Notifications hash_key must be user_id"
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.notifications.range_key == "created_at_notification_id"
+    error_message = "Notifications range_key must be created_at_notification_id"
+  }
+
+  assert {
+    condition = anytrue([
+      for attr in aws_dynamodb_table.notifications.attribute : attr.name == "user_id" && attr.type == "S"
+    ])
+    error_message = "Notifications must define attribute user_id of type S"
+  }
+
+  assert {
+    condition = anytrue([
+      for attr in aws_dynamodb_table.notifications.attribute : attr.name == "created_at_notification_id" && attr.type == "S"
+    ])
+    error_message = "Notifications must define attribute created_at_notification_id of type S"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 15: Notifications stream enabled with NEW_IMAGE view type
+# Satisfies AC: stream_enabled true, stream_view_type NEW_IMAGE
+# ---------------------------------------------------------------------------
+run "notifications_stream_enabled" {
+  command = plan
+
+  variables {
+    environment                    = "dev"
+    point_in_time_recovery_enabled = false
+    deletion_protection_enabled    = false
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.notifications.stream_enabled == true
+    error_message = "Notifications stream_enabled must be true"
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.notifications.stream_view_type == "NEW_IMAGE"
+    error_message = "Notifications stream_view_type must be NEW_IMAGE"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 16: Notifications server-side encryption enabled
+# Satisfies AC: server_side_encryption enabled
+# ---------------------------------------------------------------------------
+run "notifications_server_side_encryption" {
+  command = plan
+
+  variables {
+    environment                    = "dev"
+    point_in_time_recovery_enabled = false
+    deletion_protection_enabled    = false
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.notifications.server_side_encryption[0].enabled == true
+    error_message = "Notifications server_side_encryption must be enabled"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 17: Notifications TTL enabled on attribute "ttl"
+# Satisfies AC: ttl block with attribute_name "ttl" and enabled true
+# ---------------------------------------------------------------------------
+run "notifications_ttl_enabled" {
+  command = plan
+
+  variables {
+    environment                    = "dev"
+    point_in_time_recovery_enabled = false
+    deletion_protection_enabled    = false
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.notifications.ttl[0].attribute_name == "ttl"
+    error_message = "Notifications TTL attribute_name must be 'ttl'"
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.notifications.ttl[0].enabled == true
+    error_message = "Notifications TTL enabled must be true"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 18: Notifications UnreadIndex GSI keys
+# Satisfies AC: GSI named UnreadIndex with PK user_id and SK notification_id
+# ---------------------------------------------------------------------------
+run "notifications_unread_index_gsi" {
+  command = plan
+
+  variables {
+    environment                    = "dev"
+    point_in_time_recovery_enabled = false
+    deletion_protection_enabled    = false
+  }
+
+  assert {
+    condition = anytrue([
+      for gsi in aws_dynamodb_table.notifications.global_secondary_index :
+        gsi.name == "UnreadIndex" && gsi.hash_key == "user_id" && gsi.range_key == "notification_id"
+    ])
+    error_message = "Notifications must have UnreadIndex GSI with PK user_id and SK notification_id"
+  }
+
+  assert {
+    condition = anytrue([
+      for attr in aws_dynamodb_table.notifications.attribute : attr.name == "notification_id" && attr.type == "S"
+    ])
+    error_message = "Notifications must define attribute notification_id of type S for the UnreadIndex GSI SK"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 19: Notifications dev safety flags — deletion_protection false, PITR disabled
+# Satisfies AC: deletion_protection_enabled and PITR variable-driven; false in dev
+# ---------------------------------------------------------------------------
+run "notifications_dev_safety_flags" {
+  command = plan
+
+  variables {
+    environment                    = "dev"
+    point_in_time_recovery_enabled = false
+    deletion_protection_enabled    = false
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.notifications.deletion_protection_enabled == false
+    error_message = "Notifications deletion_protection_enabled must be false in dev"
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.notifications.point_in_time_recovery[0].enabled == false
+    error_message = "Notifications point_in_time_recovery must be disabled in dev"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 20: Notifications prod safety flags — deletion_protection true, PITR enabled
+# Satisfies AC: deletion_protection_enabled and PITR variable-driven; true in prod
+# ---------------------------------------------------------------------------
+run "notifications_prod_safety_flags" {
+  command = plan
+
+  variables {
+    environment                    = "prod"
+    point_in_time_recovery_enabled = true
+    deletion_protection_enabled    = true
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.notifications.deletion_protection_enabled == true
+    error_message = "Notifications deletion_protection_enabled must be true in prod"
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.notifications.point_in_time_recovery[0].enabled == true
+    error_message = "Notifications point_in_time_recovery must be enabled in prod"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 21: Notifications tags (dev values)
+# Satisfies AC: tags for Environment and Project
+# ---------------------------------------------------------------------------
+run "notifications_tags" {
+  command = plan
+
+  variables {
+    environment                    = "dev"
+    point_in_time_recovery_enabled = false
+    deletion_protection_enabled    = false
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.notifications.tags["Environment"] == "dev"
+    error_message = "Notifications Environment tag must be dev"
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.notifications.tags["Project"] == "knotify"
+    error_message = "Notifications Project tag must be knotify"
+  }
+}
