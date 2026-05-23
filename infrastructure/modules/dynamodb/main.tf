@@ -287,3 +287,61 @@ resource "aws_dynamodb_table" "notifications" {
     Project     = var.project_name
   }
 }
+
+# ---------------------------------------------------------------------------
+# PushNotificationTokens table
+#
+# PK: user_id (S) — the Cognito/app user who owns the device token.
+# SK: device_id (S) — opaque device identifier (e.g., UUID generated at
+#   first app launch on a given physical device). Allows a single user to
+#   hold multiple FCM/APNs tokens (one per device) and lets the application
+#   delete a specific device's token on logout without invalidating others
+#   (see architecture.md §5.4).
+#
+# No stream needed: token registrations do not require fan-out. The Phase 8
+# push-fan-out Lambda reads tokens synchronously on demand when delivering
+# a push notification triggered by the Notifications stream.
+#
+# billing_mode: PAY_PER_REQUEST — token writes are infrequent (app install /
+#   token refresh), and reads are point lookups; on-demand pricing is correct.
+#
+# point_in_time_recovery: follows the same variable as the other tables for
+#   consistency — disabled in dev, enabled in prod via var.point_in_time_recovery_enabled.
+#
+# deletion_protection_enabled: variable-driven (true in prod, false in dev).
+#   Terraform's lifecycle.prevent_destroy cannot reference variables, so the
+#   native DynamoDB flag is the prod-safety mechanism (brainstorm finding #9).
+# ---------------------------------------------------------------------------
+
+resource "aws_dynamodb_table" "push_notification_tokens" {
+  name         = "PushNotificationTokens"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "user_id"
+  range_key    = "device_id"
+
+  attribute {
+    name = "user_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "device_id"
+    type = "S"
+  }
+
+  server_side_encryption {
+    enabled = true
+  }
+
+  point_in_time_recovery {
+    enabled = var.point_in_time_recovery_enabled
+  }
+
+  deletion_protection_enabled = var.deletion_protection_enabled
+
+  tags = {
+    Name        = "PushNotificationTokens"
+    Environment = var.environment
+    Project     = var.project_name
+  }
+}

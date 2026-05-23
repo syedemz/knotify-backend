@@ -4,7 +4,7 @@
 <1-2 sentences. Auto-populate from architecture.md after /create-plan, or user fills now.>
 
 ## Current phase
-Phase 2 — Data layer (Aurora + DynamoDB). Stories 2.1–2.12 done. Next: story 2.13 (DynamoDB PushNotificationTokens table).
+Phase 2 — Data layer (Aurora + DynamoDB). Stories 2.1–2.13 done. Next: story 2.14 (per-environment data-layer wiring and Terraform tests).
 
 ## Active blockers
 - Production deploys are PAUSED. The prod AWS account has not been provisioned. All phases plan-against-prod but only apply-against-dev. See `docs/PROD_CUTOVER.md` for the full pause mechanism and the flip-on checklist.
@@ -33,3 +33,4 @@ None yet.
 - 2026-05-23: Phase 2 story 2.10 complete — DynamoDB module authored (infrastructure/modules/dynamodb/{main.tf,variables.tf,outputs.tf,tests/dynamodb.tftest.hcl}); ChatRooms (PK room_id S, PAY_PER_REQUEST, SSE, PITR+deletion_protection variable-driven) and ChatRoomMembership (PK user_id S, SK room_id S, same safety flags); deletion_protection_enabled uses native DynamoDB flag not lifecycle.prevent_destroy (brainstorm finding #9); 6/6 plan-mode tests pass (billing mode, keys, SSE, tags, dev flags, prod flags); terraform fmt/validate clean.
 - 2026-05-23: Phase 2 story 2.11 complete — DynamoDB module extended with ChatMessages (PK room_id S, SK created_at_message_id S, stream_enabled=true, stream_view_type=NEW_IMAGE, PAY_PER_REQUEST, SSE, PITR+deletion_protection variable-driven) and MessageReads (PK room_id S, SK user_id S, PAY_PER_REQUEST, same safety flags); output chat_messages_stream_arn exposed for Phase 8 fan-out Lambda; 13/13 plan-mode tests pass (all prior + 7 new tests for keys, stream, SSE, env flags, tags on both tables); terraform fmt/validate clean.
 - 2026-05-23: Phase 2 story 2.12 complete — DynamoDB module extended with Notifications table (PK user_id S, SK created_at_notification_id S, stream_enabled=true stream_view_type=NEW_IMAGE, TTL on `ttl`, PAY_PER_REQUEST, SSE, PITR+deletion_protection variable-driven); UnreadIndex GSI (PK user_id, SK notification_id) declared with application-enforced sparsity (rationale comment inline per brainstorm finding #10); outputs notifications_table_name and notifications_stream_arn exposed; 21/21 plan-mode tests pass (all prior + 8 new); terraform fmt/validate clean; commit 83d5c30.
+- 2026-05-23: Phase 2 story 2.13 complete — DynamoDB module extended with PushNotificationTokens table (PK user_id S, SK device_id S, PAY_PER_REQUEST, SSE enabled, PITR+deletion_protection variable-driven, no stream); output push_tokens_table_name exposed; 26/26 plan-mode tests pass (all prior + 5 new for keys, SSE, dev/prod safety flags, tags); terraform fmt/validate clean.

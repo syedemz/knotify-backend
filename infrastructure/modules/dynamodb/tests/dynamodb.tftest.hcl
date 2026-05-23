@@ -655,3 +655,142 @@ run "notifications_tags" {
     error_message = "Notifications Project tag must be knotify"
   }
 }
+
+# ---------------------------------------------------------------------------
+# Test 22: PushNotificationTokens hash key, range key, and billing mode
+# Satisfies AC: PK user_id (S), SK device_id (S), billing_mode PAY_PER_REQUEST
+# ---------------------------------------------------------------------------
+run "push_notification_tokens_keys_and_billing" {
+  command = plan
+
+  variables {
+    environment                    = "dev"
+    point_in_time_recovery_enabled = false
+    deletion_protection_enabled    = false
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.push_notification_tokens.billing_mode == "PAY_PER_REQUEST"
+    error_message = "PushNotificationTokens billing_mode must be PAY_PER_REQUEST"
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.push_notification_tokens.hash_key == "user_id"
+    error_message = "PushNotificationTokens hash_key must be user_id"
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.push_notification_tokens.range_key == "device_id"
+    error_message = "PushNotificationTokens range_key must be device_id"
+  }
+
+  assert {
+    condition = anytrue([
+      for attr in aws_dynamodb_table.push_notification_tokens.attribute : attr.name == "user_id" && attr.type == "S"
+    ])
+    error_message = "PushNotificationTokens must define attribute user_id of type S"
+  }
+
+  assert {
+    condition = anytrue([
+      for attr in aws_dynamodb_table.push_notification_tokens.attribute : attr.name == "device_id" && attr.type == "S"
+    ])
+    error_message = "PushNotificationTokens must define attribute device_id of type S"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 23: PushNotificationTokens server-side encryption enabled
+# Satisfies AC: server_side_encryption enabled
+# ---------------------------------------------------------------------------
+run "push_notification_tokens_server_side_encryption" {
+  command = plan
+
+  variables {
+    environment                    = "dev"
+    point_in_time_recovery_enabled = false
+    deletion_protection_enabled    = false
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.push_notification_tokens.server_side_encryption[0].enabled == true
+    error_message = "PushNotificationTokens server_side_encryption must be enabled"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 24: PushNotificationTokens dev safety flags
+# deletion_protection_enabled false, point_in_time_recovery disabled in dev
+# Satisfies AC: deletion_protection_enabled variable-driven; false in dev
+# ---------------------------------------------------------------------------
+run "push_notification_tokens_dev_safety_flags" {
+  command = plan
+
+  variables {
+    environment                    = "dev"
+    point_in_time_recovery_enabled = false
+    deletion_protection_enabled    = false
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.push_notification_tokens.deletion_protection_enabled == false
+    error_message = "PushNotificationTokens deletion_protection_enabled must be false in dev"
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.push_notification_tokens.point_in_time_recovery[0].enabled == false
+    error_message = "PushNotificationTokens point_in_time_recovery must be disabled in dev"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 25: PushNotificationTokens prod safety flags
+# deletion_protection_enabled true, point_in_time_recovery enabled in prod
+# Satisfies AC: deletion_protection_enabled variable-driven; true in prod
+# Note: lifecycle.prevent_destroy cannot reference variables (Terraform limitation),
+# so native DynamoDB deletion_protection_enabled is the prod-safety mechanism per
+# brainstorm finding #9.
+# ---------------------------------------------------------------------------
+run "push_notification_tokens_prod_safety_flags" {
+  command = plan
+
+  variables {
+    environment                    = "prod"
+    point_in_time_recovery_enabled = true
+    deletion_protection_enabled    = true
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.push_notification_tokens.deletion_protection_enabled == true
+    error_message = "PushNotificationTokens deletion_protection_enabled must be true in prod"
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.push_notification_tokens.point_in_time_recovery[0].enabled == true
+    error_message = "PushNotificationTokens point_in_time_recovery must be enabled in prod"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 26: PushNotificationTokens tags (dev values)
+# Satisfies AC: tags for Environment and Project
+# ---------------------------------------------------------------------------
+run "push_notification_tokens_tags" {
+  command = plan
+
+  variables {
+    environment                    = "dev"
+    point_in_time_recovery_enabled = false
+    deletion_protection_enabled    = false
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.push_notification_tokens.tags["Environment"] == "dev"
+    error_message = "PushNotificationTokens Environment tag must be dev"
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.push_notification_tokens.tags["Project"] == "knotify"
+    error_message = "PushNotificationTokens Project tag must be knotify"
+  }
+}

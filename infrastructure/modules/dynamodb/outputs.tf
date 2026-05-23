@@ -32,3 +32,8 @@ output "notifications_stream_arn" {
   description = "DynamoDB stream ARN for the Notifications table, consumed by the Phase 8 push fan-out Lambda"
   value       = aws_dynamodb_table.notifications.stream_arn
 }
+
+output "push_tokens_table_name" {
+  description = "Name of the PushNotificationTokens DynamoDB table"
+  value       = aws_dynamodb_table.push_notification_tokens.name
+}
