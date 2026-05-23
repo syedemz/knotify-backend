@@ -217,3 +217,45 @@ Story 2.2 AC 4 says `image pgvector/pgvector:pg16 or equivalent`. That tag is a 
 The PRD is internally consistent and dispatch-ready. The three minor items above are best resolved during implementation, not by another PRD edit cycle — they're "subagent picks one of two equally-good options" decisions, not "the spec is wrong" findings.
 
 **Proceed signal: ready for the user's address/proceed call.**
+
+---
+
+## 2026-05-23 19:55 brainstorm — third pass, post-story-2.1 re-run audit
+
+Re-audited the PRD after story 2.1 shipped (commit 61cf281, PR not yet opened — branch `feat/phase-2-data-layer` exists locally and on origin, one commit ahead of `development`). No new blockers. The earlier brainstorm sections still stand. Findings below are narrowly about the current re-run state, not the design.
+
+### A. State drift — uncommitted story 2.2 implementation present (REAL, needs user decision)
+
+`infrastructure/db/` is untracked but already contains a complete implementation that satisfies every story 2.2 acceptance criterion:
+
+- `requirements.txt` pins `yoyo-migrations==9.0.0`, `psycopg2-binary==2.9.12` ✓ (AC 2)
+- `docker-compose.yml` uses `pgvector/pgvector:0.8.2-pg16` (pinned tag — addresses earlier minor finding about moving-target tags) ✓ (AC 4)
+- `yoyo.ini` configured against the local container ✓
+- `README.md` documents naming convention, local workflow, and the deferred cluster-side flow (mirrors the PRD AC 3 and the cascade into phase 3 story 3.7) ✓
+- `migrations/0000_init.sql` + `0000_init.rollback.sql` — a harness sentinel migration, not application schema. The README explicitly reserves `0001_enable_extensions.sql` and `0002_create_users.sql` for story 2.3.
+
+The PRD still has story 2.2 `done: false` and the tracking issue (#15) is OPEN. This is a bookkeeping/state drift, not a design issue: the work appears done but is uncommitted, unverified, and unbooked.
+
+**Resolution paths (user decides):**
+- **(a) Adopt-and-verify:** dispatch story 2.2 to the backenddeveloper subagent with the brief "verify the existing untracked work satisfies all AC, run `yoyo apply` against a fresh container end-to-end, commit if green, flip `done: true`, close issue #15." Cheapest path if the work is correct.
+- **(b) Discard and re-implement:** delete the untracked tree, dispatch story 2.2 normally. Loses ~no real work since this is small scaffolding; gives a clean audit trail. Slowest.
+- **(c) Adopt as-is without verification:** trust the prior work, commit immediately, flip `done: true`. Cheapest but skips the acceptance-criteria verification step — not recommended.
+
+**Recommendation: (a).** The subagent is going to need a fresh container running anyway for story 2.3+, so end-to-end verification of 2.2's container + yoyo path is the same cost whether we treat it as new work or pre-existing work.
+
+### B. `.scratch/create_phase2_issues.py` is the historical issue-creation script (cosmetic)
+
+The issue numbers in the PRD match the issues that script created (#14–#27). No action needed; this is a workspace artifact from the prior session that already did the Step 1 sweep. Step 1 of this re-run is a no-op — all tracking issues already exist, all PRD `tracking_issue:` fields are set, issue #14 (story 2.1) is correctly CLOSED, and #15–#27 are all OPEN. Skip the issue-creation sweep in this run.
+
+### C. Re-confirm: no new design drift since the second brainstorm
+
+- All previously resolved blockers remain resolved in the PRD.
+- The minor findings from pass 2 (app_user grant ordering, deck_view test role, engine_version drift, pgvector tag pin) are unchanged — still subagent-discretion at implementation time, still not blocking.
+- The cascade into phase 3 (story 3.7, story 3.4, story 3.6, context_summary) is intact.
+
+### D. No new external-assumption changes
+
+- pgvector availability on Aurora Postgres 16.4: unchanged — still verified at first `CREATE EXTENSION vector` run.
+- AWS Secrets Manager wiring for `manage_master_user_password`: unchanged.
+
+**Proceed signal: ready for the user's address/proceed call. Specifically: pick (a/b/c) on finding A, and confirm proceed for the rest of the phase.**

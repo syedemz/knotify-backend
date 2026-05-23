@@ -1,0 +1,14 @@
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.2-pg16
+    environment:
+      POSTGRES_USER: knotify
+      POSTGRES_PASSWORD: knotify
+      POSTGRES_DB: knotify
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U knotify -d knotify"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
