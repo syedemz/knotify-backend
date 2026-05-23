@@ -25,7 +25,7 @@ stories:
   - id: 2.2
     title: Schema migration tooling (yoyo-migrations)
     agent: backenddeveloper
-    done: false
+    done: true
     tracking_issue: 15
     depends_on: []
     acceptance_criteria:

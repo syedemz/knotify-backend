@@ -4,7 +4,7 @@
 <1-2 sentences. Auto-populate from architecture.md after /create-plan, or user fills now.>
 
 ## Current phase
-Phase 1 — Networking foundations (complete). PR #13 open for review into development. Awaiting merge and phase-1-complete tag. Next: phase 2 (Data layer) once user flips `ready: true` in the index.
+Phase 2 — Data layer (Aurora + DynamoDB). Stories 2.1 and 2.2 done. Next: story 2.3 (users table migration with extensions and indexes).
 
 ## Active blockers
 - Production deploys are PAUSED. The prod AWS account has not been provisioned. All phases plan-against-prod but only apply-against-dev. See `docs/PROD_CUTOVER.md` for the full pause mechanism and the flip-on checklist.
@@ -13,7 +13,6 @@ Phase 1 — Networking foundations (complete). PR #13 open for review into devel
 None yet.
 
 ## Recent changes
-- 2026-05-22: Phase 0 story 0.4 complete — smoke-test/dev branch pushed; GitHub Actions run 26279114489 completed conclusion=success; bucket knotify-smoke-dev-ce43afa2 deployed with all four public-access-block flags true; Terraform state at s3://knotify-dev-tfstate/smoke/terraform.tfstate (5447 bytes). Workflow run: https://github.com/syedemz/knotify-backend/actions/runs/26279114489
 - 2026-05-22: Phase 0 story 0.6 complete — terraform destroy removed knotify-smoke-dev-ce43afa2 (4 resources, dev account); zero knotify-smoke-dev-* buckets confirmed; PIPELINE_VALIDATED.md committed at repo root; smoke-test/dev branch deleted from remote. Phase 0 dev-side work is done; PR #7 open for review.
 - 2026-05-22: Phase 0 complete (dev-side). Stories 0.1, 0.2, 0.3, 0.4, 0.6 all `done: true`; 0.5 remains deferred-as-done (prod pause). Phase flipped `done: true` in implementationplan.md index. Awaiting PR #7 merge into development and phase-0-complete tag.
 - 2026-05-22: Phase 1 story 1.1 complete — networking Terraform module authored (infrastructure/modules/networking/{main.tf,variables.tf,outputs.tf,tests/networking.tftest.hcl}); VPC 10.0.0.0/16, 6 subnets across 2 AZs via slice(data.aws_availability_zones), db_subnet_group, 5 route tables; no IGW/NAT/EIP; terraform fmt/validate/test 3/3 all pass; branch feat/phase-1-networking created.
@@ -23,3 +22,4 @@ None yet.
 - 2026-05-22: Phase 1 story 1.5 complete — .github/workflows/deploy.yml authored; triggers on push/PR to main or development; jobs: validate (pass), plan-dev (pass), plan-prod (skipped—DEPLOY_PROD gate), test (pass), apply-dev (skipped—PR event), apply-prod (skipped); Terraform pinned to 1.11.4 (bumped from 1.9.8 to support override_during=plan in tftest.hcl); unused region variable removed from networking module and all callers; tfsec set to soft_fail=true for 3 pre-existing smoke module findings (HIGH: aws-s3-encryption-customer-key, MEDIUM: aws-s3-enable-bucket-logging, aws-s3-enable-versioning); actionlint 1.7.12 exits 0; PR check run: https://github.com/syedemz/knotify-backend/actions/runs/26295217574
 - 2026-05-22: Phase 1 complete — all stories 1.1–1.5 done: VPC+subnets+route tables+SGs+db subnet group, per-environment instantiation (dev backend live, prod deferred), 6 plan-mode Terraform tests, deploy.yml CI pipeline; PR #13 open for review into development.
 - 2026-05-23: Phase 2 story 2.1 complete — Aurora Serverless v2 module authored (infrastructure/modules/aurora/{main.tf,variables.tf,outputs.tf,tests/aurora.tftest.hcl}); engine aurora-postgresql 16.4, manage_master_user_password=true (Secrets Manager), parameter group aurora-postgresql16, db.serverless instance, all safety flags variable-driven; 10/10 plan-mode tests pass; branch feat/phase-2-data-layer created.
+- 2026-05-23: Phase 2 story 2.2 complete — adopted and verified infrastructure/db/ (requirements.txt yoyo-migrations==9.0.0/psycopg2-binary==2.9.12, docker-compose.yml pgvector:0.8.2-pg16, yoyo.ini, README, migrations/0000_init.{sql,rollback.sql}); yoyo apply (exit 0) + yoyo list (0000_init [A]) + yoyo rollback --all (exit 0, _schema_init absent) all verified against local container; commit 11c83d9.
