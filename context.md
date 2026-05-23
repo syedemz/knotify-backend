@@ -4,7 +4,7 @@
 <1-2 sentences. Auto-populate from architecture.md after /create-plan, or user fills now.>
 
 ## Current phase
-Phase 2 — Data layer (Aurora + DynamoDB). Stories 2.1 and 2.2 done. Next: story 2.3 (users table migration with extensions and indexes).
+Phase 2 — Data layer (Aurora + DynamoDB). Stories 2.1, 2.2, 2.3, and 2.4 done. Next: story 2.5 (friendships and friend_requests tables).
 
 ## Active blockers
 - Production deploys are PAUSED. The prod AWS account has not been provisioned. All phases plan-against-prod but only apply-against-dev. See `docs/PROD_CUTOVER.md` for the full pause mechanism and the flip-on checklist.
@@ -23,3 +23,5 @@ None yet.
 - 2026-05-22: Phase 1 complete — all stories 1.1–1.5 done: VPC+subnets+route tables+SGs+db subnet group, per-environment instantiation (dev backend live, prod deferred), 6 plan-mode Terraform tests, deploy.yml CI pipeline; PR #13 open for review into development.
 - 2026-05-23: Phase 2 story 2.1 complete — Aurora Serverless v2 module authored (infrastructure/modules/aurora/{main.tf,variables.tf,outputs.tf,tests/aurora.tftest.hcl}); engine aurora-postgresql 16.4, manage_master_user_password=true (Secrets Manager), parameter group aurora-postgresql16, db.serverless instance, all safety flags variable-driven; 10/10 plan-mode tests pass; branch feat/phase-2-data-layer created.
 - 2026-05-23: Phase 2 story 2.2 complete — adopted and verified infrastructure/db/ (requirements.txt yoyo-migrations==9.0.0/psycopg2-binary==2.9.12, docker-compose.yml pgvector:0.8.2-pg16, yoyo.ini, README, migrations/0000_init.{sql,rollback.sql}); yoyo apply (exit 0) + yoyo list (0000_init [A]) + yoyo rollback --all (exit 0, _schema_init absent) all verified against local container; commit 11c83d9.
+- 2026-05-23: Phase 2 story 2.3 complete — migrations 0001_enable_extensions.sql (vector/pg_trgm/pgcrypto) and 0002_create_users.sql (full §5.1 users table: GENERATED age via _age_from_birthday immutable wrapper, email_format CHECK, 4 indexes idx_users_sex_country_religion/idx_users_age/idx_users_prefs_gin/idx_users_vector hnsw) with rollback files; all ACs verified against pgvector:0.8.2-pg16 container; commit 45a9830.
+- 2026-05-23: Phase 2 story 2.4 complete — migration 0003_create_siblings.sql (siblings table per §5.1: sibling_id UUID PK, user_id FK ON DELETE CASCADE, name/gender/sibling_age/marital_status/profession TEXT, created_at TIMESTAMPTZ, idx_siblings_user index) with rollback; cascade-delete verified (BEFORE=1 row, AFTER DELETE user=0 rows); yoyo apply exit 0, rollback clean; commit below.
