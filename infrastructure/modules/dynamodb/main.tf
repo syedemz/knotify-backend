@@ -99,3 +99,103 @@ resource "aws_dynamodb_table" "chat_room_membership" {
     Project     = var.project_name
   }
 }
+
+# ---------------------------------------------------------------------------
+# ChatMessages table
+#
+# PK: room_id (S) — groups all messages in a conversation together.
+# SK: created_at_message_id (S) — ISO-8601 timestamp prefixed sort key that
+#   keeps messages in chronological order within a room, e.g.
+#   "2024-01-15T12:34:56.789Z#<ulid>" (see architecture.md §5.4).
+#
+# stream_enabled: true with NEW_IMAGE — the DynamoDB stream feeds the
+#   Phase 8 chat fan-out Lambda which broadcasts new messages to
+#   connected WebSocket clients. Only the new image is needed to push
+#   the message; old images are irrelevant and excluded to reduce
+#   stream payload size.
+#
+# billing_mode: PAY_PER_REQUEST — same rationale as ChatRooms: bursty,
+#   unpredictable traffic where on-demand pricing avoids over-provisioning.
+# ---------------------------------------------------------------------------
+
+resource "aws_dynamodb_table" "chat_messages" {
+  name         = "ChatMessages"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "room_id"
+  range_key    = "created_at_message_id"
+
+  attribute {
+    name = "room_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "created_at_message_id"
+    type = "S"
+  }
+
+  stream_enabled   = true
+  stream_view_type = "NEW_IMAGE"
+
+  server_side_encryption {
+    enabled = true
+  }
+
+  point_in_time_recovery {
+    enabled = var.point_in_time_recovery_enabled
+  }
+
+  deletion_protection_enabled = var.deletion_protection_enabled
+
+  tags = {
+    Name        = "ChatMessages"
+    Environment = var.environment
+    Project     = var.project_name
+  }
+}
+
+# ---------------------------------------------------------------------------
+# MessageReads table
+#
+# PK: room_id (S), SK: user_id (S)
+#
+# Tracks the last-read cursor per user per room. A single PutItem
+# (upsert) on each received message advances the read pointer; a
+# Query(room_id, user_id) returns that user's read state for a given
+# room, enabling unread-badge counts in the UI (see architecture.md §5.4).
+#
+# No stream needed: reads are transient state not requiring fan-out.
+# ---------------------------------------------------------------------------
+
+resource "aws_dynamodb_table" "message_reads" {
+  name         = "MessageReads"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "room_id"
+  range_key    = "user_id"
+
+  attribute {
+    name = "room_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "user_id"
+    type = "S"
+  }
+
+  server_side_encryption {
+    enabled = true
+  }
+
+  point_in_time_recovery {
+    enabled = var.point_in_time_recovery_enabled
+  }
+
+  deletion_protection_enabled = var.deletion_protection_enabled
+
+  tags = {
+    Name        = "MessageReads"
+    Environment = var.environment
+    Project     = var.project_name
+  }
+}

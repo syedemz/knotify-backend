@@ -7,3 +7,18 @@ output "chat_room_membership_table_name" {
   description = "Name of the ChatRoomMembership DynamoDB table"
   value       = aws_dynamodb_table.chat_room_membership.name
 }
+
+output "chat_messages_table_name" {
+  description = "Name of the ChatMessages DynamoDB table"
+  value       = aws_dynamodb_table.chat_messages.name
+}
+
+output "message_reads_table_name" {
+  description = "Name of the MessageReads DynamoDB table"
+  value       = aws_dynamodb_table.message_reads.name
+}
+
+output "chat_messages_stream_arn" {
+  description = "DynamoDB stream ARN for the ChatMessages table, consumed by the Phase 8 chat fan-out Lambda"
+  value       = aws_dynamodb_table.chat_messages.stream_arn
+}
