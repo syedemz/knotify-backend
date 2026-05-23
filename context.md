@@ -4,7 +4,7 @@
 <1-2 sentences. Auto-populate from architecture.md after /create-plan, or user fills now.>
 
 ## Current phase
-Phase 2 — Data layer (Aurora + DynamoDB). Stories 2.1, 2.2, 2.3, and 2.4 done. Next: story 2.5 (friendships and friend_requests tables).
+Phase 2 — Data layer (Aurora + DynamoDB). Stories 2.1, 2.2, 2.3, 2.4, 2.5, and 2.6 done. Next: story 2.7 (Row-Level Security policy for gender visibility).
 
 ## Active blockers
 - Production deploys are PAUSED. The prod AWS account has not been provisioned. All phases plan-against-prod but only apply-against-dev. See `docs/PROD_CUTOVER.md` for the full pause mechanism and the flip-on checklist.
@@ -25,3 +25,5 @@ None yet.
 - 2026-05-23: Phase 2 story 2.2 complete — adopted and verified infrastructure/db/ (requirements.txt yoyo-migrations==9.0.0/psycopg2-binary==2.9.12, docker-compose.yml pgvector:0.8.2-pg16, yoyo.ini, README, migrations/0000_init.{sql,rollback.sql}); yoyo apply (exit 0) + yoyo list (0000_init [A]) + yoyo rollback --all (exit 0, _schema_init absent) all verified against local container; commit 11c83d9.
 - 2026-05-23: Phase 2 story 2.3 complete — migrations 0001_enable_extensions.sql (vector/pg_trgm/pgcrypto) and 0002_create_users.sql (full §5.1 users table: GENERATED age via _age_from_birthday immutable wrapper, email_format CHECK, 4 indexes idx_users_sex_country_religion/idx_users_age/idx_users_prefs_gin/idx_users_vector hnsw) with rollback files; all ACs verified against pgvector:0.8.2-pg16 container; commit 45a9830.
 - 2026-05-23: Phase 2 story 2.4 complete — migration 0003_create_siblings.sql (siblings table per §5.1: sibling_id UUID PK, user_id FK ON DELETE CASCADE, name/gender/sibling_age/marital_status/profession TEXT, created_at TIMESTAMPTZ, idx_siblings_user index) with rollback; cascade-delete verified (BEFORE=1 row, AFTER DELETE user=0 rows); yoyo apply exit 0, rollback clean; commit b8536f0.
+- 2026-05-23: Phase 2 story 2.5 complete — migrations 0004_create_friendships.sql ((user_a,user_b) PK, CHECK user_a < user_b, both FKs ON DELETE CASCADE, idx_friendships_b) and 0005_create_friend_requests.sql (request_id UUID PK, status CHECK in pending/accepted/declined/cancelled, UNIQUE(from_user_id,to_user_id,status), idx_fr_to_pending, idx_fr_from_pending) with rollback files; constraint violations confirmed (friendships_check and friend_requests_status_check both reject invalid rows); yoyo apply/rollback exit 0; commit 983d211.
+- 2026-05-23: Phase 2 story 2.6 complete — migration 0006_create_bookmarks_and_blocks.sql (bookmarks: composite PK(user_id,bookmarked_user_id), both FKs ON DELETE CASCADE, idx_bookmarks_target; blocks: composite PK(blocker_id,blocked_id), both FKs ON DELETE CASCADE, idx_blocks_blocked) with rollback; cascade-delete verified for both tables (count 1→0 on user delete); yoyo apply/rollback/re-apply exit 0; docker compose down -v clean.
