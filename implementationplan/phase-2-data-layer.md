@@ -1,6 +1,6 @@
 phase: 2
 title: Data layer (Aurora + DynamoDB)
-last_updated: 2026-05-23  # story 2.6 done
+last_updated: 2026-05-23  # story 2.7 done
 
 context_summary: |
   Provisions the entire persistent data layer. Aurora Serverless v2 cluster (Postgres 16.4 with vector, pg_trgm, pgcrypto extensions loaded via CREATE EXTENSION), the full relational schema from §5.1 of architecture.md (users, siblings, friendships, friend_requests, bookmarks, blocks) with the immutable-fields trigger, the RLS gender-isolation policy, and the deck_view materialized view per the owner's resolved §13 #4. DynamoDB tables (ChatRooms, ChatRoomMembership, ChatMessages with Streams enabled, MessageReads, Notifications with Streams enabled and the UnreadIndex GSI, PushNotificationTokens). Schema migration tooling is selected here (yoyo-migrations, locked in via 2026-05-23 brainstorm) and reused by all later phases that touch the DB. Migrations are validated against a local Postgres 16 Docker container in this phase; the cluster-side migration run is deferred to phase 3 (Lambda foundations), which will stand up a migrator Lambda inside the VPC. Subsequent phases (Lambda foundations, Cognito trigger, domain Lambdas, match, chat) all assume this layer is in place. Per-environment wiring authors both dev and prod main.tf; only dev is applied (prod is paused per docs/PROD_CUTOVER.md). Findings from phasebrainstorms/phase-2-data-layer-brainstorm.md drove the changes from the 2026-05-21 draft.
@@ -87,7 +87,7 @@ stories:
   - id: 2.7
     title: Row-Level Security policy for gender visibility
     agent: backenddeveloper
-    done: false
+    done: true
     tracking_issue: 20
     depends_on: [2.3]
     acceptance_criteria:
