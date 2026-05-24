@@ -10,9 +10,9 @@ variable "environment" {
 # ---------------------------------------------------------------------------
 
 variable "aurora_min_acu" {
-  description = "Minimum Aurora Capacity Units for Serverless v2 (dev: 0.5, prod: 1.0)"
+  description = "Minimum Aurora Capacity Units for Serverless v2 (dev: 0 → scale-to-zero auto-pause; prod: 1.0)"
   type        = number
-  default     = 0.5
+  default     = 0
 }
 
 variable "aurora_max_acu" {

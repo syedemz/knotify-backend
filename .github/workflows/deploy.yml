@@ -5,6 +5,29 @@ on:
     branches: [main, development]
   pull_request:
     branches: [main, development]
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Action to perform (manual run only)"
+        required: true
+        type: choice
+        options:
+          - none
+          - destroy
+        default: none
+      environment:
+        description: "Environment to act on"
+        required: true
+        type: choice
+        options:
+          - dev
+          - prod
+        default: dev
+      confirm:
+        description: 'Type DESTROY (uppercase) to authorize a destroy run; ignored when action=none'
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -211,3 +234,33 @@ jobs:
 
       - name: Terraform apply
         run: terraform -chdir=infrastructure/environments/prod apply -auto-approve tfplan
+
+  destroy:
+    name: Destroy (manual)
+    needs: [validate]
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.action == 'destroy' &&
+      inputs.confirm == 'DESTROY'
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: eu-central-1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.11.4"
+
+      - name: Terraform init
+        run: terraform -chdir=infrastructure/environments/${{ inputs.environment }} init
+
+      - name: Terraform destroy
+        run: >
+          terraform -chdir=infrastructure/environments/${{ inputs.environment }}
+          destroy -auto-approve -var-file=${{ inputs.environment }}.tfvars

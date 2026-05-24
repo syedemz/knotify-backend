@@ -79,8 +79,8 @@ run "cluster_network_isolation" {
 
 # ---------------------------------------------------------------------------
 # Test 3: Serverless v2 scaling configuration uses dev defaults
-# Satisfies AC: serverlessv2_scaling_configuration min_acu=0.5, max_acu=2.0
-# for dev (the module default)
+# Satisfies AC: serverlessv2_scaling_configuration min_acu=0 (scale-to-zero
+# auto-pause), max_acu=2.0 for dev (the module default).
 # ---------------------------------------------------------------------------
 run "serverlessv2_scaling_defaults" {
   command = plan
@@ -91,12 +91,12 @@ run "serverlessv2_scaling_defaults" {
     database_name            = "knotify"
     aurora_security_group_id = "sg-aurora-mock-id"
     db_subnet_group_name     = "knotify-test-db-subnets"
-    # min_acu and max_acu use module defaults (0.5 / 2.0)
+    # min_acu and max_acu use module defaults (0 / 2.0)
   }
 
   assert {
-    condition     = aws_rds_cluster.this.serverlessv2_scaling_configuration[0].min_capacity == 0.5
-    error_message = "dev min_acu default must be 0.5"
+    condition     = aws_rds_cluster.this.serverlessv2_scaling_configuration[0].min_capacity == 0
+    error_message = "dev min_acu default must be 0 (scale-to-zero auto-pause)"
   }
 
   assert {
