@@ -11,9 +11,9 @@ run "chat_rooms_billing_mode_and_hash_key" {
   command = plan
 
   variables {
-    environment                  = "dev"
+    environment                    = "dev"
     point_in_time_recovery_enabled = false
-    deletion_protection_enabled  = false
+    deletion_protection_enabled    = false
   }
 
   assert {
@@ -42,9 +42,9 @@ run "chat_room_membership_keys_and_billing" {
   command = plan
 
   variables {
-    environment                  = "dev"
+    environment                    = "dev"
     point_in_time_recovery_enabled = false
-    deletion_protection_enabled  = false
+    deletion_protection_enabled    = false
   }
 
   assert {
@@ -85,9 +85,9 @@ run "server_side_encryption_enabled" {
   command = plan
 
   variables {
-    environment                  = "dev"
+    environment                    = "dev"
     point_in_time_recovery_enabled = false
-    deletion_protection_enabled  = false
+    deletion_protection_enabled    = false
   }
 
   assert {
@@ -109,9 +109,9 @@ run "tags_present_in_dev" {
   command = plan
 
   variables {
-    environment                  = "dev"
+    environment                    = "dev"
     point_in_time_recovery_enabled = false
-    deletion_protection_enabled  = false
+    deletion_protection_enabled    = false
   }
 
   assert {
@@ -144,9 +144,9 @@ run "dev_safety_flags" {
   command = plan
 
   variables {
-    environment                  = "dev"
+    environment                    = "dev"
     point_in_time_recovery_enabled = false
-    deletion_protection_enabled  = false
+    deletion_protection_enabled    = false
   }
 
   assert {
@@ -182,9 +182,9 @@ run "prod_safety_flags" {
   command = plan
 
   variables {
-    environment                  = "prod"
+    environment                    = "prod"
     point_in_time_recovery_enabled = true
-    deletion_protection_enabled  = true
+    deletion_protection_enabled    = true
   }
 
   assert {
@@ -571,7 +571,7 @@ run "notifications_unread_index_gsi" {
   assert {
     condition = anytrue([
       for gsi in aws_dynamodb_table.notifications.global_secondary_index :
-        gsi.name == "UnreadIndex" && gsi.hash_key == "user_id" && gsi.range_key == "notification_id"
+      gsi.name == "UnreadIndex" && gsi.hash_key == "user_id" && gsi.range_key == "notification_id"
     ])
     error_message = "Notifications must have UnreadIndex GSI with PK user_id and SK notification_id"
   }
@@ -792,5 +792,73 @@ run "push_notification_tokens_tags" {
   assert {
     condition     = aws_dynamodb_table.push_notification_tokens.tags["Project"] == "knotify"
     error_message = "PushNotificationTokens Project tag must be knotify"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 27: All 6 DynamoDB tables use billing_mode PAY_PER_REQUEST
+# Satisfies story 2.14 AC: billing_mode=PAY_PER_REQUEST on every table
+# ---------------------------------------------------------------------------
+run "all_tables_pay_per_request" {
+  command = plan
+
+  variables {
+    environment                    = "dev"
+    point_in_time_recovery_enabled = false
+    deletion_protection_enabled    = false
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.chat_rooms.billing_mode == "PAY_PER_REQUEST"
+    error_message = "ChatRooms billing_mode must be PAY_PER_REQUEST"
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.chat_room_membership.billing_mode == "PAY_PER_REQUEST"
+    error_message = "ChatRoomMembership billing_mode must be PAY_PER_REQUEST"
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.chat_messages.billing_mode == "PAY_PER_REQUEST"
+    error_message = "ChatMessages billing_mode must be PAY_PER_REQUEST"
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.message_reads.billing_mode == "PAY_PER_REQUEST"
+    error_message = "MessageReads billing_mode must be PAY_PER_REQUEST"
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.notifications.billing_mode == "PAY_PER_REQUEST"
+    error_message = "Notifications billing_mode must be PAY_PER_REQUEST"
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.push_notification_tokens.billing_mode == "PAY_PER_REQUEST"
+    error_message = "PushNotificationTokens billing_mode must be PAY_PER_REQUEST"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 28: ChatMessages and Notifications have stream_enabled=true
+# Satisfies story 2.14 AC: stream_enabled=true on ChatMessages and Notifications
+# ---------------------------------------------------------------------------
+run "streaming_tables_have_stream_enabled" {
+  command = plan
+
+  variables {
+    environment                    = "dev"
+    point_in_time_recovery_enabled = false
+    deletion_protection_enabled    = false
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.chat_messages.stream_enabled == true
+    error_message = "ChatMessages stream_enabled must be true"
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.notifications.stream_enabled == true
+    error_message = "Notifications stream_enabled must be true"
   }
 }

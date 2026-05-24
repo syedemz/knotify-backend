@@ -1,5 +1,5 @@
 project: knotify-backend
-last_updated: 2026-05-23
+last_updated: 2026-05-23  # phase 2 complete
 
 phases:
 
@@ -19,7 +19,7 @@ phases:
   title: Data layer (Aurora + DynamoDB)
   file: implementationplan/phase-2-data-layer.md
   ready: true
-  done: false
+  done: true
 
 - phase: 3
   title: Lambda foundations
