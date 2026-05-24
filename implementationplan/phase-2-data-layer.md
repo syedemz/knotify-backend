@@ -1,6 +1,6 @@
 phase: 2
 title: Data layer (Aurora + DynamoDB)
-last_updated: 2026-05-23
+last_updated: 2026-05-23  # story 2.14 done — phase complete
 
 context_summary: |
   Provisions the entire persistent data layer. Aurora Serverless v2 cluster (Postgres 16.4 with vector, pg_trgm, pgcrypto extensions loaded via CREATE EXTENSION), the full relational schema from §5.1 of architecture.md (users, siblings, friendships, friend_requests, bookmarks, blocks) with the immutable-fields trigger, the RLS gender-isolation policy, and the deck_view materialized view per the owner's resolved §13 #4. DynamoDB tables (ChatRooms, ChatRoomMembership, ChatMessages with Streams enabled, MessageReads, Notifications with Streams enabled and the UnreadIndex GSI, PushNotificationTokens). Schema migration tooling is selected here (yoyo-migrations, locked in via 2026-05-23 brainstorm) and reused by all later phases that touch the DB. Migrations are validated against a local Postgres 16 Docker container in this phase; the cluster-side migration run is deferred to phase 3 (Lambda foundations), which will stand up a migrator Lambda inside the VPC. Subsequent phases (Lambda foundations, Cognito trigger, domain Lambdas, match, chat) all assume this layer is in place. Per-environment wiring authors both dev and prod main.tf; only dev is applied (prod is paused per docs/PROD_CUTOVER.md). Findings from phasebrainstorms/phase-2-data-layer-brainstorm.md drove the changes from the 2026-05-21 draft.
@@ -9,7 +9,8 @@ stories:
   - id: 2.1
     title: Aurora cluster Terraform module
     agent: backenddeveloper
-    done: false
+    done: true
+    tracking_issue: 14
     depends_on: []
     acceptance_criteria:
       - File infrastructure/modules/aurora/main.tf creates an aws_rds_cluster with engine "aurora-postgresql", engine_version pinned to "16.4", auto_minor_version_upgrade true, engine_mode default (Serverless v2), serverlessv2_scaling_configuration min/max ACU configurable by variable (dev defaults min_acu=0.5, max_acu=2.0; prod defaults min_acu=1.0, max_acu=8.0), storage_encrypted true, deletion_protection true in prod and false in dev (variable-driven), skip_final_snapshot true in dev and false in prod (variable-driven), apply_immediately true in dev and false in prod (variable-driven), backup_retention_period 7 in dev and 30 in prod
@@ -24,7 +25,8 @@ stories:
   - id: 2.2
     title: Schema migration tooling (yoyo-migrations)
     agent: backenddeveloper
-    done: false
+    done: true
+    tracking_issue: 15
     depends_on: []
     acceptance_criteria:
       - yoyo-migrations is the migration runner; raw .sql migrations live under infrastructure/db/migrations/ as numbered files (e.g., 0001_enable_extensions.sql, 0002_create_users.sql)
@@ -38,7 +40,8 @@ stories:
   - id: 2.3
     title: users table migration with extensions and indexes
     agent: backenddeveloper
-    done: false
+    done: true
+    tracking_issue: 16
     depends_on: [2.2]
     acceptance_criteria:
       - First migration enables extensions vector, pg_trgm, pgcrypto
@@ -50,7 +53,8 @@ stories:
   - id: 2.4
     title: siblings table migration
     agent: backenddeveloper
-    done: false
+    done: true
+    tracking_issue: 17
     depends_on: [2.3]
     acceptance_criteria:
       - Migration creates the siblings table per §5.1 with ON DELETE CASCADE to users(user_id) and the idx_siblings_user index
@@ -60,7 +64,8 @@ stories:
   - id: 2.5
     title: friendships and friend_requests tables
     agent: backenddeveloper
-    done: false
+    done: true
+    tracking_issue: 18
     depends_on: [2.3]
     acceptance_criteria:
       - Migration creates friendships with the (user_a, user_b) primary key, the CHECK (user_a < user_b) constraint, both FKs ON DELETE CASCADE, and the idx_friendships_b index
@@ -71,7 +76,8 @@ stories:
   - id: 2.6
     title: bookmarks and blocks tables
     agent: backenddeveloper
-    done: false
+    done: true
+    tracking_issue: 19
     depends_on: [2.3]
     acceptance_criteria:
       - Migration creates bookmarks (composite PK, both FKs CASCADE, idx_bookmarks_target) per §5.1
@@ -81,7 +87,8 @@ stories:
   - id: 2.7
     title: Row-Level Security policy for gender visibility
     agent: backenddeveloper
-    done: false
+    done: true
+    tracking_issue: 20
     depends_on: [2.3]
     acceptance_criteria:
       - A migration creates a dedicated non-superuser, non-BYPASSRLS application role (e.g., `app_user`) with SELECT/INSERT/UPDATE on users (and other §5.1 tables, scoped as needed). This role is the role under which Lambda will connect in phase 3 and is the role the RLS integration tests must use — connecting as the master would bypass RLS and make the tests theater.
@@ -93,7 +100,8 @@ stories:
   - id: 2.8
     title: Immutable-fields trigger on users
     agent: backenddeveloper
-    done: false
+    done: true
+    tracking_issue: 21
     depends_on: [2.3]
     acceptance_criteria:
       - Migration creates the enforce_immutable_fields trigger function and the trg_users_immutable BEFORE UPDATE trigger per §5.7 of architecture.md
@@ -104,7 +112,8 @@ stories:
   - id: 2.9
     title: deck_view materialized view and refresh function
     agent: backenddeveloper
-    done: false
+    done: true
+    tracking_issue: 22
     depends_on: [2.3]
     acceptance_criteria:
       - Migration creates the deck_view materialized view exactly as specified in §5.1 of architecture.md with the unique index idx_deck_user
@@ -115,7 +124,8 @@ stories:
   - id: 2.10
     title: DynamoDB ChatRooms and ChatRoomMembership tables
     agent: backenddeveloper
-    done: false
+    done: true
+    tracking_issue: 23
     depends_on: []
     acceptance_criteria:
       - File infrastructure/modules/dynamodb/main.tf creates aws_dynamodb_table for ChatRooms (PK room_id string, billing_mode PAY_PER_REQUEST, point_in_time_recovery enabled in prod and disabled in dev via variable)
@@ -128,7 +138,8 @@ stories:
   - id: 2.11
     title: DynamoDB ChatMessages and MessageReads tables with stream
     agent: backenddeveloper
-    done: false
+    done: true
+    tracking_issue: 24
     depends_on: [2.10]
     acceptance_criteria:
       - ChatMessages table (PK room_id string, SK created_at_message_id sortable string per architecture §5.4) has stream_enabled true with stream_view_type NEW_IMAGE, billing_mode PAY_PER_REQUEST
@@ -141,7 +152,8 @@ stories:
   - id: 2.12
     title: DynamoDB Notifications table with stream and UnreadIndex GSI
     agent: backenddeveloper
-    done: false
+    done: true
+    tracking_issue: 25
     depends_on: [2.10]
     acceptance_criteria:
       - Notifications table (PK user_id string, SK created_at_notification_id sortable string per architecture §5.4) created with billing_mode PAY_PER_REQUEST and stream_enabled true (stream_view_type NEW_IMAGE)
@@ -155,7 +167,8 @@ stories:
   - id: 2.13
     title: DynamoDB PushNotificationTokens table
     agent: backenddeveloper
-    done: false
+    done: true
+    tracking_issue: 26
     depends_on: [2.10]
     acceptance_criteria:
       - PushNotificationTokens table (PK user_id string, SK device_id string) created with billing_mode PAY_PER_REQUEST and server_side_encryption enabled
@@ -166,7 +179,8 @@ stories:
   - id: 2.14
     title: Per-environment data-layer wiring and Terraform tests
     agent: backenddeveloper
-    done: false
+    done: true
+    tracking_issue: 27
     depends_on: [2.1, 2.10, 2.11, 2.12, 2.13]
     acceptance_criteria:
       - Both infrastructure/environments/dev/main.tf and prod/main.tf instantiate the aurora and dynamodb modules wired to the networking outputs from phase 1 (vpc_id, private_subnet_ids via the db_subnet_group_name, aurora_security_group_id). Both environments are authored so `terraform plan` against either env runs cleanly in CI; only the dev environment is applied. Prod apply remains gated per docs/PROD_CUTOVER.md and the existing deploy.yml gate from phase 1.

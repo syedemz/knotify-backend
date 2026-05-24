@@ -1,0 +1,188 @@
+# Database migrations — knotify-backend
+
+This directory contains the schema migration tooling for knotify-backend.
+Migrations are plain SQL files managed by [yoyo-migrations](https://ollycope.com/software/yoyo/latest/).
+
+---
+
+## Requirements
+
+- Python 3.10 or later (any modern 3.10+ works; production Lambdas run 3.14 per phase 3)
+- Docker and Docker Compose (for the local Postgres container)
+
+Install Python dependencies:
+
+```bash
+pip install -r infrastructure/db/requirements.txt
+```
+
+The `requirements.txt` pins:
+
+| Package | Version |
+|---|---|
+| `yoyo-migrations` | 9.0.0 |
+| `psycopg2-binary` | 2.9.12 |
+
+---
+
+## Migration file naming convention
+
+Migration files live in `infrastructure/db/migrations/` and follow the pattern:
+
+```
+<number>_<short_description>.sql
+<number>_<short_description>.rollback.sql
+```
+
+Rules:
+
+- `<number>` is a zero-padded 4-digit integer, incrementing by 1: `0000`, `0001`, `0002`, …
+- `<short_description>` uses underscores, all lowercase, describes what the migration does.
+- Every `.sql` (up) file should have a corresponding `.rollback.sql` file where reversal is meaningful.
+- `0000_init.sql` is the harness sentinel: it validates tooling only. Real application migrations start at `0001` (story 2.3 — enable extensions + users table).
+
+Examples:
+
+```
+0000_init.sql                    ← harness sentinel (this story)
+0000_init.rollback.sql
+0001_enable_extensions.sql       ← story 2.3
+0001_enable_extensions.rollback.sql
+0002_create_users.sql            ← story 2.3
+0002_create_users.rollback.sql
+```
+
+yoyo applies migrations in ascending numeric order and tracks applied migrations in the `_yoyo_migration` table (see "yoyo tracking tables" below).
+
+---
+
+## Local workflow
+
+### 1. Start the Postgres container
+
+```bash
+cd infrastructure/db
+docker compose up -d
+```
+
+The container uses image `pgvector/pgvector:0.8.2-pg16`, which ships Postgres 16 with
+the `vector` and `pg_trgm` extensions pre-installed. It listens on `localhost:5432`.
+
+Wait for the health check to pass before running migrations:
+
+```bash
+docker compose ps   # STATUS should show "(healthy)"
+```
+
+### 2. Apply all migrations
+
+```bash
+cd infrastructure/db
+yoyo apply
+```
+
+yoyo reads `yoyo.ini` in the current directory for the database URL and migrations path.
+On a fresh database this applies every `.sql` file in numeric order and exits 0.
+Running `yoyo apply` a second time on the same database is a no-op (idempotent).
+
+Expected output (first run):
+
+```
+Applying 0000_init ...
+1 migration applied.
+```
+
+### 3. List migration status
+
+```bash
+yoyo list
+```
+
+After a successful apply, every migration is shown as `[A]` (applied) with zero pending:
+
+```
+[A] 0000_init
+```
+
+### 4. Roll back the last migration
+
+```bash
+yoyo rollback
+```
+
+yoyo runs the corresponding `.rollback.sql` file and reverts the migration. The migration
+moves from `[A]` back to `[U]` (unapplied) and `yoyo list` shows it as pending again.
+
+To roll back all migrations in reverse order:
+
+```bash
+yoyo rollback --all
+```
+
+### 5. Tear down the container
+
+```bash
+docker compose down -v
+```
+
+The `-v` flag removes the named volume so the next `docker compose up` starts from a
+completely clean database.
+
+---
+
+## yoyo tracking tables
+
+On first `yoyo apply`, yoyo automatically creates three tables in the `public` schema:
+
+| Table | Purpose |
+|---|---|
+| `_yoyo_migration` | Records each applied migration ID and timestamp |
+| `_yoyo_log` | Audit log of every apply/rollback operation |
+| `_yoyo_lock` | Advisory lock to prevent concurrent runs |
+
+These tables are created and managed entirely by yoyo. They are not part of the
+application schema and should not be modified manually. They are expected to exist
+alongside application tables — future readers should not treat them as schema drift.
+
+---
+
+## Overriding the database URL
+
+The default URL in `yoyo.ini` targets the local docker-compose container:
+
+```
+postgresql://knotify:knotify@localhost:5432/knotify
+```
+
+To target a different host, pass `--database` on the command line:
+
+```bash
+yoyo apply --database "postgresql://user:pass@host:5432/dbname"
+```
+
+Or export the environment variable (yoyo respects it):
+
+```bash
+export YOYO_DATABASE="postgresql://user:pass@host:5432/dbname"
+yoyo apply
+```
+
+---
+
+## Cluster-side migration flow (deferred to phase 3)
+
+Running yoyo against the Aurora dev/prod clusters is **out of scope for phase 2**.
+
+Aurora clusters are in private subnets with `publicly_accessible = false` and no
+public egress path for a developer laptop. Phase 2 validates migrations only against
+the local docker-compose container.
+
+The cluster-side run is introduced in **phase 3, story 3.7 — DB migrator Lambda**.
+That Lambda executes inside the VPC, connects to Aurora via the private endpoint,
+and runs `yoyo apply` as part of the Lambda foundations phase. The IAM role and
+Secrets Manager credential wiring for that Lambda are also defined in phase 3
+(story 3.4 and story 3.6).
+
+Until phase 3 is deployed, the Aurora cluster schema is managed manually for any
+one-off access (e.g., via SSM Session Manager port-forward to a temporary bastion),
+but no automated path exists in phase 2.

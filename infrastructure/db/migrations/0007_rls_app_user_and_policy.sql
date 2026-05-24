@@ -1,0 +1,110 @@
+-- Migration 0007: app_user role, grants, and RLS policy for gender visibility
+--
+-- Purpose
+-- -------
+-- Implements the "gender isolation" enforcement layer described in architecture.md §5.2.
+-- Two concerns are combined here intentionally — the app_user role is the bearer of the
+-- RLS policy, so creating the role without the policy (or vice-versa) leaves the system
+-- in a partial state that is harder to roll back cleanly.
+--
+-- What this migration does
+-- ------------------------
+-- 1. Creates the `app_user` login role.
+--      - LOGIN so Lambda (phase 3) can open a connection.
+--      - NOT SUPERUSER, no BYPASSRLS — RLS must apply to this role.
+--      - Password is 'app_user' for local dev only. In dev/prod Aurora the credential
+--        is stored in Secrets Manager (manage_master_user_password path, story 2.1).
+--        Lambda fetches it at runtime; this static password is never committed to the
+--        Aurora cluster — this migration is applied to the local docker-compose
+--        container only in this phase.
+--
+-- 2. Grants USAGE on the public schema and DML rights on every §5.1 table to app_user.
+--    All six tables exist by now (migrations 0002–0006 ran first).
+--    DELETE is intentionally withheld — cascades on FK columns handle removal.
+--
+-- 3. Enables and forces RLS on the `users` table.
+--    ENABLE ROW LEVEL SECURITY — turns on the RLS machinery.
+--    FORCE ROW LEVEL SECURITY  — applies the policy even to the table owner.
+--    Both are required so that any connection (including Lambda using a role that owns
+--    or has broad rights on the table) is still filtered.
+--
+-- 4. Creates the policy `users_opposite_sex_only` per architecture.md §5.2 verbatim:
+--      sex != current_setting('app.requesting_user_sex', true)
+--      OR user_id = current_setting('app.requesting_user_id', true)::uuid
+--
+--    Behavior when GUCs are set (the normal Lambda path):
+--      - The row for the requesting user's own profile passes via the OR branch.
+--      - Rows for users of the opposite sex pass via the != branch.
+--      - Rows for users of the SAME sex (excluding the requester's own row) are filtered.
+--
+--    Behavior when GUCs are NOT set (missing_ok = true returns NULL):
+--      - NULL != NULL  → NULL  (row filtered)
+--      - user_id = NULL::uuid → NULL  (row filtered)
+--      - NULL OR NULL  → NULL  (row filtered — fail-closed, as intended)
+--    This is defense-in-depth: Lambda MUST set GUCs before any query, and the DB
+--    enforces this contract by returning nothing if it is not honored.
+
+-- ---------------------------------------------------------------------------
+-- Step 1: application role
+-- ---------------------------------------------------------------------------
+
+CREATE ROLE app_user WITH
+    LOGIN
+    NOSUPERUSER
+    NOCREATEDB
+    NOCREATEROLE
+    NOREPLICATION
+    -- NOBYPASSRLS is the default, stated explicitly for clarity
+    NOBYPASSRLS
+    PASSWORD 'app_user';    -- local dev only; Aurora credential via Secrets Manager
+
+-- ---------------------------------------------------------------------------
+-- Step 2: schema and table grants
+-- ---------------------------------------------------------------------------
+
+-- Schema: allow app_user to resolve objects in public
+GRANT USAGE ON SCHEMA public TO app_user;
+
+-- users — SELECT (filtered by RLS), INSERT (new profile), UPDATE (mutable fields)
+GRANT SELECT, INSERT, UPDATE ON TABLE users TO app_user;
+
+-- siblings — read/write; deletions cascade from users
+GRANT SELECT, INSERT, UPDATE ON TABLE siblings TO app_user;
+
+-- friendships — read/write; deletions cascade from users
+GRANT SELECT, INSERT, UPDATE ON TABLE friendships TO app_user;
+
+-- friend_requests — read/write; deletions cascade from users
+GRANT SELECT, INSERT, UPDATE ON TABLE friend_requests TO app_user;
+
+-- bookmarks — read/write; deletions cascade from users
+GRANT SELECT, INSERT, UPDATE ON TABLE bookmarks TO app_user;
+
+-- blocks — read/write; deletions cascade from users
+GRANT SELECT, INSERT, UPDATE ON TABLE blocks TO app_user;
+
+-- ---------------------------------------------------------------------------
+-- Step 3: enable and force RLS on the users table
+-- ---------------------------------------------------------------------------
+
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE users FORCE ROW LEVEL SECURITY;
+
+-- ---------------------------------------------------------------------------
+-- Step 4: create the gender-visibility policy (§5.2 verbatim)
+-- ---------------------------------------------------------------------------
+
+-- FOR SELECT only — the AC specifies this command scope.
+-- INSERT/UPDATE/DELETE on users are performed by trusted paths (Lambda with the
+-- correct GUC set, or migration/seed scripts running as the table owner), so
+-- those commands do not need an additional RLS policy; FORCE ROW LEVEL SECURITY
+-- does not block INSERT/UPDATE/DELETE for the table owner by default unless a
+-- WITH CHECK policy exists — none is required here.
+
+CREATE POLICY users_opposite_sex_only
+    ON users
+    FOR SELECT
+    USING (
+        sex != current_setting('app.requesting_user_sex', true)
+        OR user_id = current_setting('app.requesting_user_id', true)::uuid
+    );

@@ -180,3 +180,82 @@ All four blockers and the significant gaps have been addressed in the phase-2 PR
 - Finding #15 (missing 2.14 → 2.2 depends_on): no longer relevant — with cluster-side migration deferred to phase 3, story 2.14 no longer needs the migration runner.
 
 The PRD is now internally consistent and ready for dispatch. Proceed signal: user picks `proceed`.
+
+---
+
+## 2026-05-23 (re-run) brainstorm — verification pass on the edited PRD
+
+Re-audited the PRD after the user committed the edits (commit 948d570). All four prior blockers are resolved. The cascade into phase 3 (story 3.7 + 3.4 + 3.6 + context_summary edits) is in place. Remaining findings are minor and would not block dispatch:
+
+### Minor — story 2.7 app_user grants ordering
+
+AC 1 says app_user gets "SELECT/INSERT/UPDATE on users (and other §5.1 tables, scoped as needed)". The implementation detail not yet pinned: in what migration order does this grant happen, and which tables does "other §5.1 tables" cover?
+
+If app_user is created in a migration that runs BEFORE the migrations creating siblings/friendships/friend_requests/bookmarks/blocks, the grants on those tables will fail because the tables don't exist yet. Two clean fixes the subagent can pick:
+
+- **Option A:** order the migration files so app_user creation comes LAST (after all table-creation migrations). Story 2.7 already depends on 2.3 (users), but not on 2.4/2.5/2.6 — adding those to the depends_on list, OR explicitly numbering 2.7's migration as e.g. 0010_ (after 0002_users through 0009_blocks), makes the order explicit.
+- **Option B:** in the same migration that creates app_user, run `ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public GRANT SELECT, INSERT, UPDATE ON TABLES TO app_user` BEFORE any tables are created, then create the user first, then create tables. This way every future table picks up the grant automatically.
+
+Either is fine; the subagent picks at implementation time. Not blocking — the subagent will hit it during integration testing if they pick the wrong order, and the fix is small.
+
+### Minor — story 2.9 deck_view test role unclear
+
+AC says "Integration test inserts a user … runs refresh_deck_view() … SELECT FROM deck_view returns that user". Doesn't say which role. Materialized views don't honor RLS (they're snapshots), so this isn't a correctness issue, but consistency-wise the test should declare the role explicitly (master for the insert + refresh, app_user for the SELECT — to mirror how Lambda will read it). Not blocking — drift is small.
+
+### Minor — Aurora module test asserting `engine_version="16.4"` will fail on AWS minor bumps
+
+Story 2.14 AC 4 asserts `engine_version="16.4"`. Combined with `auto_minor_version_upgrade = true` (AC 1 of 2.1), AWS will eventually upgrade the cluster to 16.5, 16.6, etc., and a subsequent `terraform refresh` will show drift in state. The test, however, runs at plan time against the Terraform code, not against actual AWS state — so the test itself won't break. But the drift in state will surprise the next operator.
+
+Mitigation (optional, the subagent can defer to phase 11 hardening): use `lifecycle { ignore_changes = [engine_version] }` so Terraform doesn't fight AWS-applied minor upgrades. Or set `auto_minor_version_upgrade = false` until a maintenance window strategy exists. Not blocking — first apply will work; the drift surfaces later.
+
+### Minor — pgvector image tag pinning
+
+Story 2.2 AC 4 says `image pgvector/pgvector:pg16 or equivalent`. That tag is a moving target — could pull a different pgvector version on each `docker-compose up`. Pin to a specific tag (e.g., `pgvector/pgvector:pg16-0.7.4`) for reproducibility. Subagent can pick the exact tag at implementation.
+
+### No new blockers
+
+The PRD is internally consistent and dispatch-ready. The three minor items above are best resolved during implementation, not by another PRD edit cycle — they're "subagent picks one of two equally-good options" decisions, not "the spec is wrong" findings.
+
+**Proceed signal: ready for the user's address/proceed call.**
+
+---
+
+## 2026-05-23 19:55 brainstorm — third pass, post-story-2.1 re-run audit
+
+Re-audited the PRD after story 2.1 shipped (commit 61cf281, PR not yet opened — branch `feat/phase-2-data-layer` exists locally and on origin, one commit ahead of `development`). No new blockers. The earlier brainstorm sections still stand. Findings below are narrowly about the current re-run state, not the design.
+
+### A. State drift — uncommitted story 2.2 implementation present (REAL, needs user decision)
+
+`infrastructure/db/` is untracked but already contains a complete implementation that satisfies every story 2.2 acceptance criterion:
+
+- `requirements.txt` pins `yoyo-migrations==9.0.0`, `psycopg2-binary==2.9.12` ✓ (AC 2)
+- `docker-compose.yml` uses `pgvector/pgvector:0.8.2-pg16` (pinned tag — addresses earlier minor finding about moving-target tags) ✓ (AC 4)
+- `yoyo.ini` configured against the local container ✓
+- `README.md` documents naming convention, local workflow, and the deferred cluster-side flow (mirrors the PRD AC 3 and the cascade into phase 3 story 3.7) ✓
+- `migrations/0000_init.sql` + `0000_init.rollback.sql` — a harness sentinel migration, not application schema. The README explicitly reserves `0001_enable_extensions.sql` and `0002_create_users.sql` for story 2.3.
+
+The PRD still has story 2.2 `done: false` and the tracking issue (#15) is OPEN. This is a bookkeeping/state drift, not a design issue: the work appears done but is uncommitted, unverified, and unbooked.
+
+**Resolution paths (user decides):**
+- **(a) Adopt-and-verify:** dispatch story 2.2 to the backenddeveloper subagent with the brief "verify the existing untracked work satisfies all AC, run `yoyo apply` against a fresh container end-to-end, commit if green, flip `done: true`, close issue #15." Cheapest path if the work is correct.
+- **(b) Discard and re-implement:** delete the untracked tree, dispatch story 2.2 normally. Loses ~no real work since this is small scaffolding; gives a clean audit trail. Slowest.
+- **(c) Adopt as-is without verification:** trust the prior work, commit immediately, flip `done: true`. Cheapest but skips the acceptance-criteria verification step — not recommended.
+
+**Recommendation: (a).** The subagent is going to need a fresh container running anyway for story 2.3+, so end-to-end verification of 2.2's container + yoyo path is the same cost whether we treat it as new work or pre-existing work.
+
+### B. `.scratch/create_phase2_issues.py` is the historical issue-creation script (cosmetic)
+
+The issue numbers in the PRD match the issues that script created (#14–#27). No action needed; this is a workspace artifact from the prior session that already did the Step 1 sweep. Step 1 of this re-run is a no-op — all tracking issues already exist, all PRD `tracking_issue:` fields are set, issue #14 (story 2.1) is correctly CLOSED, and #15–#27 are all OPEN. Skip the issue-creation sweep in this run.
+
+### C. Re-confirm: no new design drift since the second brainstorm
+
+- All previously resolved blockers remain resolved in the PRD.
+- The minor findings from pass 2 (app_user grant ordering, deck_view test role, engine_version drift, pgvector tag pin) are unchanged — still subagent-discretion at implementation time, still not blocking.
+- The cascade into phase 3 (story 3.7, story 3.4, story 3.6, context_summary) is intact.
+
+### D. No new external-assumption changes
+
+- pgvector availability on Aurora Postgres 16.4: unchanged — still verified at first `CREATE EXTENSION vector` run.
+- AWS Secrets Manager wiring for `manage_master_user_password`: unchanged.
+
+**Proceed signal: ready for the user's address/proceed call. Specifically: pick (a/b/c) on finding A, and confirm proceed for the rest of the phase.**
