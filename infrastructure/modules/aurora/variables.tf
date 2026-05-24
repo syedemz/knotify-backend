@@ -35,9 +35,9 @@ variable "db_subnet_group_name" {
 # ---------------------------------------------------------------------------
 
 variable "min_acu" {
-  description = "Minimum Aurora Capacity Units for Serverless v2 scaling (dev default: 0.5)"
+  description = "Minimum Aurora Capacity Units for Serverless v2 scaling. Default is 0 which enables scale-to-zero auto-pause (Aurora pauses compute after ~5 min idle and resumes on the next connection, ~15-30s cold start). Prod callers override to 1.0 to avoid cold starts."
   type        = number
-  default     = 0.5
+  default     = 0
 }
 
 variable "max_acu" {

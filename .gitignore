@@ -30,6 +30,7 @@ env/
 dist/
 build/
 .eggs/
+.scratch/
 
 # Environment and secrets — never commit
 .env
