@@ -1,5 +1,5 @@
 project: knotify-backend
-last_updated: 2026-05-23  # phase 2 complete
+last_updated: 2026-05-24 # phase-3 brainstorm resolutions applied (PRD ready)
 
 phases:
 
@@ -24,7 +24,7 @@ phases:
 - phase: 3
   title: Lambda foundations
   file: implementationplan/phase-3-lambda-foundations.md
-  ready: false
+  ready: true
   done: false
 
 - phase: 4

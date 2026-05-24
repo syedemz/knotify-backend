@@ -420,15 +420,19 @@ Primary profile data. Field types are corrected from the old DynamoDB schema (pr
 ```sql
 CREATE TABLE users (
     user_id              UUID PRIMARY KEY,                  -- Cognito sub
-    email                TEXT UNIQUE NOT NULL,
+    email                TEXT UNIQUE NOT NULL,              -- the only required signup field
     phone_number         TEXT,
-    username             TEXT NOT NULL,
+    username             TEXT,                              -- user-supplied display handle, set at profile completion
 
-    -- IMMUTABLE fields (set at signup, never updated after profile completion)
-    first_name           TEXT NOT NULL,
-    last_name            TEXT NOT NULL,
-    sex                  TEXT NOT NULL CHECK (sex IN ('Male','Female')),
-    birthday             DATE NOT NULL,
+    -- IMMUTABLE-AFTER-SET fields (NULL at signup; the Cognito post-confirmation
+    -- Lambda inserts a minimal row from whatever the signup path supplies, then
+    -- the user completes the rest via the profile-completion endpoint in phase 6.
+    -- The trg_users_immutable trigger only blocks UPDATE when OLD is non-NULL, so
+    -- each field is settable exactly once at completion and locked thereafter.)
+    first_name           TEXT,
+    last_name            TEXT,
+    sex                  TEXT CHECK (sex IS NULL OR sex IN ('Male','Female')),
+    birthday             DATE,
     religion             TEXT,
     subsect              TEXT,
 
@@ -481,7 +485,22 @@ CREATE TABLE users (
     updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     deleted_at           TIMESTAMPTZ,                       -- soft-delete (see §11)
 
-    CONSTRAINT email_format CHECK (email ~* '^[^@]+@[^@]+\.[^@]+$')
+    CONSTRAINT email_format CHECK (email ~* '^[^@]+@[^@]+\.[^@]+$'),
+
+    -- profile_complete_verified can only be true once every required-for-completion
+    -- field is populated. Belt-and-suspenders so no code path can flip the flag
+    -- prematurely; the profile-completion endpoint (phase 6) sets the fields and
+    -- the flag in one transaction.
+    CONSTRAINT profile_complete_requires_required_fields CHECK (
+        profile_complete_verified = false
+        OR (
+            first_name IS NOT NULL
+            AND last_name IS NOT NULL
+            AND sex IS NOT NULL
+            AND birthday IS NOT NULL
+            AND username IS NOT NULL
+        )
+    )
 );
 
 -- Indexes
@@ -2061,10 +2080,57 @@ The following decisions are explicitly deferred. The brainstorm agent should pro
 23. **`/v1/feed` endpoint** (old `/newsFeed?feedtype=...`): purpose unclear from the old OpenAPI spec. Possibly an announcements/admin feed? May be removable from v2 scope. Owner to confirm.
 24. **`/userverificationdocs` endpoint** (old): document upload — what kind of documents and verification? Deferred to phase 2 (S3 + photo uploads), but the verification flow itself is undefined. Manual admin review? Automated ML?
 25. **Message edits**: were edits supported in the old app? Old schema had `updateMessage` and `deleteMessage` mutations (auto-generated). Decide whether v2 supports message editing/deletion by user, and how it interacts with read receipts.
-26. **Cognito post-confirmation Lambda trigger**: confirm we use this pattern to pre-create Aurora `users` row at signup (avoids the "Cognito user without profile" half-state).
-27. **`PreferredUsername` Cognito attribute**: the old Amplify config showed `PREFERRED_USERNAME` as a signup attribute alongside `EMAIL`. Is preferred_username going to be used in v2? Affects the `username` field handling in Aurora.
+26. ~~**Cognito post-confirmation Lambda trigger**: confirm we use this pattern to pre-create Aurora `users` row at signup (avoids the "Cognito user without profile" half-state).~~ **RESOLVED**: yes, use the post-confirmation trigger. It inserts a **minimal bootstrap row** containing only what the signup path actually supplies (`user_id`, `email`, optionally `first_name`/`last_name`/`gender→sex` if Cognito gave them). Email is the only required-at-signup field; everything else is NULL until the user hits the profile-completion endpoint. See §5.1 (nullability), the phase-3 PRD (story 3.6), and the **profile-completion enforcement** model below in §13a.
+27. ~~**`PreferredUsername` Cognito attribute**: the old Amplify config showed `PREFERRED_USERNAME` as a signup attribute alongside `EMAIL`. Is preferred_username going to be used in v2? Affects the `username` field handling in Aurora.~~ **RESOLVED**: NO. The v2 Cognito User Pool uses **email as the only sign-in alias** (and optionally phone for SMS signup). `preferred_username` is NOT a signup attribute, NOT an auth alias, and NOT mapped to any DB column at signup. The user-supplied display handle lands in `users.username` at profile-completion time, with no Cognito coupling. Social-identity signups (Google, Apple) work because they only need email + sub.
 28. **Push debouncing**: should `PushFanout` Lambda debounce rapid-fire pushes (e.g., 50 messages from one sender in 30 seconds collapsed into one push)? See §5.4.2 "What if Bob spams 50 messages?". Recommendation: defer to v2; rely on Expo's device-side deduplication initially.
 29. **RDS Proxy for Aurora**: deferred per §6.4 / line 356 — v1 uses module-level psycopg2 connection reuse inside warm Lambda containers, and Lambdas read the Aurora endpoint indirectly via the Secrets Manager secret (already provides one level of indirection for endpoint changes). RDS Proxy would add (a) a stable proxy endpoint so the Aurora cluster could be swapped without touching Lambdas, (b) cross-Lambda connection pooling for burst traffic, and (c) faster failover than the cluster's own DNS-update path. Cost: ~$15/month per proxy per AZ. Latency: ~5ms added per query. Trigger to revisit: real production traffic patterns showing connection-count pressure on Aurora, an active DR plan that requires endpoint stability across cluster swaps, or a failover SLO tighter than ~30s. **Scope, if adopted: PROD ONLY** — dev keeps direct Lambda → Aurora connections through the Secrets Manager-sourced endpoint. Dev has near-zero idle traffic and runs with min_acu=0 (scale-to-zero); the proxy cost and the connection-pooling/failover-latency wins do not apply at dev traffic levels. Owner of the decision: phase 11 hardening (story 11.9 — "Evaluate RDS Proxy adoption for PROD ONLY"). Recommendation: keep deferred for v1 launch; re-evaluate when one of the triggers fires.
+
+---
+
+## 13a. Profile-completion enforcement (defense in depth)
+
+The signup path is intentionally permissive — Cognito only needs email/phone to confirm a
+user, social-identity providers (Google, Apple) supply different attribute sets, and the
+Cognito post-confirmation Lambda inserts a **minimal bootstrap row** with most profile
+columns NULL (see §5.1). Before any business API works, the user must complete their profile.
+Enforcement is **defense in depth across three layers**:
+
+1. **Database layer (CHECK constraint, §5.1).**
+   `profile_complete_requires_required_fields` on the `users` table makes
+   `profile_complete_verified = true` impossible unless every required column
+   (`first_name`, `last_name`, `sex`, `birthday`, `username`) is non-NULL. The
+   profile-completion endpoint (phase 6) sets the fields and flips the flag in a single
+   transaction; no code path can flip it prematurely.
+
+2. **Token layer (Cognito PreTokenGeneration trigger, phase 4).**
+   A Cognito-triggered Lambda fires once per token issuance (sign-in and refresh). It
+   queries `users.profile_complete_verified` for the requesting `sub` and embeds the
+   boolean as a custom claim `custom:profile_complete` in the issued access token.
+   Latency cost: one DB roundtrip per token issue (not per request); the trigger Lambda
+   shares the observability + db layers from phase 3 and runs inside the VPC.
+   Token TTLs are short enough (default 1h access / 30d refresh) that flipping the DB
+   flag propagates on the next refresh — no forced re-login needed.
+
+3. **API edge layer (per-route gate, phase 5).**
+   The HTTP API authorizer (built-in Cognito JWT authorizer for the common path)
+   exposes claims to business Lambdas via `event.requestContext.authorizer.jwt.claims`.
+   Every business Lambda — except the small allowlist below — short-circuits with a 403
+   if `custom:profile_complete != "true"`:
+
+   | Route | Reason it bypasses the gate |
+   | --- | --- |
+   | `GET /v1/me` | Client must read its own profile to know what to ask for |
+   | `POST /v1/me/profile-completion` | The endpoint that flips the flag |
+   | `PATCH /v1/me` | Required to fill in fields before flipping |
+   | `DELETE /v1/me` | Account deletion is always allowed (see §11) |
+   | `POST /v1/me/photos/*` | Photo upload during profile setup |
+
+   The allowlist lives in a single shared module so all Lambdas reference the same set.
+
+Layer 1 prevents bad state; layer 2 propagates the state into the JWT cheaply; layer 3
+enforces it at every API call. A failure in any single layer is caught by the next.
+Phase boundaries: the DB constraint ships in phase 3 (story 3.7's cluster-side migration
+run), the PreTokenGeneration trigger ships in phase 4, the per-route gate ships in phase 5.
 
 ---
 
