@@ -1,6 +1,6 @@
 phase: 6
 title: Profile, friends, bookmarks, blocks domain Lambdas
-last_updated: 2026-05-21
+last_updated: 2026-05-24
 
 context_summary: |
   Ships the first wave of business-logic Lambdas: knotify-profile, knotify-friends, knotify-bookmarks, knotify-blocks. Each Lambda derives user_id from the JWT sub (never from URL or body), sets the RLS session GUCs after authorizing, and uses the shared Aurora layer from phase 3. The corresponding REST routes (per §4.2 migration map) are wired through the HTTP API + JWT authorizer + CloudFront stack from phase 5. The stub /v1/_internal/hello endpoint from phase 5 story 5.7 is removed. Subsequent phases consume these domain Lambdas — chat (phase 8) calls friends and blocks logic to authorize room creation; match (phase 7) calls block lookups to filter results.
@@ -49,8 +49,11 @@ stories:
     depends_on: []
     acceptance_criteria:
       - src/functions/blocks/ implements GET /v1/blocks, POST /v1/blocks, DELETE /v1/blocks/{userId}
-      - On POST: also clears any pending friend_requests between the two users (cancelled status) and any existing friendship row, in a single transaction
-      - Integration test: A blocks B, then A POST /v1/friend-requests {toUserId: B} returns 409 with BLOCKED reason, then A DELETE /v1/blocks/B succeeds and a follow-up POST friend-request now succeeds
+      - POST /v1/blocks rejects with HTTP 409 (reason NOT_FRIENDS) if no friendship row exists between blocker and target — blocking is only allowed against current friends (per owner decision 2026-05-24)
+      - On POST, in a single Aurora transaction, the Lambda must (a) INSERT INTO blocks (blocker_id, blocked_id), (b) DELETE the friendship row for the canonical pair (auto-unfriend — per owner decision 2026-05-24), (c) DELETE any pending friend_requests rows between the two users in either direction
+      - After the Aurora transaction commits, the Lambda must deactivate the chat room (if one exists) via a DynamoDB UpdateItem on ChatRooms keyed by room_id = sha256(canonical_pair(blocker, blocked)) — setting status='deactivated', deactivated_reason='blocked', deactivated_by=blocker_id, deactivated_at=NOW(). The UpdateItem must be conditional on attribute_exists(room_id) so it is a no-op when no room was ever created. Reactivation on unblock is the dual operation and is handled by DELETE /v1/blocks/{userId} per architecture §5.4.1
+      - Integration test: A and B are friends, A blocks B → assert (i) friendships row gone, (ii) any pending friend_request between them gone, (iii) if a chat room existed, ChatRooms.status is 'deactivated' with deactivated_by=A. Then A POST /v1/friend-requests {toUserId: B} returns 409 with BLOCKED reason. A DELETE /v1/blocks/B succeeds and a follow-up POST friend-request now succeeds
+      - Integration test: A is NOT friends with B, A POST /v1/blocks {userId: B} returns 409 NOT_FRIENDS and writes nothing to Aurora or DynamoDB
     notes: ""
 
   - id: 6.5
