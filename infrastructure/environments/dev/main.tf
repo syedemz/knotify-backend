@@ -61,3 +61,77 @@ module "dynamodb" {
   point_in_time_recovery_enabled = var.dynamodb_point_in_time_recovery
   deletion_protection_enabled    = var.dynamodb_deletion_protection
 }
+
+# ---------------------------------------------------------------------------
+# Shared Lambda layers — story 3.2 (observability) and story 3.3 (db)
+# ---------------------------------------------------------------------------
+
+module "observability_layer" {
+  source = "../../modules/layers/observability"
+
+  environment = var.environment
+  zip_path    = "${path.module}/../../../build/knotify-observability-layer.zip"
+}
+
+module "db_layer" {
+  source = "../../modules/layers/db"
+
+  environment = var.environment
+  zip_path    = "${path.module}/../../../build/knotify-db-layer.zip"
+}
+
+# ---------------------------------------------------------------------------
+# IAM roles — story 3.4
+# All roles are scaffolded here. Phases 6–9 consume aurora_reader/writer,
+# dynamodb_*, and stepfn_task. cognito_trigger and db_migrator are consumed
+# by stories 3.6 and 3.7 respectively.
+# ---------------------------------------------------------------------------
+
+module "iam_roles" {
+  source = "../../modules/iam_roles"
+
+  environment                = var.environment
+  aurora_cluster_resource_id = module.aurora.cluster_resource_id
+}
+
+# ---------------------------------------------------------------------------
+# cognito_post_confirmation Lambda — story 3.6
+#
+# Built and deployed here; NOT wired to the Cognito User Pool trigger.
+# Wiring (aws_cognito_user_pool_lambda_config and aws_lambda_permission
+# for cognito-idp.amazonaws.com) is deferred to phase 4 story 4.3
+# per brainstorm N1.
+#
+# The Lambda connects as app_user using the knotify-dev-app-user-credential
+# secret, which is created by the db_migrator Lambda in story 3.7.
+# DB_SECRET_NAME uses the friendly Secrets Manager secret name — boto3
+# resolves by name (wildcard ARN strings are not accepted by GetSecretValue).
+# ---------------------------------------------------------------------------
+
+module "cognito_post_confirmation" {
+  source = "../../modules/lambda"
+
+  function_name = "knotify-cognito-post-confirmation-${var.environment}"
+  handler       = "handler.handler"
+  filename      = "${path.module}/../../../build/cognito_post_confirmation.zip"
+
+  layers = [
+    module.observability_layer.layer_arn,
+    module.db_layer.layer_arn,
+  ]
+
+  role_arn = module.iam_roles.role_arns["cognito_trigger"]
+
+  vpc_config = {
+    subnet_ids         = module.networking.private_subnet_ids
+    security_group_ids = [module.networking.lambda_security_group_id]
+  }
+
+  environment_variables = {
+    # Friendly Secrets Manager secret name for the app_user credential.
+    # Created by the db_migrator Lambda in story 3.7.
+    # The cognito_trigger IAM role scopes GetSecretValue to
+    # arn:...:secret:knotify-<env>-app-user-credential-*
+    DB_SECRET_NAME = "knotify-${var.environment}-app-user-credential"
+  }
+}

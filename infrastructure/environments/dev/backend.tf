@@ -3,7 +3,8 @@ terraform {
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 5.70"
+      # python3.14 runtime requires provider >= 6.20.0 (story 3.1 notes).
+      version = "~> 6.20"
     }
   }
   # Single state file for the entire dev environment across phases 1–11.

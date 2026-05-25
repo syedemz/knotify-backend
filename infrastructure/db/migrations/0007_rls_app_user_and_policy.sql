@@ -98,15 +98,15 @@ ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE users FORCE ROW LEVEL SECURITY;
 
 -- ---------------------------------------------------------------------------
--- Step 4: create the gender-visibility policy (§5.2 verbatim)
+-- Step 4: create RLS policies
 -- ---------------------------------------------------------------------------
 
--- FOR SELECT only — the AC specifies this command scope.
--- INSERT/UPDATE/DELETE on users are performed by trusted paths (Lambda with the
--- correct GUC set, or migration/seed scripts running as the table owner), so
--- those commands do not need an additional RLS policy; FORCE ROW LEVEL SECURITY
--- does not block INSERT/UPDATE/DELETE for the table owner by default unless a
--- WITH CHECK policy exists — none is required here.
+-- Policy 4a: gender-visibility SELECT policy (§5.2 verbatim).
+-- Restricts which rows app_user can read: only rows for users of the opposite sex
+-- plus the requesting user's own row.
+-- GUC values are set per-transaction by knotify_db.set_rls_context before any query.
+-- When GUCs are absent (missing_ok=true returns NULL), the policy evaluates to NULL
+-- (neither true nor false) → fail-closed, no rows visible.
 
 CREATE POLICY users_opposite_sex_only
     ON users
@@ -114,4 +114,41 @@ CREATE POLICY users_opposite_sex_only
     USING (
         sex != current_setting('app.requesting_user_sex', true)
         OR user_id = current_setting('app.requesting_user_id', true)::uuid
+    );
+
+-- Policy 4b: INSERT — any app_user connection may insert new rows.
+--
+-- Rationale: FORCE ROW LEVEL SECURITY requires a permissive policy for EVERY command
+-- type that non-owner, non-superuser roles need to execute. Without an explicit INSERT
+-- policy, all INSERTs from app_user are denied by the default-deny rule, even though
+-- the SELECT policy only restricts reads.
+--
+-- The PostConfirmation Lambda (story 3.6) connects as app_user to bootstrap a new
+-- users row for the confirmed user. No USING expression is needed (no pre-existing row
+-- to evaluate); WITH CHECK (true) permits any new row, which is correct because:
+--   (a) the user_id column is the Cognito sub, passed in from the trusted Cognito event
+--   (b) ON CONFLICT DO NOTHING prevents duplicate inserts
+--   (c) column-level constraints (CHECK on sex, NOT NULL on email) enforce data quality
+
+CREATE POLICY users_insert_own_row
+    ON users
+    FOR INSERT
+    WITH CHECK (true);
+
+-- Policy 4c: UPDATE — app_user may update only their own row.
+--
+-- The USING clause filters which existing rows can be the target of an UPDATE.
+-- The WITH CHECK clause validates the row after modification.
+-- Both are scoped to the requesting user's own row (identified by the GUC set via
+-- knotify_db.set_rls_context before any UPDATE call).
+-- Profile-completion (phase 6) is the primary consumer of this policy.
+
+CREATE POLICY users_update_own_row
+    ON users
+    FOR UPDATE
+    USING (
+        user_id = current_setting('app.requesting_user_id', true)::uuid
+    )
+    WITH CHECK (
+        user_id = current_setting('app.requesting_user_id', true)::uuid
     );
