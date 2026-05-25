@@ -216,3 +216,75 @@ User reviewed findings, picked `address`, and supplied per-item answers in
 - Architecture.md gained a new §13a "Profile-completion enforcement (defense in depth)" section.
 
 **No item left unresolved.** All brainstorm findings either applied to files or explicitly deferred to a named downstream phase/story. Ready to re-run `/implement-phase 3` once the index `ready: true` is confirmed (already true).
+
+---
+
+## 2026-05-24 22:15 brainstorm (pre-dispatch confirmation pass)
+
+Re-running brainstorming against the tightened PRD before dispatching story 3.0, per `/implement-phase` Step 0. Goal: confirm the 21:30 resolutions actually shipped on disk and surface any residual gaps. Not re-litigating items on the resolution log unless concrete evidence shows the resolution went sideways.
+
+### Verification of 21:30 resolutions against on-disk state
+
+| Resolution | On-disk verification | Status |
+|---|---|---|
+| B2 — 0007 PASSWORD removed | `0007_rls_app_user_and_policy.sql:59-66` shows `CREATE ROLE app_user WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;` with no `PASSWORD` clause | ✓ shipped |
+| B2 — local_init.sql created | `infrastructure/db/local_init.sql` exists, outside `migrations/` | ✓ shipped |
+| M4 — 0002 nullability relaxed + CHECK | `0002_create_users.sql:48-128` has `first_name TEXT` etc. (no NOT NULL), `sex` CHECK now allows NULL, `profile_complete_requires_required_fields` CHECK present | ✓ shipped |
+| M9-counterpart — 0008 OLD IS NOT NULL guard | `0008_immutable_fields_trigger.sql:47-52` guards each field with `OLD.<field> IS NOT NULL AND NEW.<field> IS DISTINCT FROM OLD.<field>` | ✓ shipped |
+| M1 — cluster_resource_id available for ARN pattern | `infrastructure/modules/aurora/outputs.tf:24-27` exposes `cluster_resource_id` | ✓ shipped |
+| B1 — new story 3.0 with VPC endpoints | PRD line 11-22, full ACs for both endpoints | ✓ in PRD |
+| N6 — DynamoDB gateway endpoint bundled in 3.0 | PRD story 3.0 AC bullet 2 + bullet 3 | ✓ in PRD |
+| D1 — context.md "Current phase" updated | context.md line 7 reads "Phase 3 — Lambda foundations. Phase 2 PR merged into development (commit e1f0e2d) and tagged `phase-2-complete`" | ✓ shipped |
+
+### Residual gaps found in this pass
+
+**R1. Drift in 0007's header comment (cosmetic, not a blocker).**
+`0007_rls_app_user_and_policy.sql:22-23` reads: "For local docker-compose development, a separate `0007a_local_only_*` migration (NOT applied by yoyo against any AWS cluster) sets a static password matching docker-compose.yml — see infrastructure/db/README.md." But the final 21:30 decision was `infrastructure/db/local_init.sql` (outside `migrations/`, not a yoyo migration at all). No `0007a_local_only_*` file exists. The header comment references a file that doesn't exist and an approach that wasn't taken.
+
+- Severity: minor (cosmetic — doesn't affect runtime, only documentation accuracy).
+- Risk: a future engineer (or a future subagent reading 0007 for context) will hunt for a nonexistent `0007a_local_only_*` file.
+- Fix: opportunistic — story 3.7's subagent will be touching the migrator path; a one-line comment update to point at `infrastructure/db/local_init.sql` is appropriate. Not worth blocking dispatch over.
+
+**R2. Story 3.5's `src/` path shorthand vs the project's `infrastructure/` convention.**
+Story 3.5 AC bullet 3 says `infrastructure/src/pytest.ini` (full path), but other story ACs (3.2, 3.3, 3.6, 3.7) use bare `src/layers/` and `src/functions/`. The phase-2 layout has everything under `infrastructure/` (no top-level `src/`). The intended interpretation is `infrastructure/src/...`; bare `src/` is just shorthand.
+
+- Severity: minor (clarity — a subagent reading the PRD in isolation could ambiguously create a top-level `src/` instead of `infrastructure/src/`).
+- Risk: low — story 3.5 explicitly anchors at `infrastructure/src/pytest.ini`, which pins the location. Subagents for 3.2/3.3 will see story 3.5's anchor and follow it.
+- Fix: not required; the anchor in 3.5 disambiguates. Subagent briefs should re-anchor the path at dispatch time.
+
+**R3. Story 3.6's "VPC config wired to phase 1 private subnets, environment variable DB_SECRET_ARN pointing at the knotify-<env>-app-user-credential secret (the migrator creates this in story 3.7)" — apply-time ordering.**
+The cognito_post_confirmation Lambda (3.6) depends on the app_user credential secret existing. The migrator (3.7) creates it. Both Lambdas are defined in the dev environment's main.tf. Terraform plan/apply: the cognito Lambda's `environment.DB_SECRET_ARN` value is a static string `arn:...:secret:knotify-dev-app-user-credential-*` (or constructed name without the random suffix). Terraform will not see a dependency between cognito Lambda and the migrator Lambda's runtime side-effect (the secret is created at INVOKE time, not at apply time of the migrator Lambda resource).
+
+If the `null_resource` from 3.7 (which invokes the migrator) hasn't run yet, the cognito Lambda is deployed but its `DB_SECRET_ARN` points at a secret that doesn't exist. The cognito Lambda is not yet wired to Cognito (3.6 AC explicitly intentional — that's phase 4), so it will never be invoked at this point. No runtime impact in phase 3.
+
+- Severity: none for phase 3.
+- Risk for phase 4: when phase 4 wires the trigger, the migrator MUST have run first (which it will have, since 3.7's null_resource fires during 3.7's apply). The dev environment's phase-4 apply will run the migrator (via its existing null_resource triggers) before the User Pool wiring takes effect anyway, since the cognito Lambda is referenced by aws_cognito_user_pool_lambda_config in phase 4 and that resource forces ordering through the Terraform graph.
+- Action: no change needed. Document in story 3.6 dispatch brief that the secret's existence is guaranteed by 3.7's null_resource which runs in the same apply pass (3.7 dispatches AFTER 3.6 per topological order — but null_resource lifecycle is `apply` time, not `create` time, so the per-resource ordering inside one `terraform apply` handles this). Actually wait — story 3.6 `depends_on` includes 3.7? Let me check.
+
+  Re-checking PRD: story 3.6 `depends_on: [3.0, 3.1, 3.2, 3.3, 3.4, 3.5]`. Story 3.7 `depends_on: [3.0, 3.1, 3.3, 3.4]`. They are siblings — 3.6 does NOT depend on 3.7. In the topological dispatch order, 3.7 happens AFTER 3.5 (because 3.5 depends on 3.2/3.3 which 3.7 doesn't, but 3.7 depends on 3.0/3.1/3.3/3.4 — same generation as 3.5). Both 3.6 and 3.7 are eligible after their dependencies complete. Per `/implement-phase`'s topological order, 3.6 comes first in PRD order; but the strict-serial dispatch rule means one finishes before the next starts.
+
+  If 3.6 dispatches BEFORE 3.7 (PRD order), then at the moment 3.6's `terraform apply` runs in dev, the cognito Lambda gets deployed with `DB_SECRET_ARN=arn:...:secret:knotify-dev-app-user-credential-XXXXXX` but that secret doesn't exist yet. The Lambda is not wired, never invoked. Phase 3 still completes cleanly. Phase 4 wiring later assumes 3.7 ran by then. ✓
+
+- Conclusion: no action. The apparent ordering quirk resolves because the cognito Lambda is not invoked until phase 4, by which time 3.7's `null_resource` has run (in this phase's apply or a later one).
+
+**R4. `cognito_trigger` IAM role's secret ARN pattern — constructed name uses `var.environment`.**
+PRD story 3.4 AC bullet 3 reads: `arn:...:secret:knotify-${var.environment}-app-user-credential-*`. The dev environment passes `environment=dev` to the iam_roles module. The migrator creates `knotify-dev-app-user-credential` (without a random suffix, since the migrator uses `aws_secretsmanager_secret` named literally). AWS Secrets Manager auto-appends a random 6-char suffix to secret ARNs by default, BUT only when using `CreateSecret` without a Name parameter or with `tags` that conflict. When using a fixed Name via boto3 `create_secret(Name='knotify-dev-app-user-credential')`, the ARN suffix is still randomized — AWS always appends `-XXXXXX` for secret ARNs.
+
+- Conclusion: the `-*` suffix in the policy IS correct (it matches AWS's random 6-char suffix). ✓
+- Note: store the actual created secret ARN as a Terraform output OR reference it via `data.aws_secretsmanager_secret` from the dev env so Phase 6+ Lambdas don't have to wildcard. Out of scope for phase 3.
+
+**R5. Story 3.7 AC item 5 (`null_resource` + `local-exec` aws lambda invoke) — assumes AWS CLI on the apply host.**
+The `local-exec` runs `aws lambda invoke ...`. Phase 1 story 1.5 confirmed CI uses ubuntu-latest with `aws-actions/configure-aws-credentials@v4`. CI runners have aws-cli pre-installed. Local apply (rare in this project) requires aws-cli installed.
+
+- Conclusion: standard assumption. No action.
+
+### Drift since 21:30 resolutions
+
+None found. context.md, the index, and the PRD are in sync. Phase 2 commit `e1f0e2d` matches the latest commit on `development` per `git log`. No external dependencies introduced that the PRD doesn't already validate.
+
+### Summary
+
+PRD is fit for dispatch. Only one cosmetic residual (R1, 0007 header comment drift) which can be cleaned up opportunistically during story 3.7. No blockers, no majors, no medium concerns. Five minor findings, four are non-actions and one is documentation.
+
+**Recommendation: proceed with dispatch.**
+

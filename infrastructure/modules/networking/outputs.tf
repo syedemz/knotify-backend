@@ -22,3 +22,13 @@ output "aurora_security_group_id" {
   description = "ID of the Aurora security group"
   value       = aws_security_group.aurora.id
 }
+
+output "secretsmanager_vpc_endpoint_id" {
+  description = "ID of the Secrets Manager Interface VPC endpoint"
+  value       = aws_vpc_endpoint.secretsmanager.id
+}
+
+output "dynamodb_vpc_endpoint_id" {
+  description = "ID of the DynamoDB Gateway VPC endpoint"
+  value       = aws_vpc_endpoint.dynamodb.id
+}
