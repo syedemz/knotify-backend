@@ -18,9 +18,10 @@
 --        PASSWORD '<random>'` using a value it just wrote to a Secrets Manager
 --        secret named `knotify-<env>-app-user-credential`. Phase 6+ business
 --        Lambdas read THAT secret to connect as app_user.
---        For local docker-compose development, a separate `0007a_local_only_*`
---        migration (NOT applied by yoyo against any AWS cluster) sets a static
---        password matching docker-compose.yml — see infrastructure/db/README.md.
+--        For local docker-compose development, `infrastructure/db/local_init.sql`
+--        (run by `make db-up` after yoyo apply, and outside the migrations/
+--        directory so yoyo never picks it up) sets a static password matching
+--        docker-compose.yml — see infrastructure/db/README.md.
 --
 -- 2. Grants USAGE on the public schema and DML rights on every §5.1 table to app_user.
 --    All six tables exist by now (migrations 0002–0006 ran first).

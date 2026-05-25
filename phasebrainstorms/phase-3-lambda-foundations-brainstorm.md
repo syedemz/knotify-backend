@@ -347,3 +347,137 @@ PRD remains fit for dispatch. Four minor findings, all of which the subagents wi
 
 **Recommendation: proceed with dispatch of stories 3.2 through 3.7.**
 
+---
+
+## 2026-05-25 15:34 brainstorm (story 3.7 pre-dispatch — stories 3.2/3.3/3.4/3.5/3.6 shipped)
+
+Resume pass before dispatching the **last remaining story (3.7)** — DB migrator Lambda, app_user password generation, and the initial cluster-side migration run. Stories 3.2–3.6 shipped in commits 13d45d1, ea16a2b, 797d702, a0ed0a5 plus 3.2's earlier commit; tracking issues #32–#36 closed; PR #38 open against `development`. Focus: does anything in the as-built peer artifacts force a change in 3.7's ACs before dispatch?
+
+### Verification of 3.7 dependencies against as-built peer artifacts
+
+| 3.7 AC expects | As-built reality | Status |
+|---|---|---|
+| `db_migrator` IAM role with master-secret + app-user-credential perms (3.4) | `infrastructure/modules/iam_roles/main.tf:71-125` — both inline policies present, ARN patterns correct | ✓ aligned |
+| Lambda module accepts `filename`, `vpc_config`, `layers`, `role_arn`, `memory_size`, `timeout`, `environment_variables` (3.1) | `infrastructure/modules/lambda/variables.tf` exposes all of these | ✓ aligned |
+| `secretsmanager_vpc_endpoint_id` available for routing master-secret GET (3.0) | `infrastructure/modules/networking/outputs.tf` exposes it; endpoint has `private_dns_enabled=true` so standard hostname auto-resolves | ✓ aligned (no env-var routing logic needed) |
+| `db_layer` includes psycopg2-binary aarch64 (3.3) | `infrastructure/src/layers/db/build.sh` pins `psycopg2-binary==2.9.12` | ✓ partial — see B3 below |
+| `make package FUNC=<name>` produces a build/<name>.zip from src/functions/<name>/ (3.5) | `Makefile` lines 59-66 delegate to `infrastructure/src/scripts/build_package.py` | ✓ exists — see M-new-1 below |
+
+### Findings
+
+---
+
+### BLOCKER — story 3.7 cannot ship as currently written
+
+**B3. The db layer does NOT contain `yoyo-migrations` — story 3.7 AC 3 (`The function bundles yoyo-migrations and psycopg2-binary via the shared db layer from story 3.3`) is false as built.**
+
+`infrastructure/src/layers/db/build.sh` (verified) pins `psycopg2-binary==2.9.12` and `pgvector==0.3.6` only. The db layer was scoped in story 3.3 around the Aurora-access wrapper (`knotify_db`); `yoyo-migrations` was never added because no peer story needed it yet.
+
+Story 3.7 AC text explicitly says the function uses the db layer for both psycopg2 and yoyo, with the rationale "keeps the function package thin and means a yoyo upgrade ripples through one layer rebuild." With the layer as-built, only psycopg2 ripples through the layer; yoyo would have to be bundled directly in the function package or a new third layer.
+
+**Recommended action:** Pick one of these, encode in the 3.7 dispatch brief:
+
+  a. **Extend the db layer.** Edit `infrastructure/src/layers/db/build.sh` to also pin `yoyo-migrations==<x.y.z>` and rebuild. The layer version increments; `db_layer.layer_arn` references the new version on next apply. Cost: one line + a rebuild. Matches the AC's intent verbatim.
+  b. **Bundle yoyo in the function's own requirements.txt.** Add `yoyo-migrations==<x.y.z>` to `src/functions/db_migrator/requirements.txt`. `build_package.py` will pip-install it into the function package (after stripping layer-provided distributions). Cost: function zip grows by a few hundred KB. AC text would need to be amended ("via the shared db layer" → "in the function package, with psycopg2 from the db layer").
+  c. **New `migrator_tools` layer.** Heavy, no reuse — reject.
+
+Recommend (a) — matches the AC verbatim, one-line layer edit, future yoyo upgrades touch one place. The db layer's compatible runtimes/architectures already match (python3.14/arm64). Pin yoyo to a specific 9.x release (currently `yoyo-migrations==9.0.0` or whatever the latest tested release at dispatch time is — let the subagent verify).
+
+**This is a blocker because without it, story 3.7's first-AC handler — `from yoyo import read_migrations, get_backend` — will `ImportError` at runtime.**
+
+---
+
+### MAJOR
+
+**M-new-1. `build_package.py` does not have a mechanism to package non-Python files outside `src/functions/<name>/` — story 3.7 AC 2 requires the function zip to contain `infrastructure/db/migrations/*.sql`.**
+
+The migrations directory lives at `infrastructure/db/migrations/`. The function source is at `infrastructure/src/functions/db_migrator/`. Per as-built `build_package.py` (verified via Makefile delegation), the script copies `*.py` from the function dir and pip-installs requirements. There is no `--include-dir` or migration-bundling step. Without one, the deployed Lambda has no migrations to apply — `yoyo.read_migrations()` finds an empty directory.
+
+**Recommended action:** Extend `build_package.py` (or add a 3.7-specific pre-build step in the Makefile) to copy `infrastructure/db/migrations/*.sql` and `*.rollback.sql` into the function package under a known subpath (e.g., `build/db_migrator/migrations/`). The handler then references `migrations_path = os.path.join(os.path.dirname(__file__), "migrations")`.
+
+Cleanest path: add a `--include-dir <src>:<dest>` flag to `build_package.py` (generalizes for future functions that need static assets), and have the Makefile/dispatch brief pass `--include-dir infrastructure/db/migrations:migrations` when building `db_migrator`. Alternatively, a one-off shell snippet in the dispatch brief is acceptable since this is the only function with such a requirement in v1.
+
+Encode in 3.7's dispatch brief. PRD AC 2 is correct in intent ("packages the migrations directory ... into the Lambda deployment .zip — exactly the files matching /^\d{4}_.+\.sql$/"); the gap is in the tooling that produces the zip.
+
+**M-new-2. The `apply-dev` CI job in `.github/workflows/deploy.yml` does NOT run `make package FUNC=<name>` before `terraform apply` — so the cognito_post_confirmation.zip and db_migrator.zip referenced by `module.<>.filename` in dev/main.tf will not exist in CI.**
+
+Verified: `deploy.yml` lines 173-202 show apply-dev steps = checkout → setup terraform → download tfplan artifact → terraform init → terraform apply tfplan. No `make package` step. No artifact upload from plan-dev that would carry the zips forward.
+
+Story 3.6 already shipped `module.cognito_post_confirmation { filename = "${path.module}/../../../build/cognito_post_confirmation.zip" }` into dev/main.tf. If apply-dev runs today against `development`, terraform apply will fail with `"file not found: build/cognito_post_confirmation.zip"` UNLESS the package was built locally and somehow ended up on the runner — which it won't, since CI is a fresh ubuntu-latest.
+
+This is a real gap that 3.6 introduced and 3.7 will compound (db_migrator.zip also needed). The phase-3 PR cannot merge cleanly into `development` without it.
+
+**Recommended action:** In story 3.7, ALSO add to `deploy.yml`:
+
+  - A `make package FUNC=cognito_post_confirmation && make package FUNC=db_migrator` step BEFORE `terraform plan` in both `plan-dev` and `plan-prod`.
+  - The same in `apply-dev` and `apply-prod` BEFORE terraform apply (since the zip needs to exist at apply time too — the plan artifact won't carry the zip into apply-dev's runner).
+  - Optionally use actions/upload-artifact in plan-dev to ship the zips alongside tfplan, then download in apply-dev. Cleaner; one build per pipeline run.
+
+  Layer artifacts (`build/knotify-observability-layer.zip` and `build/knotify-db-layer.zip`) face the same issue — they're built by `infrastructure/src/layers/<name>/build.sh`. Add layer build steps too (or roll into a single `make package-all` target).
+
+Pin in the 3.7 dispatch brief: "your scope includes the CI integration so phase 3 actually deploys end-to-end."
+
+---
+
+### MEDIUM
+
+**M-new-3. Idempotency semantics of CreateSecret vs PutSecretValue not pinned in handler AC.**
+
+Story 3.7 AC 1(f) says the migrator generates a 32-char password, then "writes it to a NEW Secrets Manager secret named `knotify-${env}-app-user-credential` (created on first run, PutSecretValue on subsequent runs)." The handler logic for deciding first-run vs subsequent-run is unspecified. Three patterns:
+
+  a. **Exception-based**: `try CreateSecret except ResourceExistsException: PutSecretValue` — idiomatic, no extra API call when both calls succeed-path is fast.
+  b. **Describe-first**: `try DescribeSecret except ResourceNotFoundException: CreateSecret else: PutSecretValue` — extra API call always, more "explicit" but slower.
+  c. **PutSecretValue with conditional create**: not supported by the API for this case.
+
+Recommended action: pin (a) in the dispatch brief and the handler unit tests should cover both code paths. AC 6 (`app_user_secret_action in {created, updated}`) already prescribes the response shape — the handler just needs the try/except to set it correctly.
+
+**M-new-4. Story 3.7 `depends_on` is missing 3.5.**
+
+Currently `depends_on: [3.0, 3.1, 3.3, 3.4]`. Story 3.7's AC 8 (integration test runs as part of `make test`) and the underlying build mechanism (the function zip is produced by `make package FUNC=db_migrator`) both depend on story 3.5's tooling. In a parallel-universe re-run where 3.5 had not yet shipped, 3.7 would have nothing to build with.
+
+Risk in practice: zero — 3.5 already shipped, topological order is moot. But for correctness (and for the audit trail of future plan re-derivations), the dependency should be in the PRD.
+
+Recommended action: opportunistic edit, add 3.5 to 3.7's `depends_on` list. Not a blocker.
+
+---
+
+### MINOR
+
+**N-new-1. 0007 header comment still references nonexistent `0007a_local_only_*` migration (R1 from 22:15 pass, not yet fixed).**
+
+`infrastructure/db/migrations/0007_rls_app_user_and_policy.sql:21-23` still reads: "For local docker-compose development, a separate `0007a_local_only_*` migration (NOT applied by yoyo against any AWS cluster) sets a static password matching docker-compose.yml — see infrastructure/db/README.md." No such file exists; the actual approach is `infrastructure/db/local_init.sql` (outside migrations/).
+
+Story 3.7's subagent will be touching the migrator path and reading 0007 closely. Recommended: fix the comment in passing — point at `infrastructure/db/local_init.sql`. One-line edit. Not a blocker.
+
+**N-new-2. Lambda module does not output `function_version` (F1 from 08:53 pass, not yet fixed).**
+
+Story 3.7 AC 5 (null_resource triggers) requires `aws_lambda_function.db_migrator.version`. The dev env will reference `module.db_migrator.<output>`. As-built `infrastructure/modules/lambda/outputs.tf` exposes function_name/function_arn/alias_arn/invoke_arn/log_group_name — no `function_version`.
+
+Recommended action: 3.7's subagent adds `function_version` as a one-line additive output to the lambda module. Alternative is to use `alias_arn` as a trigger string (less clear). Flag in the dispatch brief.
+
+**N-new-3. `apply-time invocation` against prod Aurora is implicit at PROD_CUTOVER.**
+
+Story 3.7 AC 8 says prod migrator + null_resource are authored but gated. When `DEPLOY_PROD=true` flips on, the first apply-prod creates the migrator Lambda AND immediately invokes it against the prod Aurora cluster — this is the desired cutover behavior. PRD AC 8 covers the "not deployed in this phase" half but doesn't explicitly note the at-flip behavior. Not strictly a 3.7 issue (correct behavior), but worth a one-line note in the dispatch brief so the subagent doesn't accidentally split the null_resource into a separate gated job.
+
+---
+
+### Drift summary
+
+| Drift | Impact on 3.7 |
+|---|---|
+| db layer ships without yoyo-migrations | **Blocker B3** — fix during 3.7 |
+| build_package.py lacks `--include-dir` for migrations | **Major M-new-1** — fix during 3.7 |
+| deploy.yml has no `make package` step before terraform plan/apply | **Major M-new-2** — fix during 3.7 (also unblocks the already-merged story 3.6 from running cleanly on `development`) |
+| Lambda module has no `function_version` output | **Minor N-new-2** — fix during 3.7 in passing |
+| 0007 header references nonexistent file | **Minor N-new-1** — fix during 3.7 opportunistically |
+| 3.7 depends_on missing 3.5 | **Medium M-new-4** — edit PRD or accept |
+
+### Summary
+
+Three real items need pre-dispatch agreement:
+- **B3**: extend db layer with yoyo-migrations (recommended fix) OR amend 3.7 AC text to put yoyo in the function package.
+- **M-new-1**: extend build_package.py with `--include-dir` (recommended) OR a Makefile-side pre-package copy for db_migrator.
+- **M-new-2**: add `make package FUNC=...` (and layer builds) to deploy.yml's plan/apply jobs.
+
+If the user picks `proceed`, the 3.7 dispatch brief MUST include all three so the subagent doesn't hit B3 mid-implementation. If the user picks `address`, edit the PRD (3.7 AC 3 — yoyo source) and ship the tooling/CI changes first. Recommend `proceed` with the dispatch brief carrying these resolutions — they're all in 3.7's reasonable scope ("DB migrator Lambda + initial cluster migration" naturally includes the CI plumbing to make it actually run).
+

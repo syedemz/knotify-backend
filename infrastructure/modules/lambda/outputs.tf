@@ -22,3 +22,8 @@ output "log_group_name" {
   description = "Name of the CloudWatch log group for this function"
   value       = aws_cloudwatch_log_group.this.name
 }
+
+output "function_version" {
+  description = "Latest published version number of the Lambda function — used in null_resource triggers to detect code changes"
+  value       = aws_lambda_function.this.version
+}

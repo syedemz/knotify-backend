@@ -94,6 +94,14 @@ jobs:
         with:
           terraform_version: "1.11.4"
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build Lambda layers and function zips
+        run: make package-all
+
       - name: Terraform init
         run: terraform -chdir=infrastructure/environments/dev init
 
@@ -107,6 +115,12 @@ jobs:
         with:
           name: tfplan-dev
           path: infrastructure/environments/dev/tfplan
+
+      - name: Upload build artifacts (Lambda zips and layers)
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts-dev
+          path: build/
 
   plan-prod:
     name: Plan (prod)
@@ -127,6 +141,14 @@ jobs:
         with:
           terraform_version: "1.11.4"
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build Lambda layers and function zips
+        run: make package-all
+
       - name: Terraform init
         run: terraform -chdir=infrastructure/environments/prod init
 
@@ -140,6 +162,12 @@ jobs:
         with:
           name: tfplan-prod
           path: infrastructure/environments/prod/tfplan
+
+      - name: Upload build artifacts (Lambda zips and layers)
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts-prod
+          path: build/
 
   test:
     name: Test
@@ -195,6 +223,12 @@ jobs:
           name: tfplan-dev
           path: infrastructure/environments/dev/
 
+      - name: Download build artifacts (Lambda zips and layers)
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts-dev
+          path: build/
+
       - name: Terraform init
         run: terraform -chdir=infrastructure/environments/dev init
 
@@ -228,6 +262,12 @@ jobs:
         with:
           name: tfplan-prod
           path: infrastructure/environments/prod/
+
+      - name: Download build artifacts (Lambda zips and layers)
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts-prod
+          path: build/
 
       - name: Terraform init
         run: terraform -chdir=infrastructure/environments/prod init

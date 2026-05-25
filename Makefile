@@ -2,6 +2,7 @@
 #
 # Targets:
 #   make package FUNC=<name>  Build a Lambda deployment zip for src/functions/<name>/
+#   make package-all           Build both layer zips and all function zips (CI + local)
 #   make package-test          Smoke-test the package target end-to-end then clean up
 #   make db-up                 Start local Postgres, apply migrations, run local_init.sql
 #   make test                  Run the full pytest suite under infrastructure/src/
@@ -9,7 +10,7 @@
 # All path variables are relative to the Makefile's location (the repo root).
 # Targets are PHONY so Make never mistakes an output file for an up-to-date target.
 
-.PHONY: package package-test db-up test
+.PHONY: package package-all package-test db-up test
 
 # ---------------------------------------------------------------------------
 # Internal path constants
@@ -38,6 +39,13 @@ YOYO_INI := $(ROOT)/infrastructure/db/yoyo.ini
 # post-yoyo local initialisation script (sets app_user password)
 LOCAL_INIT_SQL := $(ROOT)/infrastructure/db/local_init.sql
 
+# Migrations directory — bundled into the db_migrator function zip
+MIGRATIONS_DIR := $(ROOT)/infrastructure/db/migrations
+
+# Layer build scripts
+OBS_BUILD_SH  := $(SRC_ROOT)/layers/observability/build.sh
+DB_BUILD_SH   := $(SRC_ROOT)/layers/db/build.sh
+
 # ---------------------------------------------------------------------------
 # make package FUNC=<name>
 #
@@ -60,10 +68,44 @@ package:
 ifndef FUNC
 	$(error FUNC is not set. Usage: make package FUNC=<function_name>)
 endif
+ifeq ($(FUNC),db_migrator)
+	python3 "$(BUILD_PKG_SCRIPT)" \
+	    --func "$(FUNC)" \
+	    --src-root "$(SRC_ROOT)" \
+	    --build-dir "$(BUILD_DIR)" \
+	    --include-dir "$(MIGRATIONS_DIR):migrations:^\d{4}_.+\.(rollback\.)?sql$$"
+else
 	python3 "$(BUILD_PKG_SCRIPT)" \
 	    --func "$(FUNC)" \
 	    --src-root "$(SRC_ROOT)" \
 	    --build-dir "$(BUILD_DIR)"
+endif
+
+# ---------------------------------------------------------------------------
+# make package-all
+#
+# Builds both shared Lambda layer zips and all function deployment zips.
+# Run this before `terraform plan` or `terraform apply` to ensure the
+# artifacts referenced by Terraform's `filename` arguments exist.
+#
+# This is what CI calls (M-new-2): both plan-dev/plan-prod and
+# apply-dev/apply-prod run this target before invoking Terraform.
+# ---------------------------------------------------------------------------
+
+package-all:
+	@echo "[package-all] Building observability layer ..."
+	bash "$(OBS_BUILD_SH)"
+	@echo "[package-all] Building db layer ..."
+	bash "$(DB_BUILD_SH)"
+	@echo "[package-all] Copying layer zips to build/ ..."
+	mkdir -p "$(BUILD_DIR)"
+	cp "$(SRC_ROOT)/layers/observability/knotify-observability-layer.zip" "$(BUILD_DIR)/"
+	cp "$(SRC_ROOT)/layers/db/knotify-db-layer.zip" "$(BUILD_DIR)/"
+	@echo "[package-all] Building cognito_post_confirmation function ..."
+	$(MAKE) package FUNC=cognito_post_confirmation
+	@echo "[package-all] Building db_migrator function ..."
+	$(MAKE) package FUNC=db_migrator
+	@echo "[package-all] Done — all artifacts in $(BUILD_DIR)/"
 
 # ---------------------------------------------------------------------------
 # make package-test

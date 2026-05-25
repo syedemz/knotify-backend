@@ -22,6 +22,7 @@ from build_package import (
     _pkg_name_from_req_line,
     _filter_requirements,
     _should_exclude,
+    _copy_include_dir,
     build,
 )
 
@@ -270,6 +271,183 @@ class TestBuild(unittest.TestCase):
             "functions/my_func/handler.py": "def handler(e, c): pass",
         })
         rc = build("my_func", src_root, build_dir)
+        self.assertEqual(rc, 0)
+
+
+# ---------------------------------------------------------------------------
+# _copy_include_dir  (M-new-1)
+# ---------------------------------------------------------------------------
+
+class TestCopyIncludeDir(unittest.TestCase):
+    """
+    Given the _copy_include_dir helper,
+    when called with src_dir, dest_dir inside staging, and a file regex,
+    then matching files are copied under dest_dir inside staging and
+    non-matching files are excluded.
+    """
+
+    def _make_src(self, files: dict[str, str]) -> Path:
+        d = Path(tempfile.mkdtemp())
+        for name, content in files.items():
+            (d / name).write_text(content)
+        return d
+
+    def test_matching_sql_files_are_copied(self):
+        src = self._make_src({
+            "0001_init.sql": "SELECT 1;",
+            "0002_users.sql": "SELECT 2;",
+        })
+        staging = Path(tempfile.mkdtemp())
+        dest_subdir = "migrations"
+
+        _copy_include_dir(src, staging, dest_subdir, r"^\d{4}_.+\.sql$")
+
+        dest = staging / dest_subdir
+        self.assertTrue(dest.is_dir())
+        self.assertIn("0001_init.sql", [f.name for f in dest.iterdir()])
+        self.assertIn("0002_users.sql", [f.name for f in dest.iterdir()])
+
+    def test_rollback_sql_files_are_copied(self):
+        src = self._make_src({
+            "0001_init.rollback.sql": "DROP TABLE IF EXISTS t;",
+        })
+        staging = Path(tempfile.mkdtemp())
+
+        _copy_include_dir(src, staging, "migrations", r"^\d{4}_.+\.(rollback\.)?sql$")
+
+        dest = staging / "migrations"
+        self.assertIn("0001_init.rollback.sql", [f.name for f in dest.iterdir()])
+
+    def test_non_matching_files_are_excluded(self):
+        src = self._make_src({
+            "local_init.sql": "ALTER ROLE app_user WITH PASSWORD 'x';",
+            "0001_init.sql": "SELECT 1;",
+        })
+        staging = Path(tempfile.mkdtemp())
+
+        _copy_include_dir(src, staging, "migrations", r"^\d{4}_.+\.sql$")
+
+        dest = staging / "migrations"
+        names = [f.name for f in dest.iterdir()]
+        self.assertIn("0001_init.sql", names)
+        self.assertNotIn("local_init.sql", names)
+
+    def test_dest_subdir_created_if_missing(self):
+        src = self._make_src({"0001_init.sql": "SELECT 1;"})
+        staging = Path(tempfile.mkdtemp())
+
+        _copy_include_dir(src, staging, "deep/nested/migrations", r"^\d{4}_.+\.sql$")
+
+        self.assertTrue((staging / "deep" / "nested" / "migrations").is_dir())
+
+
+class TestBuildWithIncludeDir(unittest.TestCase):
+    """
+    Given the build() function with --include-dir arguments,
+    when called for the db_migrator function with a migrations src directory,
+    then the zip contains every migration .sql file and does NOT contain
+    local_init.sql (which lives outside the migrations/ folder).
+    """
+
+    def _make_src_root_with_migrations(
+        self, migration_files: dict[str, str], extra_files: dict[str, str] | None = None
+    ) -> tuple[Path, Path, Path]:
+        """
+        Returns (src_root, build_dir, migrations_dir) with:
+          src_root/functions/db_migrator/handler.py
+          migrations_dir/<migration_files>
+        """
+        root = Path(tempfile.mkdtemp())
+        src_root = root / "src"
+        build_dir = root / "build"
+        build_dir.mkdir()
+        migrations_dir = root / "migrations"
+        migrations_dir.mkdir()
+
+        # layer manifests
+        obs_manifest = src_root / "layers" / "observability" / "layer_manifest.txt"
+        obs_manifest.parent.mkdir(parents=True)
+        obs_manifest.write_text("aws-lambda-powertools\nPyJWT\n")
+
+        db_manifest = src_root / "layers" / "db" / "layer_manifest.txt"
+        db_manifest.parent.mkdir(parents=True)
+        db_manifest.write_text("psycopg2-binary\npgvector\nyoyo-migrations\n")
+
+        # function
+        func_dir = src_root / "functions" / "db_migrator"
+        func_dir.mkdir(parents=True)
+        (func_dir / "handler.py").write_text("def handler(e, c): pass")
+
+        # migration files
+        for name, content in migration_files.items():
+            (migrations_dir / name).write_text(content)
+
+        if extra_files:
+            for name, content in extra_files.items():
+                (migrations_dir / name).write_text(content)
+
+        return src_root, build_dir, migrations_dir
+
+    def test_given_migrations_when_build_with_include_dir_then_sql_files_in_zip(self):
+        """
+        Given migration .sql files in a separate directory,
+        when build() is called with include_dirs pointing at that directory,
+        then the zip contains those files under the 'migrations' sub-path.
+        """
+        src_root, build_dir, migrations_dir = self._make_src_root_with_migrations(
+            {
+                "0001_init.sql": "SELECT 1;",
+                "0002_users.sql": "SELECT 2;",
+                "0001_init.rollback.sql": "DROP TABLE t;",
+            }
+        )
+
+        rc = build(
+            "db_migrator",
+            src_root,
+            build_dir,
+            include_dirs=[(migrations_dir, "migrations", r"^\d{4}_.+\.(rollback\.)?sql$")],
+        )
+
+        self.assertEqual(rc, 0)
+        with zipfile.ZipFile(build_dir / "db_migrator.zip") as zf:
+            names = zf.namelist()
+        self.assertIn("migrations/0001_init.sql", names)
+        self.assertIn("migrations/0002_users.sql", names)
+        self.assertIn("migrations/0001_init.rollback.sql", names)
+
+    def test_given_local_init_sql_outside_migrations_when_build_then_not_in_zip(self):
+        """
+        local_init.sql must never appear in the zip — it is a local-dev-only
+        file that lives outside the migrations/ directory.
+        """
+        src_root, build_dir, migrations_dir = self._make_src_root_with_migrations(
+            {"0001_init.sql": "SELECT 1;"},
+            # local_init.sql in the same migrations_dir (edge case — in reality
+            # it lives outside migrations/ and would not be in the src_dir at all)
+            extra_files={"local_init.sql": "ALTER ROLE app_user WITH PASSWORD 'x';"},
+        )
+
+        rc = build(
+            "db_migrator",
+            src_root,
+            build_dir,
+            include_dirs=[(migrations_dir, "migrations", r"^\d{4}_.+\.(rollback\.)?sql$")],
+        )
+
+        self.assertEqual(rc, 0)
+        with zipfile.ZipFile(build_dir / "db_migrator.zip") as zf:
+            names = zf.namelist()
+        self.assertNotIn("migrations/local_init.sql", names)
+        self.assertNotIn("local_init.sql", names)
+
+    def test_given_no_include_dirs_when_build_then_still_succeeds(self):
+        """
+        Functions with no include_dirs (all current functions except db_migrator)
+        must still build successfully when no include_dirs are passed.
+        """
+        src_root, build_dir, _ = self._make_src_root_with_migrations({})
+        rc = build("db_migrator", src_root, build_dir)
         self.assertEqual(rc, 0)
 
 

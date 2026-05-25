@@ -95,6 +95,98 @@ module "iam_roles" {
 }
 
 # ---------------------------------------------------------------------------
+# db_migrator Lambda — story 3.7
+#
+# Applies yoyo migrations against the dev Aurora cluster and rotates the
+# app_user password in Secrets Manager on every deployment where migrations
+# or the Lambda code change (controlled by null_resource.db_migrator_invoke
+# triggers below).
+#
+# memory_size=1024 and timeout=300 allow headroom for the largest migration
+# plus the HNSW index build on the users table.
+# ---------------------------------------------------------------------------
+
+module "db_migrator" {
+  source = "../../modules/lambda"
+
+  function_name = "knotify-db-migrator-${var.environment}"
+  handler       = "handler.handler"
+  filename      = "${path.module}/../../../build/db_migrator.zip"
+  memory_size   = 1024
+  timeout       = 300
+
+  layers = [
+    module.observability_layer.layer_arn,
+    module.db_layer.layer_arn,
+  ]
+
+  role_arn = module.iam_roles.role_arns["db_migrator"]
+
+  # The VPC config must include the aurora_security_group_id so the Lambda
+  # ENI can reach Aurora on port 5432. The Lambda SG is also included so
+  # outbound Secrets Manager calls route through the VPC Interface Endpoint.
+  vpc_config = {
+    subnet_ids = module.networking.private_subnet_ids
+    security_group_ids = [
+      module.networking.lambda_security_group_id,
+      module.networking.aurora_security_group_id,
+    ]
+  }
+
+  environment_variables = {
+    # ARN of the Aurora master credential (Aurora-managed rotation).
+    # Fetched via the Interface VPC Endpoint (story 3.0).
+    AURORA_MASTER_SECRET_ARN = module.aurora.master_user_secret_arn
+
+    # Friendly name of the app_user credential secret to create/update.
+    # The migrator writes this secret on first run (CreateSecret) and
+    # rotates it on subsequent runs (PutSecretValue).
+    APP_USER_SECRET_NAME = "knotify-${var.environment}-app-user-credential"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# null_resource — invoke db_migrator once per apply when migrations or code
+# change.
+#
+# triggers:
+#   migrations_hash  — sha256 of all migration file contents; fires when any
+#                      .sql file is added, edited, or deleted.
+#   lambda_version   — published Lambda version number; fires when the
+#                      function code or configuration changes.
+#
+# Without triggers the null_resource would fire on every apply.  With them,
+# it re-runs only when there is a meaningful change to apply — new migrations
+# or a code update.  This avoids spurious password rotations on no-op applies.
+#
+# The local-exec runs `aws lambda invoke` against the LIVE alias and checks
+# that the exit code is 0.  The invocation response is written to out.json
+# and catted to the apply log for visibility.
+# ---------------------------------------------------------------------------
+
+resource "null_resource" "db_migrator_invoke" {
+  triggers = {
+    migrations_hash = sha256(jsonencode([
+      for f in sort(fileset("${path.module}/../../../infrastructure/db/migrations", "*.sql")) :
+      filesha256("${path.module}/../../../infrastructure/db/migrations/${f}")
+    ]))
+    lambda_version = module.db_migrator.function_version
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      aws lambda invoke \
+        --function-name knotify-db-migrator-${var.environment} \
+        --qualifier live \
+        --payload '{}' \
+        out.json && cat out.json
+    EOT
+  }
+
+  depends_on = [module.db_migrator]
+}
+
+# ---------------------------------------------------------------------------
 # cognito_post_confirmation Lambda — story 3.6
 #
 # Built and deployed here; NOT wired to the Cognito User Pool trigger.

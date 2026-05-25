@@ -102,6 +102,76 @@ module "iam_roles" {
 }
 
 # ---------------------------------------------------------------------------
+# db_migrator Lambda — story 3.7
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md
+# via the DEPLOY_PROD=true gate in deploy.yml.
+#
+# AT-FLIP BEHAVIOR (N-new-3): when DEPLOY_PROD flips to true for the first
+# time, the next apply-prod run will:
+#   1. Create the db_migrator Lambda (and its IAM role, VPC config, etc.)
+#   2. Immediately invoke it via the null_resource.db_migrator_invoke
+#      local-exec below — this applies all yoyo migrations against prod
+#      Aurora AND generates + stores the initial app_user credential.
+# This is the desired prod cutover behavior: schema migration and credential
+# bootstrap are atomic with the first apply.  Do NOT split the null_resource
+# into a separate gated step — the migrator must run on the same apply that
+# creates it.
+# ---------------------------------------------------------------------------
+
+module "db_migrator" {
+  source = "../../modules/lambda"
+
+  function_name = "knotify-db-migrator-${var.environment}"
+  handler       = "handler.handler"
+  filename      = "${path.module}/../../../build/db_migrator.zip"
+  memory_size   = 1024
+  timeout       = 300
+
+  layers = [
+    module.observability_layer.layer_arn,
+    module.db_layer.layer_arn,
+  ]
+
+  role_arn = module.iam_roles.role_arns["db_migrator"]
+
+  vpc_config = {
+    subnet_ids = module.networking.private_subnet_ids
+    security_group_ids = [
+      module.networking.lambda_security_group_id,
+      module.networking.aurora_security_group_id,
+    ]
+  }
+
+  environment_variables = {
+    AURORA_MASTER_SECRET_ARN = module.aurora.master_user_secret_arn
+    APP_USER_SECRET_NAME     = "knotify-${var.environment}-app-user-credential"
+  }
+}
+
+resource "null_resource" "db_migrator_invoke" {
+  triggers = {
+    migrations_hash = sha256(jsonencode([
+      for f in sort(fileset("${path.module}/../../../infrastructure/db/migrations", "*.sql")) :
+      filesha256("${path.module}/../../../infrastructure/db/migrations/${f}")
+    ]))
+    lambda_version = module.db_migrator.function_version
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      aws lambda invoke \
+        --function-name knotify-db-migrator-${var.environment} \
+        --qualifier live \
+        --payload '{}' \
+        out.json && cat out.json
+    EOT
+  }
+
+  depends_on = [module.db_migrator]
+}
+
+# ---------------------------------------------------------------------------
 # cognito_post_confirmation Lambda — story 3.6
 #
 # PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.

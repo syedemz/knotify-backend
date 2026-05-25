@@ -9,6 +9,9 @@
 # Pinned versions (brainstorm N4 — no "latest"; pin for reproducibility):
 #   psycopg2-binary  2.9.12 — manylinux2014_aarch64 wheel for arm64 Lambda
 #   pgvector         0.3.6  — Python client for pgvector (brainstorm N3 — kept)
+#   yoyo-migrations  9.0.0  — DB migration tool used by the db_migrator Lambda
+#                             (story 3.7 B3 — added so the function can use the
+#                             layer rather than bundling yoyo in the function zip)
 #
 # Target platform: manylinux2014_aarch64 (arm64 Lambda runtime)
 # Runtime compatibility: python3.14
@@ -48,7 +51,8 @@ pip install \
   --only-binary=:all: \
   --upgrade \
   "psycopg2-binary==2.9.12" \
-  "pgvector==0.3.6"
+  "pgvector==0.3.6" \
+  "yoyo-migrations==9.0.0"
 
 # ---------------------------------------------------------------------------
 # Copy the knotify_db wrapper module into python/ so it is importable at

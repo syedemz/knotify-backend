@@ -25,7 +25,7 @@ phases:
   title: Lambda foundations
   file: implementationplan/phase-3-lambda-foundations.md
   ready: true
-  done: false
+  done: true
 
 - phase: 4
   title: Cognito

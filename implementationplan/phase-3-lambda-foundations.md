@@ -1,6 +1,6 @@
 phase: 3
 title: Lambda foundations
-last_updated: 2026-05-25  # story 3.6 complete
+last_updated: 2026-05-25  # story 3.7 complete — phase 3 done
 
 context_summary: |
   Builds the shared Lambda substrate every later phase reuses. Establishes (a) the VPC endpoints that let in-VPC Lambdas reach AWS service APIs without a NAT Gateway, (b) the lambda Terraform module pattern (function definition, IAM role template, log group with 7-day retention per the owner's observability directive, alias "live" on a published version), (c) two shared Lambda layers — observability/JWT helpers and Aurora access with psycopg2-binary, pgvector, and the RLS session-GUC setter, (d) least-privilege IAM role templates per access pattern (scaffolded; finalized in consuming phases), (e) local dev tooling (packaging, integration testing against a containerized Postgres), (f) the DB migrator Lambda that runs yoyo against the dev Aurora cluster from inside the VPC AND generates a random app_user password stored in Secrets Manager (the cluster-side migration work that was deferred from phase 2 per the 2026-05-23 phase-2 brainstorm), and (g) the knotify-cognito-post-confirmation Lambda. The Cognito trigger Lambda is built and unit-tested here but not wired to a Cognito User Pool — that happens in phase 4, ensuring signup works end-to-end the moment Cognito ships. By the end of this phase, the dev Aurora cluster has the full §5.1 schema applied (users with relaxed nullability + profile-completion CHECK, siblings, friendships, friend_requests, bookmarks, blocks, deck_view, the immutable-fields trigger guarded for first-set-once semantics, RLS policy, and app_user role with a Secrets-Manager-sourced random password).
@@ -112,8 +112,8 @@ stories:
   - id: 3.7
     title: DB migrator Lambda, app_user password generation, and initial cluster-side migration run
     agent: backenddeveloper
-    done: false
-    depends_on: [3.0, 3.1, 3.3, 3.4]
+    done: true
+    depends_on: [3.0, 3.1, 3.3, 3.4, 3.5]
     tracking_issue: 37
     acceptance_criteria:
       - Source directory src/functions/db_migrator/ contains a Lambda handler that (a) reads env var AURORA_MASTER_SECRET_ARN, (b) fetches the secret via boto3 secretsmanager:GetSecretValue (call routed via the Interface VPC Endpoint from story 3.0), (c) parses host/port/username/password/dbname from the Aurora-managed JSON, (d) constructs a Postgres connection URL, (e) uses the yoyo-migrations Python API — `from yoyo import read_migrations, get_backend` — to apply migrations against the cluster using the migrations directory baked into the deploy package, (f) after yoyo apply, generates a cryptographically-random 32-character password, writes it to a NEW Secrets Manager secret named `knotify-${env}-app-user-credential` (created on first run, PutSecretValue on subsequent runs), then connects to the cluster and runs `ALTER ROLE app_user WITH PASSWORD '<random>'`, (g) returns a structured JSON response listing applied migration ids, pending migrations (should be zero on success), whether the app_user secret was created or updated, and total elapsed time. The yoyo Python API is the canonical embedding path (the CLI is a thin wrapper) — Lambda containers cannot reliably shell out, so the API path is the only correct choice (brainstorm M6)

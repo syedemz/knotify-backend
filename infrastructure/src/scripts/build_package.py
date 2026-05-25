@@ -6,7 +6,8 @@ Usage:
     python build_package.py \\
         --func <function_name> \\
         --src-root <path/to/infrastructure/src> \\
-        --build-dir <path/to/build>
+        --build-dir <path/to/build> \\
+        [--include-dir SRC:DEST[:REGEX] ...]
 
 What it does:
   1. Validates that src-root/functions/<func>/ exists.
@@ -21,7 +22,11 @@ What it does:
   4. Copies all *.py source files from src-root/functions/<func>/ into
      the staging directory, excluding the tests/ subdirectory and
      __pycache__ directories.
-  5. Creates build-dir/<func>.zip from the staging directory, excluding
+  5. For each --include-dir SRC:DEST[:REGEX] argument, copies matching
+     files from SRC into build-dir/<func>/DEST/.  REGEX defaults to
+     match all files when omitted.  Used by db_migrator to bundle
+     infrastructure/db/migrations/*.sql into the zip.
+  6. Creates build-dir/<func>.zip from the staging directory, excluding
      __pycache__/, *.pyc files, and the internal temp requirements file.
 
 Exit codes:
@@ -42,6 +47,7 @@ import sys
 import tempfile
 import zipfile
 from pathlib import Path
+from typing import Sequence
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +105,42 @@ def _filter_requirements(
 
 
 # ---------------------------------------------------------------------------
+# Include-dir copying (M-new-1)
+# ---------------------------------------------------------------------------
+
+def _copy_include_dir(
+    src_dir: Path,
+    staging: Path,
+    dest_subdir: str,
+    file_regex: str = r".*",
+) -> None:
+    """
+    Copy files from *src_dir* whose names match *file_regex* into
+    *staging*/*dest_subdir*/.
+
+    Args:
+        src_dir:     Absolute path to the source directory containing the
+                     files to copy (e.g. infrastructure/db/migrations/).
+        staging:     Staging directory for this function's build.
+        dest_subdir: Relative path inside *staging* where files land.
+                     Created if it does not exist.  May be nested
+                     (e.g. "deep/nested/migrations").
+        file_regex:  Python regex that must fully match the *filename*
+                     (not the full path) for it to be included.
+                     Default matches every file.
+    """
+    dest = staging / dest_subdir
+    dest.mkdir(parents=True, exist_ok=True)
+    pattern = re.compile(file_regex)
+    for entry in sorted(src_dir.iterdir()):
+        if not entry.is_file():
+            continue
+        if pattern.match(entry.name):
+            shutil.copy2(entry, dest / entry.name)
+            print(f"[build_package]     include-dir: {entry.name} → {dest_subdir}/")
+
+
+# ---------------------------------------------------------------------------
 # Zip creation
 # ---------------------------------------------------------------------------
 
@@ -135,7 +177,25 @@ def _create_zip(staging: Path, output: Path) -> None:
 # Main build logic
 # ---------------------------------------------------------------------------
 
-def build(func: str, src_root: Path, build_dir: Path) -> int:
+def build(
+    func: str,
+    src_root: Path,
+    build_dir: Path,
+    include_dirs: Sequence[tuple[Path, str, str]] | None = None,
+) -> int:
+    """
+    Build a Lambda deployment zip for *func*.
+
+    Args:
+        func:         Function name (must match src-root/functions/<func>/).
+        src_root:     Absolute path to infrastructure/src/.
+        build_dir:    Directory where the zip and staging tree are written.
+        include_dirs: Optional list of (src_dir, dest_subdir, file_regex)
+                      tuples.  For each entry, files in *src_dir* whose names
+                      match *file_regex* are copied into *dest_subdir/* inside
+                      the staging tree.  Used by db_migrator to bundle
+                      infrastructure/db/migrations/*.sql.
+    """
     func_dir = src_root / "functions" / func
     if not func_dir.is_dir():
         print(
@@ -217,6 +277,18 @@ def build(func: str, src_root: Path, build_dir: Path) -> int:
         print(f"[build_package]     {relative}")
 
     # ------------------------------------------------------------------
+    # Copy extra files from include_dirs (M-new-1)
+    # ------------------------------------------------------------------
+    if include_dirs:
+        print("[build_package]   Copying include-dir assets ...")
+        for src_dir, dest_subdir, file_regex in include_dirs:
+            print(
+                f"[build_package]     {src_dir} → {dest_subdir}/ "
+                f"(regex: {file_regex})"
+            )
+            _copy_include_dir(src_dir, staging, dest_subdir, file_regex)
+
+    # ------------------------------------------------------------------
     # Create the deployment zip
     # ------------------------------------------------------------------
     zip_path = build_dir / f"{func}.zip"
@@ -239,8 +311,48 @@ def main(argv: list[str]) -> int:
         "--build-dir", required=True, type=Path,
         help="Absolute path to the build output directory",
     )
+    parser.add_argument(
+        "--include-dir",
+        action="append",
+        dest="include_dirs",
+        metavar="SRC:DEST[:REGEX]",
+        default=[],
+        help=(
+            "Copy files from SRC into DEST/ inside the package staging dir. "
+            "REGEX (optional) is a Python regex matched against file names; "
+            "default is '.*' (all files).  Repeatable.  "
+            "Example: infrastructure/db/migrations:migrations:^\\d{4}_.+\\.sql$"
+        ),
+    )
     args = parser.parse_args(argv[1:])
-    return build(args.func, args.src_root, args.build_dir)
+
+    # Parse --include-dir SRC:DEST[:REGEX] entries
+    include_dirs: list[tuple[Path, str, str]] = []
+    for raw in args.include_dirs:
+        parts = raw.split(":", 2)
+        if len(parts) < 2:
+            print(
+                f"ERROR: --include-dir must be SRC:DEST[:REGEX], got: {raw!r}",
+                file=sys.stderr,
+            )
+            return 1
+        src_dir = Path(parts[0])
+        dest_subdir = parts[1]
+        file_regex = parts[2] if len(parts) == 3 else r".*"
+        if not src_dir.is_dir():
+            print(
+                f"ERROR: --include-dir source directory does not exist: {src_dir}",
+                file=sys.stderr,
+            )
+            return 1
+        include_dirs.append((src_dir, dest_subdir, file_regex))
+
+    return build(
+        args.func,
+        args.src_root,
+        args.build_dir,
+        include_dirs=include_dirs or None,
+    )
 
 
 if __name__ == "__main__":

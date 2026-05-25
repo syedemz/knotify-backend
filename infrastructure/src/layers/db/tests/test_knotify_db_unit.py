@@ -310,5 +310,30 @@ class TestGetConnectionSignature(unittest.TestCase):
         )
 
 
+class TestYoyoImportable(unittest.TestCase):
+    """
+    Given the db layer,
+    when yoyo-migrations is imported,
+    then read_migrations and get_backend are importable.
+
+    This test proves that yoyo-migrations is present in the layer (or the
+    local Python environment that mirrors the layer) — it fails if yoyo is
+    not installed (B3 resolution).
+    """
+
+    def test_yoyo_read_migrations_is_importable(self):
+        from yoyo import read_migrations
+        self.assertTrue(callable(read_migrations))
+
+    def test_yoyo_get_backend_is_importable(self):
+        from yoyo import get_backend
+        self.assertTrue(callable(get_backend))
+
+    def test_yoyo_read_migrations_and_get_backend_importable_together(self):
+        from yoyo import read_migrations, get_backend
+        self.assertIsNotNone(read_migrations)
+        self.assertIsNotNone(get_backend)
+
+
 if __name__ == "__main__":
     unittest.main()

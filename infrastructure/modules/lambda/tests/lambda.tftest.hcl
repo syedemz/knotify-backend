@@ -130,10 +130,10 @@ run "env_var_defaults_injected_when_no_consumer_overrides" {
   command = plan
 
   variables {
-    function_name        = "knotify-test-fn"
-    handler              = "handler.handler"
-    role_arn             = "arn:aws:iam::123456789012:role/dummy-role"
-    filename             = "tests/fixtures/dummy.zip"
+    function_name         = "knotify-test-fn"
+    handler               = "handler.handler"
+    role_arn              = "arn:aws:iam::123456789012:role/dummy-role"
+    filename              = "tests/fixtures/dummy.zip"
     environment_variables = {}
   }
 
@@ -295,8 +295,8 @@ run "timeout_and_memory_size_overridable" {
     handler       = "handler.handler"
     role_arn      = "arn:aws:iam::123456789012:role/dummy-role"
     filename      = "tests/fixtures/dummy.zip"
-    timeout     = 300
-    memory_size = 1024
+    timeout       = 300
+    memory_size   = 1024
   }
 
   assert {

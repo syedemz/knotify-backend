@@ -2,7 +2,7 @@ terraform {
   required_version = ">= 1.9.0"
   required_providers {
     aws = {
-      source  = "hashicorp/aws"
+      source = "hashicorp/aws"
       # python3.14 runtime support requires provider >= 6.20.0.
       # The project-wide constraint is raised here; other modules will be
       # updated in the same commit so the root lock file stays consistent.
