@@ -53,7 +53,7 @@ stories:
   - id: 3.3
     title: Shared Aurora-access layer (psycopg2, pgvector, RLS GUC helper)
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: []
     tracking_issue: 33
     acceptance_criteria:
