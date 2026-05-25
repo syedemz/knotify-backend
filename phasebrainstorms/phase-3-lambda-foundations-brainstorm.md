@@ -288,3 +288,62 @@ PRD is fit for dispatch. Only one cosmetic residual (R1, 0007 header comment dri
 
 **Recommendation: proceed with dispatch.**
 
+---
+
+## 2026-05-25 08:53 brainstorm (resume-pass — stories 3.0 and 3.1 shipped)
+
+Re-running brainstorming before resuming dispatch of stories 3.2–3.7 (3.0 and 3.1 shipped in commits 72e1173 and f54e320; tracking issues #30/#31 closed; phase-3 PR #38 open). Focus: did the as-built lambda module + VPC endpoints leave any drift in the remaining stories' ACs?
+
+### Verification of as-built artifacts against downstream ACs
+
+| Downstream story expectation | As-built reality | Status |
+|---|---|---|
+| 3.6/3.7 — `vpc_config = { subnet_ids, security_group_ids }` object input | `infrastructure/modules/lambda/variables.tf:35-42` defines this exact object shape (defaults to `null` for out-of-VPC) | ✓ aligned |
+| 3.6/3.7 — `layers` accepts list of layer ARNs | `variables.tf:23-27` `list(string)` default `[]` | ✓ aligned |
+| 3.6/3.7 — `environment_variables` map merged with defaults | `main.tf:18-28` `merge()` with POWERTOOLS_SERVICE_NAME + LOG_LEVEL, consumer wins | ✓ aligned (N2 satisfied) |
+| 3.6/3.7 — function uses arm64 + python3.14 by default | `variables.tf:14-21` defaults match | ✓ aligned |
+| 3.7 — `aws_lambda_function.this.version` available for null_resource trigger | `outputs.tf` exposes `function_arn`, `alias_arn`, `invoke_arn`, `function_name`, `log_group_name` — but NOT `function_version` | ⚠ see F1 below |
+| 3.6/3.7 — `DB_SECRET_ARN` env var routes through Secrets Manager Interface endpoint | `outputs.tf:26-29` exposes `secretsmanager_vpc_endpoint_id`; endpoint exists with private_dns_enabled=true so the standard hostname resolves to the endpoint automatically — no env var routing logic required | ✓ aligned |
+| 3.7 — db_migrator reaches Aurora on 5432 via aurora_security_group_id | `outputs.tf:21-24` exposes `aurora_security_group_id`; phase 1 sg-aurora ingress already allows from sg-lambda | ✓ aligned |
+
+### Residual findings
+
+**F1. Lambda module does not output `function_version`.**
+Story 3.7 AC bullet 5 requires `null_resource.triggers = { ..., lambda_version = aws_lambda_function.db_migrator.version }`. The dev environment's main.tf will reference `module.db_migrator.<something>` — but the module currently exposes `function_arn`, `alias_arn`, `invoke_arn`, `function_name`, `log_group_name` only. No `version` output.
+
+- Severity: minor (one-line fix at consumption time).
+- Resolution: story 3.7's subagent must either (a) add a `function_version` output to the lambda module as an in-passing change, or (b) reference `module.db_migrator.alias_arn` for re-trigger detection (the alias updates on every published version; using the alias ARN as a trigger string works but is opaque). Option (a) is cleaner and is a one-line additive change to `infrastructure/modules/lambda/outputs.tf`.
+- Action: flag in story 3.7's dispatch brief. No PRD edit needed — the AC text says "aws_lambda_function.db_migrator.version" which is correct at the resource level; the module simply needs to expose it.
+
+**F2. `make package` ordering vs `terraform apply` in 3.6/3.7.**
+Lambda module's `filename` variable is REQUIRED (no default). Stories 3.6 and 3.7 will instantiate the module against build/cognito_post_confirmation.zip and build/db_migrator.zip respectively. Those zips do not exist until `make package FUNC=<name>` (story 3.5) runs. If a fresh clone runs `terraform apply` in dev without first running `make package`, the apply fails with "file not found" — annoying but loud and immediate, not a silent failure.
+
+- Severity: minor (documentation / runbook concern).
+- Resolution: story 3.5's README AC already documents the workflow ("make db-up, make package FUNC=, make test"). Story 3.7 should also update deploy.yml's apply-dev job to run `make package FUNC=db_migrator && make package FUNC=cognito_post_confirmation` BEFORE `terraform apply`, OR add a Terraform-native `null_resource` that runs the make target as a `local-exec` provisioner. The deploy.yml path is more transparent.
+- Action: flag in story 3.7's dispatch brief. No PRD edit needed; the deploy.yml integration is implied by story 3.5's "make test" / "make package" workflow.
+
+**F3. Story 3.4's `iam_roles` module uses data sources for partition / region / account.**
+AC bullet 2 references `data.aws_partition.current.partition`, `data.aws_region.current.name`, `data.aws_caller_identity.current.account_id` inside the constructed-name ARN pattern. The networking module recently fixed an `aws_region.name → aws_region.region` deprecation under provider ~> 6.20 (per phase 3.1 commit message). Confirm: in provider 6.20, `data.aws_region.current.name` is deprecated in favor of `data.aws_region.current.region`. Story 3.4 AC text currently says `data.aws_region.current.name`.
+
+- Severity: minor (one-character fix during 3.4 implementation).
+- Resolution: subagent will see the deprecation warning at plan time and use `.region` instead. No PRD edit needed — the AC's intent is clear (it wants the region string); the attribute name is incidental.
+- Action: flag in story 3.4's dispatch brief so the subagent doesn't copy-paste the deprecated form.
+
+**F4. Cluster_resource_id construction for the master-secret ARN.**
+Story 3.4 AC bullet 2 reads `arn:...:secret:rds!cluster-${module.aurora.cluster_resource_id}-*`. Verified: `infrastructure/modules/aurora/outputs.tf:24-27` exposes `cluster_resource_id`. The Aurora cluster has been applied to dev (phase 2 complete), so `module.aurora.cluster_resource_id` is a concrete string at plan/apply time — no null-during-plan trap. ✓
+
+### Drift check (since 22:15 brainstorm)
+
+| Item | Then (22:15) | Now (08:53) | Notes |
+|---|---|---|---|
+| context.md "Current phase" | "Phase 3 stories 3.0/3.1 not yet shipped" | "Stories 3.0 (VPC endpoints) and 3.1 (Lambda module skeleton) complete" | ✓ updated by subagents |
+| Provider constraint | ~> 5.70 across modules | ~> 6.20 across all 4 modules (bumped by 3.1) | Cascade: story 3.4's iam_roles module must use ~> 6.20 too |
+| Networking outputs | added secretsmanager_vpc_endpoint_id, dynamodb_vpc_endpoint_id | confirmed present | ✓ |
+| `data.aws_region.current.name` | n/a | deprecated under 6.20 (already fixed in networking) | F3 above |
+
+### Summary
+
+PRD remains fit for dispatch. Four minor findings, all of which the subagents will encounter and resolve in passing — no PRD edits required. The 21:30 resolutions and 22:15 verification stand; nothing in the as-built 3.0/3.1 work invalidates the remaining stories' ACs.
+
+**Recommendation: proceed with dispatch of stories 3.2 through 3.7.**
+

@@ -1,6 +1,6 @@
 phase: 3
 title: Lambda foundations
-last_updated: 2026-05-26
+last_updated: 2026-05-25
 
 context_summary: |
   Builds the shared Lambda substrate every later phase reuses. Establishes (a) the VPC endpoints that let in-VPC Lambdas reach AWS service APIs without a NAT Gateway, (b) the lambda Terraform module pattern (function definition, IAM role template, log group with 7-day retention per the owner's observability directive, alias "live" on a published version), (c) two shared Lambda layers — observability/JWT helpers and Aurora access with psycopg2-binary, pgvector, and the RLS session-GUC setter, (d) least-privilege IAM role templates per access pattern (scaffolded; finalized in consuming phases), (e) local dev tooling (packaging, integration testing against a containerized Postgres), (f) the DB migrator Lambda that runs yoyo against the dev Aurora cluster from inside the VPC AND generates a random app_user password stored in Secrets Manager (the cluster-side migration work that was deferred from phase 2 per the 2026-05-23 phase-2 brainstorm), and (g) the knotify-cognito-post-confirmation Lambda. The Cognito trigger Lambda is built and unit-tested here but not wired to a Cognito User Pool — that happens in phase 4, ensuring signup works end-to-end the moment Cognito ships. By the end of this phase, the dev Aurora cluster has the full §5.1 schema applied (users with relaxed nullability + profile-completion CHECK, siblings, friendships, friend_requests, bookmarks, blocks, deck_view, the immutable-fields trigger guarded for first-set-once semantics, RLS policy, and app_user role with a Secrets-Manager-sourced random password).
@@ -40,7 +40,7 @@ stories:
   - id: 3.2
     title: Shared observability layer (Powertools, logger, optional JWT helper)
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: []
     tracking_issue: 32
     acceptance_criteria:

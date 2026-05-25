@@ -32,6 +32,11 @@ build/
 .eggs/
 .scratch/
 
+# Lambda layer build output (produced by build.sh — not committed)
+infrastructure/src/layers/*/python/
+infrastructure/src/layers/*-layer.zip
+infrastructure/src/layers/*.zip
+
 # Environment and secrets — never commit
 .env
 .env.*
