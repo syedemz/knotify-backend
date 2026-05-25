@@ -7,13 +7,16 @@
 #   knotify-db-layer.zip  — the deployable artifact
 #
 # Pinned versions (brainstorm N4 — no "latest"; pin for reproducibility):
-#   psycopg2-binary  2.9.12 — manylinux2014_aarch64 wheel for arm64 Lambda
-#   pgvector         0.3.6  — Python client for pgvector (brainstorm N3 — kept)
-#   yoyo-migrations  9.0.0  — DB migration tool used by the db_migrator Lambda
+#   psycopg2-binary  2.9.12 — manylinux_2_28_aarch64 wheel for arm64 Lambda
+#                             (2.9.12 dropped the older manylinux2014/glibc-2.17
+#                             baseline for arm64 — Amazon Linux 2023 ships
+#                             glibc 2.34, so manylinux_2_28 loads fine)
+#   pgvector         0.3.6  — pure-Python (py3-none-any), platform-agnostic
+#   yoyo-migrations  9.0.0  — pure-Python (py3-none-any), platform-agnostic
 #                             (story 3.7 B3 — added so the function can use the
 #                             layer rather than bundling yoyo in the function zip)
 #
-# Target platform: manylinux2014_aarch64 (arm64 Lambda runtime)
+# Target platform: manylinux_2_28_aarch64 (arm64 Lambda runtime on AL2023)
 # Runtime compatibility: python3.14
 #
 # Usage:
@@ -45,7 +48,7 @@ echo "[build] Installing packages into ${OUTPUT_DIR}/ ..."
 pip install \
   --quiet \
   --target "${OUTPUT_DIR}" \
-  --platform manylinux2014_aarch64 \
+  --platform manylinux_2_28_aarch64 \
   --implementation cp \
   --python-version 3.14 \
   --only-binary=:all: \
