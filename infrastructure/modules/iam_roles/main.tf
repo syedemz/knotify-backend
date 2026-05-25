@@ -1,0 +1,254 @@
+terraform {
+  required_version = ">= 1.9.0"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 6.20"
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Data sources — used to construct portable ARN patterns without hardcoding
+# partition, region, or account ID.
+# ---------------------------------------------------------------------------
+
+data "aws_partition" "current" {}
+data "aws_region" "current" {}
+data "aws_caller_identity" "current" {}
+
+# ---------------------------------------------------------------------------
+# Locals
+# ---------------------------------------------------------------------------
+
+locals {
+  # Managed policy ARN for Lambda ENI attachment. Every role here attaches this
+  # so the Lambda can run inside the project VPC.
+  vpc_access_policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+
+  # Shared ARN prefix used in all inline policy resource ARN patterns.
+  sm_arn_prefix = "arn:${data.aws_partition.current.partition}:secretsmanager:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}"
+}
+
+# ---------------------------------------------------------------------------
+# Trust policy documents
+# ---------------------------------------------------------------------------
+
+# All Lambda roles share the same Lambda service trust policy.
+data "aws_iam_policy_document" "lambda_assume_role" {
+  statement {
+    sid     = "LambdaAssumeRole"
+    effect  = "Allow"
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["lambda.amazonaws.com"]
+    }
+  }
+}
+
+# Step Functions tasks use the states service principal.
+data "aws_iam_policy_document" "states_assume_role" {
+  statement {
+    sid     = "StatesAssumeRole"
+    effect  = "Allow"
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["states.amazonaws.com"]
+    }
+  }
+}
+
+# ===========================================================================
+# Role: db_migrator
+#
+# Runs yoyo migrations against the Aurora cluster and manages the app_user
+# credential in Secrets Manager. Connects as the Aurora master user via the
+# Aurora-managed Secrets Manager secret (no IAM DB auth needed).
+# ===========================================================================
+
+resource "aws_iam_role" "db_migrator" {
+  name               = "knotify-${var.environment}-db-migrator"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+resource "aws_iam_role_policy_attachment" "db_migrator_vpc_access" {
+  role       = aws_iam_role.db_migrator.name
+  policy_arn = local.vpc_access_policy_arn
+}
+
+# Allow reading the Aurora-managed master secret.
+# Scoped via the constructed-name ARN pattern (brainstorm M1 option c) — tightest
+# possible scope, resolves in a single apply with no tag dependency.
+data "aws_iam_policy_document" "db_migrator_secrets" {
+  statement {
+    sid    = "ReadAuroraMasterSecret"
+    effect = "Allow"
+    actions = [
+      "secretsmanager:GetSecretValue",
+    ]
+    resources = [
+      "${local.sm_arn_prefix}:secret:rds!cluster-${var.aurora_cluster_resource_id}-*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "db_migrator_secrets" {
+  name   = "db-migrator-secrets"
+  role   = aws_iam_role.db_migrator.name
+  policy = data.aws_iam_policy_document.db_migrator_secrets.json
+}
+
+# Allow creating and updating the app_user credential post-migration.
+# CreateSecret on first run; PutSecretValue + DescribeSecret on subsequent
+# runs (brainstorm B2 — split 0007 fix).
+data "aws_iam_policy_document" "db_migrator_app_user_credential" {
+  statement {
+    sid    = "ManageAppUserCredential"
+    effect = "Allow"
+    actions = [
+      "secretsmanager:CreateSecret",
+      "secretsmanager:PutSecretValue",
+      "secretsmanager:DescribeSecret",
+    ]
+    resources = [
+      "${local.sm_arn_prefix}:secret:knotify-${var.environment}-app-user-credential-*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "db_migrator_app_user_credential" {
+  name   = "db-migrator-app-user-credential"
+  role   = aws_iam_role.db_migrator.name
+  policy = data.aws_iam_policy_document.db_migrator_app_user_credential.json
+}
+
+# ===========================================================================
+# Role: cognito_trigger
+#
+# Handles PostConfirmation Cognito events. Reads the app_user credential to
+# open a DB connection and insert the new user row.
+# Cognito-side invoke permission (aws_lambda_permission) is intentionally NOT
+# created here — it ships with phase 4 story 4.3 (brainstorm N1).
+# ===========================================================================
+
+resource "aws_iam_role" "cognito_trigger" {
+  name               = "knotify-${var.environment}-cognito-trigger"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+resource "aws_iam_role_policy_attachment" "cognito_trigger_vpc_access" {
+  role       = aws_iam_role.cognito_trigger.name
+  policy_arn = local.vpc_access_policy_arn
+}
+
+# Allow reading the app_user credential so the handler can connect to Aurora
+# as app_user after confirmation.
+data "aws_iam_policy_document" "cognito_trigger_app_user_credential" {
+  statement {
+    sid    = "ReadAppUserCredential"
+    effect = "Allow"
+    actions = [
+      "secretsmanager:GetSecretValue",
+    ]
+    resources = [
+      "${local.sm_arn_prefix}:secret:knotify-${var.environment}-app-user-credential-*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "cognito_trigger_app_user_credential" {
+  name   = "cognito-trigger-app-user-credential"
+  role   = aws_iam_role.cognito_trigger.name
+  policy = data.aws_iam_policy_document.cognito_trigger_app_user_credential.json
+}
+
+# ===========================================================================
+# Role: aurora_reader
+#
+# For Lambdas that read from Aurora (phases 6–9).
+# Trust policy + VPC access only; per-action DB policies ship with the
+# consuming phase (AC bullet 5).
+# ===========================================================================
+
+resource "aws_iam_role" "aurora_reader" {
+  name               = "knotify-${var.environment}-aurora-reader"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+resource "aws_iam_role_policy_attachment" "aurora_reader_vpc_access" {
+  role       = aws_iam_role.aurora_reader.name
+  policy_arn = local.vpc_access_policy_arn
+}
+
+# ===========================================================================
+# Role: aurora_writer
+#
+# For Lambdas that write to Aurora (phases 6–9).
+# Trust policy + VPC access only; per-action policies ship with the consuming phase.
+# ===========================================================================
+
+resource "aws_iam_role" "aurora_writer" {
+  name               = "knotify-${var.environment}-aurora-writer"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+resource "aws_iam_role_policy_attachment" "aurora_writer_vpc_access" {
+  role       = aws_iam_role.aurora_writer.name
+  policy_arn = local.vpc_access_policy_arn
+}
+
+# ===========================================================================
+# Role: dynamodb_chat_writer
+#
+# For the chat-message Lambda that writes to the DynamoDB chat table (phase 6).
+# Trust policy + VPC access only; per-action policies ship with the consuming phase.
+# ===========================================================================
+
+resource "aws_iam_role" "dynamodb_chat_writer" {
+  name               = "knotify-${var.environment}-dynamodb-chat-writer"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+resource "aws_iam_role_policy_attachment" "dynamodb_chat_writer_vpc_access" {
+  role       = aws_iam_role.dynamodb_chat_writer.name
+  policy_arn = local.vpc_access_policy_arn
+}
+
+# ===========================================================================
+# Role: dynamodb_notifications_writer
+#
+# For the notifications Lambda that writes to the DynamoDB notifications table
+# (phase 6). Trust policy + VPC access only; per-action policies ship later.
+# ===========================================================================
+
+resource "aws_iam_role" "dynamodb_notifications_writer" {
+  name               = "knotify-${var.environment}-dynamodb-notifications-writer"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+resource "aws_iam_role_policy_attachment" "dynamodb_notifications_writer_vpc_access" {
+  role       = aws_iam_role.dynamodb_notifications_writer.name
+  policy_arn = local.vpc_access_policy_arn
+}
+
+# ===========================================================================
+# Role: stepfn_task
+#
+# For Step Functions state machine tasks (phase 8–9 orchestration flows).
+# Trust principal is states.amazonaws.com, not lambda.amazonaws.com.
+# AWSLambdaVPCAccessExecutionRole is still attached so any Lambda invoked by
+# this state machine can attach ENIs if needed.
+# Trust policy + VPC access only; per-action policies ship with the consuming phase.
+# ===========================================================================
+
+resource "aws_iam_role" "stepfn_task" {
+  name               = "knotify-${var.environment}-stepfn-task"
+  assume_role_policy = data.aws_iam_policy_document.states_assume_role.json
+}
+
+resource "aws_iam_role_policy_attachment" "stepfn_task_vpc_access" {
+  role       = aws_iam_role.stepfn_task.name
+  policy_arn = local.vpc_access_policy_arn
+}
