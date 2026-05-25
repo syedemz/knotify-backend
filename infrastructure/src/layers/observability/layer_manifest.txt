@@ -1,0 +1,19 @@
+# knotify-observability layer — package manifest
+#
+# Lists the distribution names of every package provided by this layer.
+# `make package` reads this file (and the db layer's manifest) to determine
+# which packages to exclude from a function's pip install so the deployment
+# zip stays thin.
+#
+# Convention: use the distribution name as it appears on PyPI / in
+# requirements.txt (e.g. "PyJWT" for PyJWT, "requests" for requests).
+# The filter script normalises names (lowercase + underscores) so
+# "PyJWT" and "pyjwt" are treated as the same package.
+#
+# Lines starting with "#" and blank lines are ignored.
+
+aws-lambda-powertools
+PyJWT
+cryptography
+requests
+knotify-obs
