@@ -40,7 +40,7 @@ resource "aws_security_group_rule" "vpce_ingress_from_lambda" {
 
 resource "aws_vpc_endpoint" "secretsmanager" {
   vpc_id              = aws_vpc.this.id
-  service_name        = "com.amazonaws.${data.aws_region.current.name}.secretsmanager"
+  service_name        = "com.amazonaws.${data.aws_region.current.region}.secretsmanager"
   vpc_endpoint_type   = "Interface"
   subnet_ids          = aws_subnet.private[*].id
   security_group_ids  = [aws_security_group.vpce.id]
@@ -63,7 +63,7 @@ resource "aws_vpc_endpoint" "secretsmanager" {
 
 resource "aws_vpc_endpoint" "dynamodb" {
   vpc_id            = aws_vpc.this.id
-  service_name      = "com.amazonaws.${data.aws_region.current.name}.dynamodb"
+  service_name      = "com.amazonaws.${data.aws_region.current.region}.dynamodb"
   vpc_endpoint_type = "Gateway"
 
   tags = {
