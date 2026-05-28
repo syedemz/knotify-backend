@@ -165,25 +165,42 @@ resource "null_resource" "db_migrator_invoke" {
     lambda_version = module.db_migrator.function_version
   }
 
+  # See dev/main.tf for the rationale on the retry loop — the first invoke
+  # after a Lambda Modify can race against AWS-side ENI/version propagation
+  # and time out connecting to Aurora.
   provisioner "local-exec" {
     command = <<-EOT
-      aws lambda invoke \
-        --cli-read-timeout 0 \
-        --cli-connect-timeout 60 \
-        --function-name knotify-db-migrator-${var.environment} \
-        --qualifier live \
-        --payload '{}' \
-        out.json > invoke_meta.json
-      echo "=== invoke metadata ==="
-      cat invoke_meta.json
-      echo
-      echo "=== response payload ==="
-      cat out.json
-      echo
-      if jq -e '.FunctionError' invoke_meta.json > /dev/null 2>&1; then
-        echo "ERROR: db_migrator Lambda returned a FunctionError; failing apply" >&2
-        exit 1
-      fi
+      max_attempts=3
+      attempt=1
+      while [ $attempt -le $max_attempts ]; do
+        echo "=== invoke attempt $attempt of $max_attempts ==="
+        aws lambda invoke \
+          --cli-read-timeout 0 \
+          --cli-connect-timeout 60 \
+          --function-name knotify-db-migrator-${var.environment} \
+          --qualifier live \
+          --payload '{}' \
+          out.json > invoke_meta.json
+        echo "=== invoke metadata ==="
+        cat invoke_meta.json
+        echo
+        echo "=== response payload ==="
+        cat out.json
+        echo
+        if jq -e '.FunctionError' invoke_meta.json > /dev/null 2>&1; then
+          if [ $attempt -lt $max_attempts ]; then
+            echo "WARN: db_migrator returned a FunctionError; retrying in 30s (transient post-deploy ENI/version propagation)" >&2
+            sleep 30
+            attempt=$((attempt + 1))
+            continue
+          else
+            echo "ERROR: db_migrator Lambda returned a FunctionError on all $max_attempts attempts; failing apply" >&2
+            exit 1
+          fi
+        fi
+        echo "=== invoke succeeded on attempt $attempt ==="
+        exit 0
+      done
     EOT
   }
 
