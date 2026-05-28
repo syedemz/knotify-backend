@@ -28,6 +28,27 @@ resource "aws_rds_cluster_parameter_group" "this" {
 }
 
 # ---------------------------------------------------------------------------
+# CloudWatch log group for the postgresql log export.
+#
+# Aurora auto-creates this group on first log emission with no retention
+# ("Never expire") if it doesn't already exist. By declaring it here we
+# ensure Terraform owns the group with explicit retention BEFORE Aurora
+# tries to write to it. The cluster's depends_on (below) forces creation
+# order: log group → cluster → first log emission, so Aurora finds and
+# reuses the existing group rather than racing to create its own.
+# ---------------------------------------------------------------------------
+
+resource "aws_cloudwatch_log_group" "postgresql" {
+  name              = "/aws/rds/cluster/${var.cluster_identifier}/postgresql"
+  retention_in_days = var.postgresql_log_retention_days
+
+  tags = {
+    Name        = "/aws/rds/cluster/${var.cluster_identifier}/postgresql"
+    Environment = var.environment
+  }
+}
+
+# ---------------------------------------------------------------------------
 # Aurora Serverless v2 cluster
 #
 # engine_mode is left at the provider default ("provisioned") — Serverless v2
@@ -86,6 +107,12 @@ resource "aws_rds_cluster" "this" {
     Name        = var.cluster_identifier
     Environment = var.environment
   }
+
+  # Log group must exist with explicit retention before Aurora boots and
+  # writes its first log line; otherwise Aurora creates a "Never expire"
+  # group and Terraform's resource collides with ResourceAlreadyExists on
+  # the next apply.
+  depends_on = [aws_cloudwatch_log_group.postgresql]
 }
 
 # ---------------------------------------------------------------------------

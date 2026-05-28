@@ -47,6 +47,9 @@ module "aurora" {
   skip_final_snapshot     = var.aurora_skip_final_snapshot
   apply_immediately       = var.aurora_apply_immediately
   backup_retention_period = var.aurora_backup_retention_period
+
+  # Postgres log retention — prod keeps a week for incident forensics
+  postgresql_log_retention_days = var.aurora_postgresql_log_retention_days
 }
 
 # ---------------------------------------------------------------------------

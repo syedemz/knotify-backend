@@ -61,6 +61,10 @@ jobs:
 
       - name: Setup tflint
         uses: terraform-linters/setup-tflint@v4
+        with:
+          # Pin to avoid HTTP 404 from /releases/latest when upstream
+          # hasn't flagged a release as "Latest" in the repo UI.
+          tflint_version: v0.55.1
 
       - name: Run tflint
         run: tflint --chdir=infrastructure --recursive
