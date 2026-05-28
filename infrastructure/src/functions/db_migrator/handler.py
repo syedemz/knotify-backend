@@ -43,6 +43,7 @@ import secrets
 import string
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 # boto3 and psycopg2 are deferred to function-call time so that unit tests
 # can patch them at the module boundary without requiring the packages to be
@@ -223,7 +224,15 @@ def handler(event: dict, context: object) -> dict:
     port = int(_AURORA_PORT)
     dbname = _AURORA_DBNAME
 
-    db_url = f"postgresql://{username}:{password}@{host}:{port}/{dbname}"
+    # The Aurora-managed master password is random and may contain
+    # characters that are reserved in URLs (':', '@', '/', '<', '#', ...).
+    # urllib parses such characters greedily and a single '<' is enough
+    # to make the URL parser interpret the password as the port. Percent-
+    # encode username and password before composing the connection URL.
+    db_url = (
+        f"postgresql://{quote(username, safe='')}:{quote(password, safe='')}"
+        f"@{host}:{port}/{dbname}"
+    )
 
     # 2. Apply yoyo migrations
     migrations_path = _get_migrations_path()
