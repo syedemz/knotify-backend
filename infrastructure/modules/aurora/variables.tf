@@ -76,3 +76,16 @@ variable "backup_retention_period" {
   type        = number
   default     = 7
 }
+
+# ---------------------------------------------------------------------------
+# CloudWatch log group retention for the postgresql log export.
+# Without an explicit aws_cloudwatch_log_group resource, Aurora auto-creates
+# the group with "Never expire" retention. We declare the group ourselves so
+# Terraform owns it and retention is explicit per environment.
+# ---------------------------------------------------------------------------
+
+variable "postgresql_log_retention_days" {
+  description = "CloudWatch Logs retention for the /aws/rds/cluster/<id>/postgresql log group (dev: 1, prod: 7)"
+  type        = number
+  default     = 1
+}

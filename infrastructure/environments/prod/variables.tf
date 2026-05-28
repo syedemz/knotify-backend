@@ -45,6 +45,12 @@ variable "aurora_backup_retention_period" {
   default     = 30
 }
 
+variable "aurora_postgresql_log_retention_days" {
+  description = "Retention in days for the Aurora /aws/rds/cluster/<id>/postgresql CloudWatch log group (1 in dev, 7 in prod)"
+  type        = number
+  default     = 7
+}
+
 # ---------------------------------------------------------------------------
 # DynamoDB module variables — wired from this env root into modules/dynamodb.
 # Prod-safe defaults; dev/dev.tfvars supplies more permissive values.
