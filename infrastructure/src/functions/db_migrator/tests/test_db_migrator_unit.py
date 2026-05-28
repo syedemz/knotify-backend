@@ -335,6 +335,61 @@ class TestMasterSecretEnvVar(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# DB URL encoding (regression: Aurora-managed passwords contain URL-reserved
+# characters like '<', ':', '@', '/', and urllib misparses them as part of
+# the netloc/port unless they are percent-encoded).
+# ---------------------------------------------------------------------------
+
+class TestDbUrlEncoding(unittest.TestCase):
+    """
+    Given a master credential whose password contains URL-reserved chars,
+    when the handler constructs the db_url passed to yoyo,
+    then those chars are percent-encoded so urlparse(...).port returns the
+    integer port from env rather than raising ValueError.
+    """
+
+    def test_password_with_reserved_chars_round_trips_through_urlparse(self):
+        from urllib.parse import urlparse, unquote
+
+        h = _load_handler()
+        # Reproduce the real Aurora-managed password that broke prod:
+        # 'jbn88-z2aD8JlJ<ybdPID27' — the '<' triggered the original failure.
+        nasty_password = "jbn88-z2aD8JlJ<ybdPID27:@/#"
+        sm = MagicMock()
+        sm.get_secret_value.return_value = {
+            "SecretString": json.dumps({"username": "admin", "password": nasty_password})
+        }
+        sm.create_secret.return_value = {}
+
+        captured_url: list[str] = []
+
+        def fake_apply(db_url, migrations_path):
+            captured_url.append(db_url)
+            return {"applied_ids": [], "pending_count": 0}
+
+        with patch.object(h, "boto3") as mock_boto3:
+            mock_boto3.client.return_value = sm
+            with patch.object(h, "psycopg2") as mock_psycopg2:
+                mock_psycopg2.connect.return_value = MagicMock()
+                with patch.object(h, "_apply_migrations", side_effect=fake_apply):
+                    with patch.object(h, "_alter_role_password"):
+                        h._MASTER_SECRET_ARN = "arn:master"
+                        h._APP_USER_SECRET_NAME = "knotify-dev-app-user-credential"
+                        _set_endpoint_env(h, host="db.example.com", port="5432", dbname="knotify")
+                        h.handler({}, None)
+
+        self.assertEqual(len(captured_url), 1)
+        url = captured_url[0]
+        parsed = urlparse(url)
+        # urlparse must extract the port as 5432 (without encoding it would
+        # try to cast the nasty password to int and raise ValueError).
+        self.assertEqual(parsed.port, 5432)
+        self.assertEqual(parsed.hostname, "db.example.com")
+        # And the password must round-trip when decoded.
+        self.assertEqual(unquote(parsed.password), nasty_password)
+
+
+# ---------------------------------------------------------------------------
 # Migrations path resolution
 # ---------------------------------------------------------------------------
 
