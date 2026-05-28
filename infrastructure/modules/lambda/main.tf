@@ -65,6 +65,14 @@ resource "aws_lambda_function" "this" {
   memory_size   = var.memory_size
   timeout       = var.timeout
 
+  # Without source_code_hash, Terraform only detects metadata changes
+  # (env vars, layers, etc.) and never re-uploads the zip when its
+  # contents change. That silently keeps the old code in place across
+  # deploys. filebase64sha256 is computed at plan time and matches the
+  # AWS-reported CodeSha256 so the function only redeploys when the
+  # bundled bytes actually change.
+  source_code_hash = filebase64sha256(var.filename)
+
   # publish = true creates a numbered version on every deployment, enabling
   # the "live" alias to reference a stable, immutable version ARN.
   publish = true
