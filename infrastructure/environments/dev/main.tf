@@ -176,6 +176,8 @@ resource "null_resource" "db_migrator_invoke" {
   provisioner "local-exec" {
     command = <<-EOT
       aws lambda invoke \
+        --cli-read-timeout 0 \
+        --cli-connect-timeout 60 \
         --function-name knotify-db-migrator-${var.environment} \
         --qualifier live \
         --payload '{}' \

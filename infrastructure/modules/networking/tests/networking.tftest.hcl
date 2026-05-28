@@ -407,7 +407,7 @@ run "secretsmanager_vpc_endpoint_private_dns_and_sg_ingress" {
   }
 
   assert {
-    condition     = aws_security_group.vpce.description == "VPC endpoint security group — HTTPS from Lambda only"
+    condition     = aws_security_group.vpce.description == "VPC endpoint security group - HTTPS from Lambda only"
     error_message = "VPCE security group must have the correct description"
   }
 

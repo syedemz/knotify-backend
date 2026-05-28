@@ -12,7 +12,7 @@ data "aws_region" "current" {}
 
 resource "aws_security_group" "vpce" {
   name        = "knotify-${var.environment}-sg-vpce"
-  description = "VPC endpoint security group — HTTPS from Lambda only"
+  description = "VPC endpoint security group - HTTPS from Lambda only"
   vpc_id      = aws_vpc.this.id
 
   tags = {
