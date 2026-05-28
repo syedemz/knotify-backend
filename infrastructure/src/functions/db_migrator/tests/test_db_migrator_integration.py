@@ -51,19 +51,22 @@ _migrations_dir = os.path.join(_repo_root, "infrastructure", "db", "migrations")
 
 
 def _master_secret_json(
-    host: str = "localhost",
-    port: int = 5432,
-    dbname: str = "knotify",
     username: str = "knotify",
     password: str = "knotify",
 ) -> str:
+    # Aurora-managed master secret only contains username + password.
+    # Host/port/dbname come from env vars set by Terraform from the
+    # cluster endpoint outputs.
     return json.dumps({
-        "host": host,
-        "port": port,
-        "dbname": dbname,
         "username": username,
         "password": password,
     })
+
+
+def _set_endpoint_env(h, host="localhost", port="5432", dbname="knotify"):
+    h._AURORA_HOST = host
+    h._AURORA_PORT = port
+    h._AURORA_DBNAME = dbname
 
 
 def _make_sm_mock(
@@ -147,6 +150,7 @@ class TestDbMigratorIntegration(unittest.TestCase):
 
         h._MASTER_SECRET_ARN = self._MASTER_ARN
         h._APP_USER_SECRET_NAME = self._APP_SECRET_NAME
+        _set_endpoint_env(h)
 
         # Patch boto3.client to return our mock but leave psycopg2 real
         # so the ALTER ROLE and yoyo migrations run against the real container.
@@ -219,6 +223,7 @@ class TestDbMigratorIntegration(unittest.TestCase):
         sm = _make_sm_mock(_master_secret_json(), self._APP_SECRET_NAME)
         h._MASTER_SECRET_ARN = self._MASTER_ARN
         h._APP_USER_SECRET_NAME = self._APP_SECRET_NAME
+        _set_endpoint_env(h)
 
         captured_password: list[str] = []
 

@@ -54,19 +54,22 @@ def _load_handler():
 # ---------------------------------------------------------------------------
 
 def _make_master_secret(
-    host: str = "db.example.com",
-    port: int = 5432,
-    dbname: str = "knotify",
     username: str = "admin",
     password: str = "secret",
 ) -> str:
+    # Aurora-managed master secret only contains username + password.
+    # Host/port/dbname come from the cluster endpoint outputs (Terraform
+    # env vars on the Lambda), not from the secret.
     return json.dumps({
-        "host": host,
-        "port": port,
-        "dbname": dbname,
         "username": username,
         "password": password,
     })
+
+
+def _set_endpoint_env(h, host="db.example.com", port="5432", dbname="knotify"):
+    h._AURORA_HOST = host
+    h._AURORA_PORT = port
+    h._AURORA_DBNAME = dbname
 
 
 def _make_env(
@@ -110,6 +113,7 @@ class TestHandlerResponseShape(unittest.TestCase):
                         mock_alter.return_value = None
                         h._MASTER_SECRET_ARN = master_arn
                         h._APP_USER_SECRET_NAME = app_secret_name
+                        _set_endpoint_env(h)
                         result = h.handler({}, None)
         return result
 
@@ -324,6 +328,7 @@ class TestMasterSecretEnvVar(unittest.TestCase):
                     with patch.object(h, "_alter_role_password"):
                         h._MASTER_SECRET_ARN = master_arn
                         h._APP_USER_SECRET_NAME = app_secret_name
+                        _set_endpoint_env(h)
                         h.handler({}, None)
 
         sm.get_secret_value.assert_called_with(SecretId=master_arn)

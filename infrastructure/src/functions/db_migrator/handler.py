@@ -6,8 +6,12 @@ Invoked once per `terraform apply` via a null_resource local-exec when
 migration files or the function code change (via null_resource triggers).
 
 What this handler does (story 3.7):
-  1. Reads AURORA_MASTER_SECRET_ARN and APP_USER_SECRET_NAME from env.
-  2. Fetches the master Aurora credential from Secrets Manager.
+  1. Reads AURORA_MASTER_SECRET_ARN, APP_USER_SECRET_NAME, AURORA_HOST,
+     AURORA_PORT, and AURORA_DBNAME from env.
+  2. Fetches the master Aurora credential from Secrets Manager. The
+     Aurora-managed secret contains ONLY `username` and `password`; the
+     host/port/dbname come from the cluster endpoint outputs (passed via
+     env vars from Terraform).
   3. Constructs a PostgreSQL connection URL and applies all pending yoyo
      migrations (using the Python API — no subprocess shelling).
   4. Generates a cryptographically-random 32-char password.
@@ -68,6 +72,9 @@ except ImportError:  # local test environment without yoyo
 
 _MASTER_SECRET_ARN: str = os.environ.get("AURORA_MASTER_SECRET_ARN", "")
 _APP_USER_SECRET_NAME: str = os.environ.get("APP_USER_SECRET_NAME", "")
+_AURORA_HOST: str = os.environ.get("AURORA_HOST", "")
+_AURORA_PORT: str = os.environ.get("AURORA_PORT", "5432")
+_AURORA_DBNAME: str = os.environ.get("AURORA_DBNAME", "")
 
 # Alphabet for the random password — URL-safe characters only so the value
 # can be embedded in a connection string without escaping.
@@ -203,15 +210,18 @@ def handler(event: dict, context: object) -> dict:
 
     sm = boto3.client("secretsmanager")
 
-    # 1. Fetch Aurora master credential
+    # 1. Fetch Aurora master credential. The Aurora-managed secret only holds
+    #    username + password — connection endpoint values come from env vars
+    #    set by Terraform from the Aurora module's cluster_endpoint/port/db
+    #    outputs.
     master_secret_response = sm.get_secret_value(SecretId=_MASTER_SECRET_ARN)
     master_params = json.loads(master_secret_response["SecretString"])
 
-    host = master_params["host"]
-    port = int(master_params["port"])
-    dbname = master_params["dbname"]
     username = master_params["username"]
     password = master_params["password"]
+    host = _AURORA_HOST
+    port = int(_AURORA_PORT)
+    dbname = _AURORA_DBNAME
 
     db_url = f"postgresql://{username}:{password}@{host}:{port}/{dbname}"
 

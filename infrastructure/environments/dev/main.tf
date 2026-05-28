@@ -142,6 +142,13 @@ module "db_migrator" {
     # The migrator writes this secret on first run (CreateSecret) and
     # rotates it on subsequent runs (PutSecretValue).
     APP_USER_SECRET_NAME = "knotify-${var.environment}-app-user-credential"
+
+    # Connection endpoint params. Aurora's managed master secret only
+    # contains username/password — host/port/database are exposed via
+    # the cluster endpoint outputs, not embedded in the secret.
+    AURORA_HOST   = module.aurora.cluster_endpoint
+    AURORA_PORT   = tostring(module.aurora.port)
+    AURORA_DBNAME = module.aurora.database_name
   }
 }
 
