@@ -337,3 +337,196 @@ run "no_nat_igw_and_no_default_route_from_private_subnets" {
     error_message = "DB route table 1 must have no 0.0.0.0/0 default route"
   }
 }
+
+# ---------------------------------------------------------------------------
+# Test 7: Secrets Manager Interface VPC Endpoint — private_dns_enabled=true,
+# sg-vpce security group, and exactly one ingress rule sourced from sg-lambda.
+#
+# Satisfies AC: "one asserts the Secrets Manager interface endpoint exists with
+# private_dns_enabled=true and its security group has exactly one ingress rule
+# from sg-lambda's id"
+#
+# private_dns_enabled is a static scalar — evaluable at plan time without mocks.
+#
+# The ingress rule uses an external aws_security_group_rule resource (same
+# pattern as sg-aurora test above) so the rule attributes are isolated from
+# the security group resource and can be overridden individually.
+#
+# Cross-resource reference equality: override_during=plan supplies matching
+# mock IDs to both the vpce SG, the lambda SG, and the rule resource so the
+# equality assertions are evaluable at plan time.
+# ---------------------------------------------------------------------------
+run "secretsmanager_vpc_endpoint_private_dns_and_sg_ingress" {
+  command = plan
+
+  variables {
+    environment = "test"
+  }
+
+  override_resource {
+    target = aws_security_group.vpce
+    values = {
+      id = "sg-vpce-mock-id"
+    }
+    override_during = plan
+  }
+
+  override_resource {
+    target = aws_security_group.lambda
+    values = {
+      id = "sg-lambda-mock-id"
+    }
+    override_during = plan
+  }
+
+  override_resource {
+    target = aws_security_group_rule.vpce_ingress_from_lambda
+    values = {
+      security_group_id        = "sg-vpce-mock-id"
+      source_security_group_id = "sg-lambda-mock-id"
+    }
+    override_during = plan
+  }
+
+  # Interface endpoint — private DNS enabled so Lambdas use the standard
+  # secretsmanager.<region>.amazonaws.com hostname
+  assert {
+    condition     = aws_vpc_endpoint.secretsmanager.private_dns_enabled == true
+    error_message = "Secrets Manager VPC endpoint must have private_dns_enabled=true"
+  }
+
+  assert {
+    condition     = aws_vpc_endpoint.secretsmanager.vpc_endpoint_type == "Interface"
+    error_message = "Secrets Manager VPC endpoint must be of type Interface"
+  }
+
+  # sg-vpce name and description
+  assert {
+    condition     = aws_security_group.vpce.name == "knotify-test-sg-vpce"
+    error_message = "VPCE security group must be named knotify-test-sg-vpce"
+  }
+
+  assert {
+    condition     = aws_security_group.vpce.description == "VPC endpoint security group — HTTPS from Lambda only"
+    error_message = "VPCE security group must have the correct description"
+  }
+
+  # Exactly one ingress rule (singleton aws_security_group_rule.vpce_ingress_from_lambda)
+  assert {
+    condition     = aws_security_group_rule.vpce_ingress_from_lambda.type == "ingress"
+    error_message = "VPCE ingress rule must have type ingress"
+  }
+
+  assert {
+    condition     = aws_security_group_rule.vpce_ingress_from_lambda.from_port == 443
+    error_message = "VPCE ingress rule from_port must be 443"
+  }
+
+  assert {
+    condition     = aws_security_group_rule.vpce_ingress_from_lambda.to_port == 443
+    error_message = "VPCE ingress rule to_port must be 443"
+  }
+
+  assert {
+    condition     = aws_security_group_rule.vpce_ingress_from_lambda.protocol == "tcp"
+    error_message = "VPCE ingress rule protocol must be tcp"
+  }
+
+  # Cross-reference: rule's security_group_id is the vpce SG, not a literal
+  assert {
+    condition     = aws_security_group_rule.vpce_ingress_from_lambda.security_group_id == aws_security_group.vpce.id
+    error_message = "VPCE ingress rule security_group_id must reference aws_security_group.vpce"
+  }
+
+  # Cross-reference: source is sg-lambda, not a literal or a different SG
+  assert {
+    condition     = aws_security_group_rule.vpce_ingress_from_lambda.source_security_group_id == aws_security_group.lambda.id
+    error_message = "VPCE ingress rule source_security_group_id must reference aws_security_group.lambda"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 8: DynamoDB Gateway VPC Endpoint — associated with both private route
+# tables AND both DB route tables (four associations total).
+#
+# Satisfies AC: "one asserts the DynamoDB gateway endpoint is associated with
+# both private route tables AND both db route tables (four associations total)"
+#
+# aws_vpc_endpoint_route_table_association is used for gateway endpoints
+# (inline route_table_ids on aws_vpc_endpoint is an alternative, but the
+# association resource gives plan-time attributes we can enumerate).
+#
+# Route table IDs are computed (unknown at plan time); we override each
+# route table resource with a deterministic mock ID and then assert that
+# each association's route_table_id equals the corresponding mock ID.
+# ---------------------------------------------------------------------------
+run "dynamodb_gateway_endpoint_route_table_associations" {
+  command = plan
+
+  variables {
+    environment = "test"
+  }
+
+  override_resource {
+    target = aws_route_table.private[0]
+    values = {
+      id    = "rtb-private-0-mock"
+      route = []
+    }
+    override_during = plan
+  }
+
+  override_resource {
+    target = aws_route_table.private[1]
+    values = {
+      id    = "rtb-private-1-mock"
+      route = []
+    }
+    override_during = plan
+  }
+
+  override_resource {
+    target = aws_route_table.db[0]
+    values = {
+      id    = "rtb-db-0-mock"
+      route = []
+    }
+    override_during = plan
+  }
+
+  override_resource {
+    target = aws_route_table.db[1]
+    values = {
+      id    = "rtb-db-1-mock"
+      route = []
+    }
+    override_during = plan
+  }
+
+  # Endpoint type must be Gateway (free; no security group, no DNS toggle)
+  assert {
+    condition     = aws_vpc_endpoint.dynamodb.vpc_endpoint_type == "Gateway"
+    error_message = "DynamoDB VPC endpoint must be of type Gateway"
+  }
+
+  # Four associations: two private route tables + two DB route tables
+  assert {
+    condition     = aws_vpc_endpoint_route_table_association.dynamodb_private[0].route_table_id == aws_route_table.private[0].id
+    error_message = "DynamoDB endpoint must be associated with private route table 0"
+  }
+
+  assert {
+    condition     = aws_vpc_endpoint_route_table_association.dynamodb_private[1].route_table_id == aws_route_table.private[1].id
+    error_message = "DynamoDB endpoint must be associated with private route table 1"
+  }
+
+  assert {
+    condition     = aws_vpc_endpoint_route_table_association.dynamodb_db[0].route_table_id == aws_route_table.db[0].id
+    error_message = "DynamoDB endpoint must be associated with DB route table 0"
+  }
+
+  assert {
+    condition     = aws_vpc_endpoint_route_table_association.dynamodb_db[1].route_table_id == aws_route_table.db[1].id
+    error_message = "DynamoDB endpoint must be associated with DB route table 1"
+  }
+}

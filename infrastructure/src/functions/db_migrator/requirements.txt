@@ -1,0 +1,7 @@
+# db_migrator function requirements
+#
+# psycopg2-binary and yoyo-migrations are provided by the shared db layer
+# (story 3.3/B3) — build_package.py reads layer_manifest.txt and strips them.
+# boto3 is provided by the Lambda runtime itself — no bundling needed.
+#
+# No function-specific packages are required beyond the layers.

@@ -8,10 +8,12 @@
 --   5. Drop the app_user role (must have no remaining privileges first)
 
 -- ---------------------------------------------------------------------------
--- Step 1: drop the gender-visibility policy
+-- Step 1: drop the RLS policies (reverse of step 4 in forward migration)
 -- ---------------------------------------------------------------------------
 
-DROP POLICY IF EXISTS users_opposite_sex_only ON users;
+DROP POLICY IF EXISTS users_update_own_row      ON users;
+DROP POLICY IF EXISTS users_insert_own_row      ON users;
+DROP POLICY IF EXISTS users_opposite_sex_only   ON users;
 
 -- ---------------------------------------------------------------------------
 -- Step 2: disable RLS on the users table
