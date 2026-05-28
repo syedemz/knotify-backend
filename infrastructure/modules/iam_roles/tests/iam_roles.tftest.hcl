@@ -56,8 +56,8 @@ run "db_migrator_role_exists_with_trust_policy" {
   command = plan
 
   variables {
-    environment                = "test"
-    aurora_cluster_resource_id = "cluster-ABCDEF1234567890"
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
   }
 
   assert {
@@ -76,8 +76,8 @@ run "db_migrator_attaches_vpc_access_managed_policy" {
   command = plan
 
   variables {
-    environment                = "test"
-    aurora_cluster_resource_id = "cluster-ABCDEF1234567890"
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
   }
 
   assert {
@@ -90,8 +90,10 @@ run "db_migrator_attaches_vpc_access_managed_policy" {
 # Test 3: db_migrator inline policy for Aurora master secret exists and is
 #         correctly wired to the role
 #
-# Satisfies AC bullet 2: "allows secretsmanager:GetSecretValue scoped via
-# constructed-name ARN pattern rds!cluster-<resource_id>-*"
+# Satisfies AC bullet 2: "allows secretsmanager:GetSecretValue scoped to the
+# Aurora master_user_secret ARN" — the policy resource is now plumbed through
+# as the exact ARN of the master_user_secret output (the constructed-name
+# pattern from the original brainstorm did not match the real secret name).
 #
 # The policy JSON is computed (data source); we assert the structural wiring
 # (resource name, role reference). ARN scoping is verified by validate.
@@ -100,8 +102,8 @@ run "db_migrator_master_secret_inline_policy_exists" {
   command = plan
 
   variables {
-    environment                = "test"
-    aurora_cluster_resource_id = "cluster-ABCDEF1234567890"
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
   }
 
   assert {
@@ -126,8 +128,8 @@ run "db_migrator_app_user_credential_inline_policy_exists" {
   command = plan
 
   variables {
-    environment                = "test"
-    aurora_cluster_resource_id = "cluster-ABCDEF1234567890"
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
   }
 
   assert {
@@ -150,8 +152,8 @@ run "cognito_trigger_role_exists_with_trust_policy" {
   command = plan
 
   variables {
-    environment                = "test"
-    aurora_cluster_resource_id = "cluster-ABCDEF1234567890"
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
   }
 
   assert {
@@ -169,8 +171,8 @@ run "cognito_trigger_attaches_vpc_access_managed_policy" {
   command = plan
 
   variables {
-    environment                = "test"
-    aurora_cluster_resource_id = "cluster-ABCDEF1234567890"
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
   }
 
   assert {
@@ -190,8 +192,8 @@ run "cognito_trigger_app_user_credential_inline_policy_exists" {
   command = plan
 
   variables {
-    environment                = "test"
-    aurora_cluster_resource_id = "cluster-ABCDEF1234567890"
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
   }
 
   assert {
@@ -215,8 +217,8 @@ run "aurora_reader_trust_policy_and_vpc_managed_policy" {
   command = plan
 
   variables {
-    environment                = "test"
-    aurora_cluster_resource_id = "cluster-ABCDEF1234567890"
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
   }
 
   assert {
@@ -237,8 +239,8 @@ run "aurora_writer_trust_policy_and_vpc_managed_policy" {
   command = plan
 
   variables {
-    environment                = "test"
-    aurora_cluster_resource_id = "cluster-ABCDEF1234567890"
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
   }
 
   assert {
@@ -259,8 +261,8 @@ run "dynamodb_chat_writer_trust_policy_and_vpc_managed_policy" {
   command = plan
 
   variables {
-    environment                = "test"
-    aurora_cluster_resource_id = "cluster-ABCDEF1234567890"
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
   }
 
   assert {
@@ -281,8 +283,8 @@ run "dynamodb_notifications_writer_trust_policy_and_vpc_managed_policy" {
   command = plan
 
   variables {
-    environment                = "test"
-    aurora_cluster_resource_id = "cluster-ABCDEF1234567890"
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
   }
 
   assert {
@@ -310,8 +312,8 @@ run "stepfn_task_trust_policy_and_vpc_managed_policy" {
   command = plan
 
   variables {
-    environment                = "test"
-    aurora_cluster_resource_id = "cluster-ABCDEF1234567890"
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
   }
 
   assert {
@@ -340,8 +342,8 @@ run "role_arns_output_contains_all_seven_roles" {
   command = plan
 
   variables {
-    environment                = "test"
-    aurora_cluster_resource_id = "cluster-ABCDEF1234567890"
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
   }
 
   override_resource {

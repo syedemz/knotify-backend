@@ -97,8 +97,8 @@ module "db_layer" {
 module "iam_roles" {
   source = "../../modules/iam_roles"
 
-  environment                = var.environment
-  aurora_cluster_resource_id = module.aurora.cluster_resource_id
+  environment                   = var.environment
+  aurora_master_user_secret_arn = module.aurora.master_user_secret_arn
 }
 
 # ---------------------------------------------------------------------------
@@ -161,10 +161,22 @@ resource "null_resource" "db_migrator_invoke" {
   provisioner "local-exec" {
     command = <<-EOT
       aws lambda invoke \
+        --cli-read-timeout 0 \
+        --cli-connect-timeout 60 \
         --function-name knotify-db-migrator-${var.environment} \
         --qualifier live \
         --payload '{}' \
-        out.json && cat out.json
+        out.json > invoke_meta.json
+      echo "=== invoke metadata ==="
+      cat invoke_meta.json
+      echo
+      echo "=== response payload ==="
+      cat out.json
+      echo
+      if jq -e '.FunctionError' invoke_meta.json > /dev/null 2>&1; then
+        echo "ERROR: db_migrator Lambda returned a FunctionError; failing apply" >&2
+        exit 1
+      fi
     EOT
   }
 
