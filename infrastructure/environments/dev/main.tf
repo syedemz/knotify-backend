@@ -90,8 +90,8 @@ module "db_layer" {
 module "iam_roles" {
   source = "../../modules/iam_roles"
 
-  environment                = var.environment
-  aurora_cluster_resource_id = module.aurora.cluster_resource_id
+  environment                   = var.environment
+  aurora_master_user_secret_arn = module.aurora.master_user_secret_arn
 }
 
 # ---------------------------------------------------------------------------
@@ -159,9 +159,17 @@ module "db_migrator" {
 # it re-runs only when there is a meaningful change to apply — new migrations
 # or a code update.  This avoids spurious password rotations on no-op applies.
 #
-# The local-exec runs `aws lambda invoke` against the LIVE alias and checks
-# that the exit code is 0.  The invocation response is written to out.json
-# and catted to the apply log for visibility.
+# The local-exec runs `aws lambda invoke` against the LIVE alias and fails the
+# apply when:
+#   - the invoke itself errors (non-zero exit from the CLI), or
+#   - the CLI's structured response includes a FunctionError (the Lambda
+#     raised an unhandled exception). Without this second check the apply
+#     reports success even though the migrator returned an error payload —
+#     `aws lambda invoke` only signals invocation failures via its exit code,
+#     not Lambda-side errors.
+# The invocation metadata (StatusCode, FunctionError, ExecutedVersion) is
+# captured to invoke_meta.json; the response payload is in out.json. Both are
+# catted to the apply log for visibility.
 # ---------------------------------------------------------------------------
 
 resource "null_resource" "db_migrator_invoke" {
@@ -181,7 +189,17 @@ resource "null_resource" "db_migrator_invoke" {
         --function-name knotify-db-migrator-${var.environment} \
         --qualifier live \
         --payload '{}' \
-        out.json && cat out.json
+        out.json > invoke_meta.json
+      echo "=== invoke metadata ==="
+      cat invoke_meta.json
+      echo
+      echo "=== response payload ==="
+      cat out.json
+      echo
+      if jq -e '.FunctionError' invoke_meta.json > /dev/null 2>&1; then
+        echo "ERROR: db_migrator Lambda returned a FunctionError; failing apply" >&2
+        exit 1
+      fi
     EOT
   }
 

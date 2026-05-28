@@ -79,8 +79,11 @@ resource "aws_iam_role_policy_attachment" "db_migrator_vpc_access" {
 }
 
 # Allow reading the Aurora-managed master secret.
-# Scoped via the constructed-name ARN pattern (brainstorm M1 option c) — tightest
-# possible scope, resolves in a single apply with no tag dependency.
+# Scoped to the exact ARN of the master_user_secret output from the aurora
+# module. The constructed-name approach (rds!cluster-<cluster_resource_id>-*)
+# does NOT work because RDS embeds a different internal UUID in the
+# master-secret name than the cluster_resource_id Terraform exposes; the
+# resulting policy never matches the real secret and GetSecretValue is denied.
 data "aws_iam_policy_document" "db_migrator_secrets" {
   statement {
     sid    = "ReadAuroraMasterSecret"
@@ -89,7 +92,7 @@ data "aws_iam_policy_document" "db_migrator_secrets" {
       "secretsmanager:GetSecretValue",
     ]
     resources = [
-      "${local.sm_arn_prefix}:secret:rds!cluster-${var.aurora_cluster_resource_id}-*",
+      var.aurora_master_user_secret_arn,
     ]
   }
 }

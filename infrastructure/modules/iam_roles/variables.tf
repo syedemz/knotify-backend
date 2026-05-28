@@ -3,7 +3,7 @@ variable "environment" {
   type        = string
 }
 
-variable "aurora_cluster_resource_id" {
-  description = "Resource ID of the Aurora cluster (e.g. cluster-ABCDEF1234567890). Used to scope the db_migrator role's GetSecretValue permission to the Aurora-managed master secret."
+variable "aurora_master_user_secret_arn" {
+  description = "Exact ARN of the Aurora-managed master user secret in Secrets Manager (i.e. aws_rds_cluster.master_user_secret[0].secret_arn). Used to scope db_migrator's GetSecretValue permission to that specific secret. The internal cluster id RDS embeds in this ARN is NOT the Terraform-visible cluster_resource_id, so the ARN must be plumbed through from the aurora module rather than reconstructed."
   type        = string
 }
