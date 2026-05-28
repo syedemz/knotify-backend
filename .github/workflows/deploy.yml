@@ -79,6 +79,9 @@ jobs:
   plan-dev:
     name: Plan (dev)
     needs: [validate]
+    # Skip plan on manual destroy runs — the destroy job has its own init/destroy
+    # cycle and plan would race it for the state lock.
+    if: github.event_name != 'workflow_dispatch' || inputs.action != 'destroy'
     runs-on: ubuntu-latest
     environment: dev
     env:
@@ -126,7 +129,11 @@ jobs:
     name: Plan (prod)
     needs: [validate]
     runs-on: ubuntu-latest
-    if: vars.DEPLOY_PROD == 'true'
+    # Same destroy-skip guard as plan-dev. Keep the DEPLOY_PROD gate first so
+    # the job is still skipped when the feature flag is off.
+    if: >-
+      vars.DEPLOY_PROD == 'true' &&
+      (github.event_name != 'workflow_dispatch' || inputs.action != 'destroy')
     environment: prod
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -172,6 +179,10 @@ jobs:
   test:
     name: Test
     needs: [plan-dev]
+    # plan-dev is skipped on destroy runs, which would otherwise leave test
+    # stuck in "Skipped (dependency failed)". Mirror the guard explicitly so
+    # the destroy run shows a clean job graph.
+    if: github.event_name != 'workflow_dispatch' || inputs.action != 'destroy'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -296,6 +307,19 @@ jobs:
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.11.4"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Terraform evaluates filebase64sha256(var.zip_path) for every
+      # aws_lambda_function and aws_lambda_layer_version at plan-time — even
+      # during `terraform destroy`. Without the zips on disk, destroy aborts
+      # before touching a single resource. Build them here so destroy can
+      # parse the config end-to-end.
+      - name: Build Lambda layers and function zips
+        run: make package-all
 
       - name: Terraform init
         run: terraform -chdir=infrastructure/environments/${{ inputs.environment }} init
