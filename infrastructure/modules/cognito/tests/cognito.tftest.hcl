@@ -407,3 +407,222 @@ run "outputs_user_pool_id_arn_endpoint_resolve" {
     error_message = "user_pool_endpoint must be https://cognito-idp.<region>.amazonaws.com/<user_pool_id>"
   }
 }
+
+# ---------------------------------------------------------------------------
+# Story 4.2 tests
+#
+# Tests 10–13 cover the two app client resources added in story 4.2.
+# All use command = plan (hermetic — no AWS credentials required).
+#
+# Tests 10–11: dev environment — both clients created, correct auth flows,
+#              outputs populated.
+# Tests 12–13: prod environment — only prod client created (count=0 for
+#              integration-test), integration_test_app_client_id == "".
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Test 10: dev env — production app client has SRP-only auth flows
+#
+# Satisfies AC 1: generate_secret=false, explicit_auth_flows contains
+# ALLOW_USER_SRP_AUTH and ALLOW_REFRESH_TOKEN_AUTH, no ADMIN_USER_PASSWORD_AUTH,
+# prevent_user_existence_errors="ENABLED".
+# Also covers token validity and units (AC 2).
+# ---------------------------------------------------------------------------
+run "dev_prod_app_client_srp_only_flows_and_token_validity" {
+  command = plan
+
+  variables {
+    name        = "knotify-dev-user-pool"
+    environment = "dev"
+  }
+
+  # generate_secret must be false (public client)
+  assert {
+    condition     = aws_cognito_user_pool_client.app.generate_secret == false
+    error_message = "production app client generate_secret must be false"
+  }
+
+  # SRP auth flow present
+  assert {
+    condition     = contains(aws_cognito_user_pool_client.app.explicit_auth_flows, "ALLOW_USER_SRP_AUTH")
+    error_message = "production app client must include ALLOW_USER_SRP_AUTH"
+  }
+
+  # Refresh token flow present
+  assert {
+    condition     = contains(aws_cognito_user_pool_client.app.explicit_auth_flows, "ALLOW_REFRESH_TOKEN_AUTH")
+    error_message = "production app client must include ALLOW_REFRESH_TOKEN_AUTH"
+  }
+
+  # ADMIN_USER_PASSWORD_AUTH must NOT be present on production client
+  assert {
+    condition     = !contains(aws_cognito_user_pool_client.app.explicit_auth_flows, "ALLOW_ADMIN_USER_PASSWORD_AUTH")
+    error_message = "production app client must NOT include ALLOW_ADMIN_USER_PASSWORD_AUTH"
+  }
+
+  # USER_PASSWORD_AUTH must NOT be present on production client
+  assert {
+    condition     = !contains(aws_cognito_user_pool_client.app.explicit_auth_flows, "ALLOW_USER_PASSWORD_AUTH")
+    error_message = "production app client must NOT include ALLOW_USER_PASSWORD_AUTH"
+  }
+
+  # prevent_user_existence_errors must be ENABLED
+  assert {
+    condition     = aws_cognito_user_pool_client.app.prevent_user_existence_errors == "ENABLED"
+    error_message = "production app client prevent_user_existence_errors must be ENABLED"
+  }
+
+  # refresh_token_validity must be 30
+  assert {
+    condition     = aws_cognito_user_pool_client.app.refresh_token_validity == 30
+    error_message = "production app client refresh_token_validity must be 30"
+  }
+
+  # access_token_validity must be 60
+  assert {
+    condition     = aws_cognito_user_pool_client.app.access_token_validity == 60
+    error_message = "production app client access_token_validity must be 60"
+  }
+
+  # id_token_validity must be 60
+  assert {
+    condition     = aws_cognito_user_pool_client.app.id_token_validity == 60
+    error_message = "production app client id_token_validity must be 60"
+  }
+
+  # token_validity_units: access_token=minutes
+  assert {
+    condition     = aws_cognito_user_pool_client.app.token_validity_units[0].access_token == "minutes"
+    error_message = "production app client access_token unit must be minutes"
+  }
+
+  # token_validity_units: id_token=minutes
+  assert {
+    condition     = aws_cognito_user_pool_client.app.token_validity_units[0].id_token == "minutes"
+    error_message = "production app client id_token unit must be minutes"
+  }
+
+  # token_validity_units: refresh_token=days
+  assert {
+    condition     = aws_cognito_user_pool_client.app.token_validity_units[0].refresh_token == "days"
+    error_message = "production app client refresh_token unit must be days"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 11: dev env — integration-test app client created with correct flows
+#          and outputs are correctly populated
+#
+# Satisfies AC 3: second client exists when environment == "dev",
+# has ALLOW_ADMIN_USER_PASSWORD_AUTH, no SRP, generate_secret=false.
+# Satisfies AC 4: count = 1 in dev.
+# Satisfies AC 5: app_client_id non-empty, integration_test_app_client_id non-empty.
+# ---------------------------------------------------------------------------
+run "dev_integration_test_client_exists_with_admin_password_auth" {
+  command = plan
+
+  variables {
+    name        = "knotify-dev-user-pool"
+    environment = "dev"
+  }
+
+  override_resource {
+    target = aws_cognito_user_pool_client.app
+    values = {
+      id = "dev-app-client-id"
+    }
+    override_during = plan
+  }
+
+  override_resource {
+    target = aws_cognito_user_pool_client.integration_test[0]
+    values = {
+      id = "dev-integration-test-client-id"
+    }
+    override_during = plan
+  }
+
+  # Count must be 1 in dev
+  assert {
+    condition     = length(aws_cognito_user_pool_client.integration_test) == 1
+    error_message = "integration_test client must be created (count=1) in dev environment"
+  }
+
+  # generate_secret must be false
+  assert {
+    condition     = aws_cognito_user_pool_client.integration_test[0].generate_secret == false
+    error_message = "integration_test client generate_secret must be false"
+  }
+
+  # ADMIN_USER_PASSWORD_AUTH must be present
+  assert {
+    condition     = contains(aws_cognito_user_pool_client.integration_test[0].explicit_auth_flows, "ALLOW_ADMIN_USER_PASSWORD_AUTH")
+    error_message = "integration_test client must include ALLOW_ADMIN_USER_PASSWORD_AUTH"
+  }
+
+  # ALLOW_REFRESH_TOKEN_AUTH must be present
+  assert {
+    condition     = contains(aws_cognito_user_pool_client.integration_test[0].explicit_auth_flows, "ALLOW_REFRESH_TOKEN_AUTH")
+    error_message = "integration_test client must include ALLOW_REFRESH_TOKEN_AUTH"
+  }
+
+  # SRP must NOT be present on integration-test client
+  assert {
+    condition     = !contains(aws_cognito_user_pool_client.integration_test[0].explicit_auth_flows, "ALLOW_USER_SRP_AUTH")
+    error_message = "integration_test client must NOT include ALLOW_USER_SRP_AUTH"
+  }
+
+  # app_client_id output must be non-empty (references prod client)
+  assert {
+    condition     = output.app_client_id != ""
+    error_message = "app_client_id output must be non-empty in dev"
+  }
+
+  # integration_test_app_client_id output must be non-empty in dev
+  assert {
+    condition     = output.integration_test_app_client_id != ""
+    error_message = "integration_test_app_client_id output must be non-empty in dev"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 12: prod env — integration-test client NOT created (count=0)
+#          and integration_test_app_client_id output is empty string
+#
+# Satisfies AC 4: count = 0 in prod.
+# Satisfies AC 5: integration_test_app_client_id == "" in prod.
+# ---------------------------------------------------------------------------
+run "prod_integration_test_client_absent_output_empty" {
+  command = plan
+
+  variables {
+    name        = "knotify-prod-user-pool"
+    environment = "prod"
+  }
+
+  override_resource {
+    target = aws_cognito_user_pool_client.app
+    values = {
+      id = "prod-app-client-id"
+    }
+    override_during = plan
+  }
+
+  # integration_test resource must not exist in prod
+  assert {
+    condition     = length(aws_cognito_user_pool_client.integration_test) == 0
+    error_message = "integration_test client must NOT be created (count=0) in prod environment"
+  }
+
+  # app_client_id output must be non-empty in prod
+  assert {
+    condition     = output.app_client_id != ""
+    error_message = "app_client_id output must be non-empty in prod"
+  }
+
+  # integration_test_app_client_id output must be empty string in prod
+  assert {
+    condition     = output.integration_test_app_client_id == ""
+    error_message = "integration_test_app_client_id output must be empty string in prod"
+  }
+}
