@@ -197,7 +197,7 @@ OIDC migration is scheduled as a story in the pre-launch hardening phase; the Gi
 - Token lifetimes: ID/Access = 1 hour, Refresh = 30 days
 - Advanced Security Features (compromised credentials, adaptive authentication) — enable in prod
 
-**Out of scope for v1:** social login (Google/Apple) — can be added later via Cognito federated identities.
+**Out of scope for v1:** social login (Google/Apple) — can be added later via Cognito federated identities. **Forward-compat note (phase-4 brainstorm M2):** the User Pool schema declared in phase 4 story 4.1 nonetheless includes `given_name`, `family_name`, `gender`, and `birthdate` (all `mutable=true`, `required=false`). Cognito schema attributes are immutable post-creation, so declaring them now avoids a User Pool rebuild — and the forced re-signup of every existing user — when federation lands. In v1, email-only signup leaves all four NULL on the resulting Cognito user; the `cognito_post_confirmation` Lambda already handles the NULL branch (phase 3 story 3.6).
 
 ### 4.2 API Gateway (HTTP API + CloudFront)
 

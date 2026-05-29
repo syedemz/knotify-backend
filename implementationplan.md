@@ -30,7 +30,7 @@ phases:
 - phase: 4
   title: Cognito
   file: implementationplan/phase-4-cognito.md
-  ready: false
+  ready: true
   done: false
 
 - phase: 5
