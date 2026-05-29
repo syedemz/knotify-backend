@@ -133,3 +133,61 @@ Two BLOCKERS (B1 wrong-token claim, B2 V2 trigger config under-spec'd), three MA
 The two blockers compound: if 4.4 ships claiming the ID token only, and 4.5/4.6 verify against the ID token, phase 5's per-route gate has no enforcement surface and §13a layer 2 is effectively absent. This is silent — every test passes — until the first phase-5 business endpoint tries to read the claim from the access-token authorizer context and finds nothing.
 
 Recommendation: address B1, B2, M1, M2, M3, M4 in the PRD before dispatching any story. The Md/Mn items can ride forward as notes-block updates without re-running the brainstorm.
+
+---
+
+## 2026-05-29 brainstorm (re-run after PRD updates)
+
+PRD was updated 2026-05-29 with the resolutions confirmed in `questions/phase4brainstormanswers.txt`. This second pass validates the resolutions and surfaces any new gaps introduced by the edits.
+
+### Resolution audit — all clean
+
+| ID | Resolution path | Verified in PRD |
+|---|---|---|
+| **B1** | Claim written to BOTH `idTokenGeneration` AND `accessTokenGeneration` | 4.4 AC #1, 4.4 AC #5 (test), 4.6 AC #4 (e2e test) — all three call out the two-token contract explicitly |
+| **B2** | Pin V2 + bump advanced_security_mode to AUDIT | 4.4 AC #4 forbids V1, 4.5 AC #1 defaults AUDIT, 4.1 AC #4 wires the variable into `user_pool_add_ons` |
+| **M1** | `DB_SECRET_NAME` + friendly name | 4.4 AC #2 |
+| **M2** | Keep all four schema attrs as forward-compat | 4.1 AC #2 + architecture.md §4.1 forward-compat note |
+| **M3** | Pin to `lambda_config` block | 4.3 AC #1 |
+| **M4** | Dev-only second app client with ADMIN_USER_PASSWORD_AUTH | 4.2 AC #3/#4/#5 + 4.6 AC #4 |
+| **Md1** | Cold-start latency documented in 4.4 README | 4.4 AC #6 |
+| **Md4** | Aurora teardown via master credential | 4.6 AC #5 |
+
+### New issues introduced by the edits (none are blockers)
+
+**N1 — Story 4.1 ↔ 4.4 Terraform dependency arc.**
+4.4 AC #4 says the pool's `lambda_config.pre_token_generation_config.lambda_arn = module.cognito_pre_token_generation.lambda_arn`. The aws_cognito_user_pool (story 4.1) and the PreTokenGeneration Lambda module (story 4.4) now reference each other through Terraform's DAG: User Pool → Lambda ARN (for lambda_config), and `aws_lambda_permission` → User Pool ARN (for source_arn). Terraform handles this fine because the Lambda function ARN is known at plan time and the lambda_permission is a separate node — no cycle. But operationally, **Cognito does not validate the trigger Lambda at User Pool creation time for V2 pre_token_generation_config** (unlike some V1 triggers), so the apply order is: Lambda → User Pool (with trigger set) → Lambda Permission. First sign-in attempt is the first true validation.
+
+Severity: NONE — Terraform's DAG resolves this correctly. Flagging for the implementor so they know to expect the standard ordering and not chase a phantom cycle.
+
+**N2 — `count` + output expression for the dev-only app client.**
+4.2 AC #5 outputs `integration_test_app_client_id` as a string — empty in prod, the dev-only id in dev. With `count = var.environment == "dev" ? 1 : 0`, the resource becomes a list and a direct `aws_cognito_user_pool_client.integration_test.id` would fail at plan time in prod (no zero-th element). The expected idiom is:
+
+```hcl
+output "integration_test_app_client_id" {
+  value = try(aws_cognito_user_pool_client.integration_test[0].id, "")
+}
+```
+
+Severity: MINOR — implementor will figure it out, but pinning the idiom in the AC would save the search. Optional clarification; not blocking.
+
+**N3 — IAM permissions for the 4.6 teardown to read the Aurora master secret.**
+4.6 AC #5 has the test connect to Aurora as master to issue `DELETE FROM users …`. The master credential lives in `rds!cluster-<resource_id>` (managed by RDS). Who runs the test, and does their IAM principal have `secretsmanager:GetSecretValue` on that ARN?
+
+Two execution contexts:
+  - Local dev (developer runs `pytest -m integration` against dev cloud): the developer's AWS profile needs `secretsmanager:GetSecretValue` on `rds!cluster-…`. This is already true for any developer admin-shaped role in the dev account.
+  - CI (if the test eventually runs in deploy.yml as a post-apply gate): the CI role needs the same permission added to its policy.
+
+For phase 4 we're not adding CI integration-test execution (that's hardening territory), so this only matters for the local-dev path. Implementor should document the required IAM in the test's README. Severity: MINOR.
+
+**N4 — Story 4.5 cost flag.**
+The 4.5 notes block now documents the Cognito Plus-plan cost activation at advanced_security_mode = AUDIT. The "Confirm cost is acceptable, or fall back to investigating whether the AWS provider lets OFF + V2 coexist" instruction effectively asks the implementor to do an empirical spike: try apply with OFF first, if it fails fall back to AUDIT. That's the pragmatic path. Flagging that the implementor's first-apply path may iterate — and that the dev cost is the only signal until prod traffic exists. Severity: NONE — already in the notes.
+
+**N5 — MFA = "OPTIONAL" left unaddressed.**
+Mn1 from the first brainstorm raised whether `mfa_configuration="OPTIONAL"` vs `"OFF"` was intended. The PRD still says OPTIONAL. User did not provide guidance. Going with "OPTIONAL" is harmless (users can opt in via the React Native UI if Amplify exposes it; otherwise it just sits dormant) but if the team's intent is "no MFA UI surface in v1, hardened in phase 11", "OFF" is cleaner. Severity: COSMETIC. Flagging once more so the implementor is aware; not blocking.
+
+### Verdict
+
+PRD is dispatch-ready. The four findings above are minor/informational — none rise to BLOCKER or MAJOR. N1 (Terraform arc) and N4 (cost spike) are operational notes for the implementor; N2 (Terraform output idiom) and N3 (IAM for teardown) are micro-clarifications. N5 (MFA) is a cosmetic intent question the user may revisit later.
+
+Recommendation: PROCEED.
