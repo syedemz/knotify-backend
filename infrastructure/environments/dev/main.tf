@@ -191,17 +191,30 @@ resource "null_resource" "db_migrator_invoke" {
     lambda_version = module.db_migrator.function_version
   }
 
-  # The invoke is retried up to 3 times with a 30s wait between attempts.
-  # After Terraform finishes Modifying the Lambda + alias, the first invoke
-  # can race against AWS-side ENI/version propagation: the function runs,
-  # but its outbound TCP to Aurora black-holes (Connection timed out at
-  # ~16s with no SYN-ACK). A subsequent manual invoke succeeds reliably
-  # within ~300ms, confirming the failure is purely the post-modify warm-up
-  # window. Without this retry the apply fails non-deterministically on
-  # every code change even though the migrator is healthy.
+  # The invoke is retried up to 6 times with a 45s wait between attempts
+  # (~4 min total budget). Two distinct transient failure modes are absorbed
+  # here:
+  #
+  #   1. Post-modify Lambda warm-up — after Terraform Modifies the Lambda +
+  #      alias, the first invoke can race against AWS-side ENI/version
+  #      propagation: outbound TCP to Aurora black-holes (Connection timed
+  #      out at ~16s with no SYN-ACK). Resolves within ~30s.
+  #
+  #   2. Aurora cold boot after a destroy round-trip — when the cluster is
+  #      created from scratch in the same apply, RDS reports "available" as
+  #      soon as the instance is provisioned, but cross-VPC DNS propagation
+  #      to the Lambda's resolver and PostgreSQL accepting connections both
+  #      lag the API status by 2-4 min. The cluster waiter doesn't help —
+  #      only actual connection attempts prove reachability. Observed
+  #      progression: attempt 1 = DNS NXDOMAIN, attempt 3 = Connection
+  #      refused, attempt 4+ = success.
+  #
+  # Without this retry the apply fails non-deterministically on every code
+  # change and reliably on every destroy-then-recreate even though the
+  # migrator is healthy.
   provisioner "local-exec" {
     command = <<-EOT
-      max_attempts=3
+      max_attempts=6
       attempt=1
       while [ $attempt -le $max_attempts ]; do
         echo "=== invoke attempt $attempt of $max_attempts ==="
@@ -220,8 +233,8 @@ resource "null_resource" "db_migrator_invoke" {
         echo
         if jq -e '.FunctionError' invoke_meta.json > /dev/null 2>&1; then
           if [ $attempt -lt $max_attempts ]; then
-            echo "WARN: db_migrator returned a FunctionError; retrying in 30s (transient post-deploy ENI/version propagation)" >&2
-            sleep 30
+            echo "WARN: db_migrator returned a FunctionError; retrying in 45s (transient ENI/version propagation or Aurora cold boot)" >&2
+            sleep 45
             attempt=$((attempt + 1))
             continue
           else

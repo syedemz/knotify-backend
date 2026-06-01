@@ -168,12 +168,12 @@ resource "null_resource" "db_migrator_invoke" {
     lambda_version = module.db_migrator.function_version
   }
 
-  # See dev/main.tf for the rationale on the retry loop — the first invoke
-  # after a Lambda Modify can race against AWS-side ENI/version propagation
-  # and time out connecting to Aurora.
+  # See dev/main.tf for the rationale on the retry loop — absorbs both the
+  # post-modify Lambda warm-up (ENI/version propagation) and Aurora cold
+  # boot after a destroy round-trip. ~4 min total budget.
   provisioner "local-exec" {
     command = <<-EOT
-      max_attempts=3
+      max_attempts=6
       attempt=1
       while [ $attempt -le $max_attempts ]; do
         echo "=== invoke attempt $attempt of $max_attempts ==="
@@ -192,8 +192,8 @@ resource "null_resource" "db_migrator_invoke" {
         echo
         if jq -e '.FunctionError' invoke_meta.json > /dev/null 2>&1; then
           if [ $attempt -lt $max_attempts ]; then
-            echo "WARN: db_migrator returned a FunctionError; retrying in 30s (transient post-deploy ENI/version propagation)" >&2
-            sleep 30
+            echo "WARN: db_migrator returned a FunctionError; retrying in 45s (transient ENI/version propagation or Aurora cold boot)" >&2
+            sleep 45
             attempt=$((attempt + 1))
             continue
           else
