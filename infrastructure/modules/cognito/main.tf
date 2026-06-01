@@ -51,7 +51,14 @@ resource "aws_cognito_user_pool" "this" {
 
   # OPTIONAL: users may set up MFA but are not required to.
   # MFA enforcement is deferred to phase 11 hardening per architecture.md §13 #1.
+  # Cognito rejects mfa_configuration != "OFF" unless at least one method is
+  # enabled — TOTP (software token) satisfies that without requiring SNS sender
+  # setup (SMS) or the newer email-MFA preview. SMS/email enrollment can be
+  # added in phase 11 alongside the ENFORCED bump.
   mfa_configuration = "OPTIONAL"
+  software_token_mfa_configuration {
+    enabled = true
+  }
 
   # Email-only account recovery. SMS is explicitly excluded.
   account_recovery_setting {
