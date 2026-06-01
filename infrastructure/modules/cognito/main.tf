@@ -18,21 +18,6 @@ terraform {
 data "aws_region" "current" {}
 
 # ---------------------------------------------------------------------------
-# Locals
-#
-# token_validity_* locals centralise the unit strings alongside the numeric
-# validity variables so story 4.2's app client resources can reference both
-# consistently. They are also the target of plan-mode test 8, which asserts
-# the correct unit strings are in place before any app client resource exists.
-# ---------------------------------------------------------------------------
-
-locals {
-  access_token_unit  = "hours"
-  id_token_unit      = "hours"
-  refresh_token_unit = "days"
-}
-
-# ---------------------------------------------------------------------------
 # Cognito User Pool
 #
 # Schema attributes are IMMUTABLE after creation. All four profile attributes

@@ -329,55 +329,15 @@ run "advanced_security_mode_override_accepted" {
 }
 
 # ---------------------------------------------------------------------------
-# Test 8: Token validity defaults — access=1h, id=1h, refresh=30d
+# Test 8: Token validity defaults — asserted on the app client resource
 #
-# Satisfies AC 5: id_token=1h, access_token=1h, refresh_token=30d.
-# aws_cognito_user_pool does not carry a token_validity_units block — that
-# block lives on aws_cognito_user_pool_client (added in story 4.2). The module
-# declares input variables with the correct defaults and local unit strings
-# that story 4.2 will consume. We assert the locals have the correct unit
-# strings and that the input variables default to the required numeric values.
+# AC 5 (access=1h, id=1h, refresh=30d) is enforced directly on
+# aws_cognito_user_pool_client.app in tests 11+ (story 4.2). The original
+# 4.1-era assertions on `local.*_token_unit` and `var.*_token_validity`
+# were removed when story 4.2 hardcoded the literals on the resource
+# instead of consuming the inputs — keeping unused vars/locals tripped
+# tflint terraform_unused_declarations and blocked the dev deploy.
 # ---------------------------------------------------------------------------
-run "token_validity_locals_and_variable_defaults" {
-  command = plan
-
-  variables {
-    name        = "knotify-test-user-pool"
-    environment = "test"
-    # access_token_validity, id_token_validity, refresh_token_validity
-    # intentionally omitted — testing defaults
-  }
-
-  assert {
-    condition     = local.access_token_unit == "hours"
-    error_message = "access_token unit local must be hours"
-  }
-
-  assert {
-    condition     = local.id_token_unit == "hours"
-    error_message = "id_token unit local must be hours"
-  }
-
-  assert {
-    condition     = local.refresh_token_unit == "days"
-    error_message = "refresh_token unit local must be days"
-  }
-
-  assert {
-    condition     = var.access_token_validity == 1
-    error_message = "access_token_validity variable must default to 1 (hour)"
-  }
-
-  assert {
-    condition     = var.id_token_validity == 1
-    error_message = "id_token_validity variable must default to 1 (hour)"
-  }
-
-  assert {
-    condition     = var.refresh_token_validity == 30
-    error_message = "refresh_token_validity variable must default to 30 (days)"
-  }
-}
 
 # ---------------------------------------------------------------------------
 # Test 9: Outputs — user_pool_id, user_pool_arn, user_pool_endpoint resolve
