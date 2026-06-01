@@ -286,6 +286,11 @@ module "cognito" {
   name        = "knotify-${var.environment}-user-pool"
   environment = var.environment
 
+  # Cognito Advanced Security set to AUDIT minimum to enable V2 PreTokenGeneration
+  # (story 4.4 / brainstorm B2). ENFORCED upgrade and MFA enforcement deferred
+  # to phase 11. See architecture.md §13 #1.
+  advanced_security_mode = var.advanced_security_mode
+
   # Wire the post-confirmation trigger (story 4.3).
   post_confirmation_lambda_arn = module.cognito_post_confirmation.function_arn
 
