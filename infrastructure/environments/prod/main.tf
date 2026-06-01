@@ -214,8 +214,6 @@ resource "null_resource" "db_migrator_invoke" {
 # cognito_post_confirmation Lambda — story 3.6
 #
 # PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
-# Wiring (aws_cognito_user_pool_lambda_config and aws_lambda_permission
-# for cognito-idp.amazonaws.com) is deferred to phase 4 story 4.3.
 # ---------------------------------------------------------------------------
 
 module "cognito_post_confirmation" {
@@ -240,4 +238,63 @@ module "cognito_post_confirmation" {
   environment_variables = {
     DB_SECRET_NAME = "knotify-${var.environment}-app-user-credential"
   }
+}
+
+# ---------------------------------------------------------------------------
+# cognito_pre_token_generation Lambda — story 4.4
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+# ---------------------------------------------------------------------------
+
+module "cognito_pre_token_generation" {
+  source = "../../modules/lambda"
+
+  function_name = "knotify-cognito-pre-token-generation-${var.environment}"
+  handler       = "handler.handler"
+  filename      = "${path.module}/../../../build/cognito_pre_token_generation.zip"
+
+  layers = [
+    module.observability_layer.layer_arn,
+    module.db_layer.layer_arn,
+  ]
+
+  role_arn = module.iam_roles.role_arns["cognito_trigger"]
+
+  vpc_config = {
+    subnet_ids         = module.networking.private_subnet_ids
+    security_group_ids = [module.networking.lambda_security_group_id]
+  }
+
+  environment_variables = {
+    DB_SECRET_NAME = "knotify-${var.environment}-app-user-credential"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Cognito User Pool — story 4.1 / 4.2 / 4.3 / 4.4
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+#
+# Cognito Advanced Security set to AUDIT minimum to enable V2 PreTokenGeneration
+# (story 4.4 / brainstorm B2). ENFORCED upgrade and MFA enforcement deferred
+# to phase 11. See architecture.md §13 #1.
+# ---------------------------------------------------------------------------
+
+module "cognito" {
+  source = "../../modules/cognito"
+
+  name        = "knotify-${var.environment}-user-pool"
+  environment = var.environment
+
+  # Cognito Advanced Security set to AUDIT minimum to enable V2 PreTokenGeneration
+  # (story 4.4 / brainstorm B2). ENFORCED upgrade and MFA enforcement deferred
+  # to phase 11. See architecture.md §13 #1.
+  advanced_security_mode = var.advanced_security_mode
+
+  # Wire the post-confirmation trigger (story 4.3).
+  post_confirmation_lambda_arn = module.cognito_post_confirmation.function_arn
+
+  # Wire the pre-token-generation trigger (story 4.4).
+  # V2_0 trigger shape — requires AUDIT Advanced Security Mode (default).
+  pre_token_generation_lambda_arn = module.cognito_pre_token_generation.function_arn
 }

@@ -1,6 +1,6 @@
 phase: 4
 title: Cognito
-last_updated: 2026-05-29  # phase-4 brainstorm resolutions applied (PRD ready)
+last_updated: 2026-05-29  # story 4.6 done
 
 context_summary: |
   Provisions the Cognito User Pool and app clients per §4.1 of architecture.md, wires the post-confirmation trigger Lambda built in phase 3 so signup flows are complete end-to-end on the day this phase ships, and adds the PreTokenGeneration V2 trigger Lambda that embeds the `custom:profile_complete` claim in BOTH the issued ID token AND access token (layer 2 of the §13a enforcement model). Email is the only sign-in alias — `preferred_username` is NOT used for auth, NOT a signup attribute, and is set later via the profile-completion endpoint (phase 6). MFA enforcement is intentionally deferred to the pre-launch hardening phase (§13 #1 resolution in v1.6); Cognito Advanced Security Mode is set to AUDIT (the minimum required by V2 PreTokenGeneration), with the ENFORCED upgrade deferred to phase 11. Subsequent phases consume the Cognito User Pool ID for the HTTP API Cognito JWT authorizer (phase 5) and the AppSync Cognito auth mode (phase 8).
@@ -11,8 +11,9 @@ stories:
   - id: 4.1
     title: Cognito User Pool Terraform module
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: []
+    tracking_issue: 47
     acceptance_criteria:
       - File infrastructure/modules/cognito/main.tf creates aws_cognito_user_pool with username_attributes=["email"], auto_verified_attributes=["email"], password_policy minimum_length=12 require_uppercase=true require_lowercase=true require_numbers=true require_symbols=true, mfa_configuration="OPTIONAL", account_recovery_setting with email as the only mechanism (no SMS)
       - schema attributes include given_name (mutable=true, required=false) and family_name (mutable=true, required=false) — both optional, populated when the signup path supplies them; gender (string, mutable=true, required=false) and birthdate (string, mutable=true, required=false) — both optional, declared NOW for forward-compatibility with social-identity providers (Google, Apple) that are out of scope for v1 (architecture.md §4.1) but will land in a later phase. Declaring them now avoids a User Pool rebuild later, since Cognito schema attributes are immutable post-creation. In v1, email-only signup leaves all four NULL on the resulting Cognito user; the cognito_post_confirmation Lambda (phase 3 story 3.6) already handles the NULL branch
@@ -25,8 +26,9 @@ stories:
   - id: 4.2
     title: Cognito app clients (production SRP + dev-only integration-test)
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [4.1]
+    tracking_issue: 48
     acceptance_criteria:
       - Production app client `knotify-${var.environment}-app` is created with generate_secret=false (public client), explicit_auth_flows includes ALLOW_USER_SRP_AUTH and ALLOW_REFRESH_TOKEN_AUTH (no ADMIN/USER_PASSWORD flows — SRP only), prevent_user_existence_errors="ENABLED". This is the client the React Native app uses via aws-amplify, which implements the SRP handshake natively in JS
       - refresh_token_validity 30, access_token_validity 60, id_token_validity 60 with token_validity_units configured for minutes/days as appropriate
@@ -38,8 +40,9 @@ stories:
   - id: 4.3
     title: Wire post-confirmation trigger to the User Pool
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [4.1]
+    tracking_issue: 49
     acceptance_criteria:
       - The `lambda_config` nested block on aws_cognito_user_pool (story 4.1) references the post_confirmation Lambda ARN from phase 3's knotify-cognito-post-confirmation function via the `post_confirmation` field (V1 single-ARN form). There is no standalone aws_cognito_user_pool_lambda_config resource — wiring lives in the `lambda_config` block on the pool itself. Brainstorm M3 resolution
       - aws_lambda_permission grants cognito-idp.amazonaws.com permission to invoke the Lambda from the User Pool ARN (this resource is intentionally deferred from phase 3 story 3.6 to here — phase 3 builds the function with no permission since the source service is not yet known)
@@ -49,8 +52,9 @@ stories:
   - id: 4.4
     title: PreTokenGeneration Lambda (profile_complete claim embedding)
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [4.1]
+    tracking_issue: 50
     acceptance_criteria:
       - Source directory src/functions/cognito_pre_token_generation/ contains a Lambda handler that receives a Cognito PreTokenGeneration_Authentication event AND PreTokenGeneration_RefreshTokens event (V2 trigger shape — see lambda_version pin below), reads the `sub` claim from the event's request.userAttributes, queries Aurora for users.profile_complete_verified WHERE user_id = sub, and returns the event with `response.claimsAndScopeOverrideDetails.idTokenGeneration.claimsToAddOrOverride["custom:profile_complete"]` AND `response.claimsAndScopeOverrideDetails.accessTokenGeneration.claimsToAddOrOverride["custom:profile_complete"]` BOTH set to "true"|"false". The claim MUST be written to both tokens — the HTTP API Cognito JWT authorizer (phase 5) reads the access token by default, while the mobile app reads the ID token for client-side routing. Brainstorm B1 resolution
       - The Lambda is deployed via the lambda module (phase 3 story 3.1) with the observability + db layers (phase 3 stories 3.2, 3.3) attached, IAM role cognito_trigger (phase 3 story 3.4 — shared with cognito_post_confirmation; their permission sets are identical), VPC config wired to phase 1 private subnets, environment variable DB_SECRET_NAME set to the friendly secret name pattern `knotify-${var.environment}-app-user-credential` (NOT an ARN — boto3 secretsmanager:GetSecretValue does NOT accept wildcard ARN strings; the friendly name is what's resolvable; see infrastructure/environments/dev/main.tf line 279 for the matching cognito_post_confirmation pattern). The IAM role's existing scoping `arn:...:secret:knotify-${var.environment}-app-user-credential-*` covers this Lambda. Brainstorm M1 resolution
@@ -63,8 +67,9 @@ stories:
   - id: 4.5
     title: Per-environment wiring with deferred hardening flags
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [4.1, 4.2, 4.3, 4.4]
+    tracking_issue: 51
     acceptance_criteria:
       - Both dev and prod environments instantiate module.cognito
       - Variable advanced_security_mode defaults to "AUDIT" in both environments for v1 (bumped from the original "OFF" plan during phase-4 brainstorm B2 resolution — V2 PreTokenGeneration in story 4.4 requires the User Pool to have advanced_security_mode at least AUDIT per AWS docs; AUDIT is the minimum that enables the V2 trigger without enforcing risk-based blocking, and it incurs Cognito Plus-plan billing). The variable exists and is wired so the hardening phase only flips the value to "ENFORCED"
@@ -74,8 +79,9 @@ stories:
   - id: 4.6
     title: End-to-end signup test
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [4.1, 4.2, 4.3, 4.4, 4.5]
+    tracking_issue: 52
     acceptance_criteria:
       - An integration test (under tests/integration/cognito_signup_test.py or equivalent) drives a real signup against the dev User Pool using boto3.cognito-idp.sign_up with synthetic credentials and a unique per-run test email of the form `knotify-test+<uuid4>@example.com` (uniqueness prevents Cognito's email-uniqueness rule from blocking re-runs and prevents Aurora row accumulation from colliding on PK)
       - The test confirms the user via admin_confirm_sign_up to fire the post-confirmation trigger

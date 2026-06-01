@@ -67,3 +67,16 @@ variable "dynamodb_deletion_protection" {
   type        = bool
   default     = false
 }
+
+# ---------------------------------------------------------------------------
+# Cognito module variables — story 4.5
+# advanced_security_mode is set to AUDIT (the minimum required by the V2
+# PreTokenGeneration trigger — brainstorm B2). Flip to ENFORCED in the
+# phase 11 hardening pass (architecture.md §13 #1).
+# ---------------------------------------------------------------------------
+
+variable "advanced_security_mode" {
+  description = "Cognito Advanced Security Mode. Valid values: OFF | AUDIT | ENFORCED. Default AUDIT is the minimum required by the V2 PreTokenGeneration trigger (story 4.4 / brainstorm B2). Upgrade to ENFORCED in phase 11."
+  type        = string
+  default     = "AUDIT"
+}

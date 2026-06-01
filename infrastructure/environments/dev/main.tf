@@ -241,10 +241,9 @@ resource "null_resource" "db_migrator_invoke" {
 # ---------------------------------------------------------------------------
 # cognito_post_confirmation Lambda — story 3.6
 #
-# Built and deployed here; NOT wired to the Cognito User Pool trigger.
-# Wiring (aws_cognito_user_pool_lambda_config and aws_lambda_permission
-# for cognito-idp.amazonaws.com) is deferred to phase 4 story 4.3
-# per brainstorm N1.
+# Built and deployed here. The Cognito User Pool trigger wiring and the
+# aws_lambda_permission granting cognito-idp.amazonaws.com invoke rights
+# live in module.cognito (story 4.3) — see below.
 #
 # The Lambda connects as app_user using the knotify-dev-app-user-credential
 # secret, which is created by the db_migrator Lambda in story 3.7.
@@ -278,4 +277,74 @@ module "cognito_post_confirmation" {
     # arn:...:secret:knotify-<env>-app-user-credential-*
     DB_SECRET_NAME = "knotify-${var.environment}-app-user-credential"
   }
+}
+
+# ---------------------------------------------------------------------------
+# cognito_pre_token_generation Lambda — story 4.4
+#
+# Reads profile_complete_verified from Aurora on every token issuance and
+# embeds it as custom:profile_complete on both the ID token and the access
+# token (brainstorm B1). Uses the shared cognito_trigger IAM role (story 3.4)
+# and the same VPC config + layers as cognito_post_confirmation.
+#
+# DB_SECRET_NAME uses the friendly Secrets Manager secret name — boto3
+# resolves by name (wildcard ARN strings are not accepted by GetSecretValue).
+# ---------------------------------------------------------------------------
+
+module "cognito_pre_token_generation" {
+  source = "../../modules/lambda"
+
+  function_name = "knotify-cognito-pre-token-generation-${var.environment}"
+  handler       = "handler.handler"
+  filename      = "${path.module}/../../../build/cognito_pre_token_generation.zip"
+
+  layers = [
+    module.observability_layer.layer_arn,
+    module.db_layer.layer_arn,
+  ]
+
+  role_arn = module.iam_roles.role_arns["cognito_trigger"]
+
+  vpc_config = {
+    subnet_ids         = module.networking.private_subnet_ids
+    security_group_ids = [module.networking.lambda_security_group_id]
+  }
+
+  environment_variables = {
+    # Friendly Secrets Manager secret name for the app_user credential.
+    # Created by the db_migrator Lambda in story 3.7.
+    # The cognito_trigger IAM role scopes GetSecretValue to
+    # arn:...:secret:knotify-<env>-app-user-credential-*
+    DB_SECRET_NAME = "knotify-${var.environment}-app-user-credential"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Cognito User Pool — story 4.1 / 4.2 / 4.3 / 4.4
+#
+# module.cognito instantiates the User Pool, both app clients, and wires both
+# Lambda triggers (post_confirmation and pre_token_generation) plus their
+# aws_lambda_permission resources that grant cognito-idp.amazonaws.com invoke rights.
+#
+# Both Lambda ARNs use the unqualified function ARN (not the alias ARN) —
+# Cognito invokes the function directly without going through an alias.
+# ---------------------------------------------------------------------------
+
+module "cognito" {
+  source = "../../modules/cognito"
+
+  name        = "knotify-${var.environment}-user-pool"
+  environment = var.environment
+
+  # Cognito Advanced Security set to AUDIT minimum to enable V2 PreTokenGeneration
+  # (story 4.4 / brainstorm B2). ENFORCED upgrade and MFA enforcement deferred
+  # to phase 11. See architecture.md §13 #1.
+  advanced_security_mode = var.advanced_security_mode
+
+  # Wire the post-confirmation trigger (story 4.3).
+  post_confirmation_lambda_arn = module.cognito_post_confirmation.function_arn
+
+  # Wire the pre-token-generation trigger (story 4.4).
+  # V2_0 trigger shape — requires AUDIT Advanced Security Mode (default).
+  pre_token_generation_lambda_arn = module.cognito_pre_token_generation.function_arn
 }
