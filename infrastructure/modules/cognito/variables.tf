@@ -54,3 +54,16 @@ variable "refresh_token_validity" {
   type        = number
   default     = 30
 }
+
+variable "pre_token_generation_lambda_arn" {
+  description = <<-EOT
+    ARN of the cognito_pre_token_generation Lambda function. Wired into the
+    lambda_config pre_token_generation_config block on the User Pool using
+    lambda_version = "V2_0" (brainstorm B2). The V1 pre_token_generation field
+    is explicitly forbidden — V2 is required for claimsAndScopeOverrideDetails.
+    Pass in the unqualified function ARN (not the alias ARN) — Cognito invokes
+    the function directly. In dev/prod environments this is
+    module.cognito_pre_token_generation.function_arn.
+  EOT
+  type        = string
+}

@@ -39,7 +39,8 @@ mock_provider "aws" {
 # ---------------------------------------------------------------------------
 
 variables {
-  post_confirmation_lambda_arn = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-cognito-post-confirmation-sentinel"
+  post_confirmation_lambda_arn    = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-cognito-post-confirmation-sentinel"
+  pre_token_generation_lambda_arn = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-cognito-pre-token-generation-sentinel"
 }
 
 # ---------------------------------------------------------------------------
@@ -493,6 +494,87 @@ run "lambda_permission_cognito_principal_and_user_pool_source_arn" {
   assert {
     condition     = aws_lambda_permission.cognito_post_confirmation_invoke.source_arn == "arn:aws:cognito-idp:eu-central-1:123456789012:userpool/eu-central-1_TestPoolId"
     error_message = "aws_lambda_permission source_arn must be the User Pool ARN"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Story 4.4 tests
+#
+# Tests 16–17 cover pre-token-generation trigger wiring added in story 4.4.
+# All use command = plan (hermetic — no AWS credentials required).
+#
+# Test 16: lambda_config.pre_token_generation_config has lambda_version="V2_0"
+#          and lambda_arn equals the input variable ARN.
+# Test 17: aws_lambda_permission grants cognito-idp.amazonaws.com invoke rights
+#          with the User Pool ARN as source_arn for the pre-token-generation Lambda.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Test 16: pre_token_generation_config has V2_0 version and correct lambda_arn
+#
+# Satisfies AC 4 (story 4.4): the lambda_config nested block on
+# aws_cognito_user_pool.this contains a pre_token_generation_config block with
+# lambda_version = "V2_0" and lambda_arn wired to the input variable ARN.
+# The V1 pre_token_generation field is EXPLICITLY FORBIDDEN — this test
+# asserts the V2_0 version string locks in the V2 trigger shape (brainstorm B2).
+# ---------------------------------------------------------------------------
+run "pre_token_generation_config_v2_version_and_lambda_arn" {
+  command = plan
+
+  variables {
+    name                            = "knotify-test-user-pool"
+    environment                     = "test"
+    pre_token_generation_lambda_arn = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-cognito-pre-token-generation-dev"
+  }
+
+  assert {
+    condition     = aws_cognito_user_pool.this.lambda_config[0].pre_token_generation_config[0].lambda_version == "V2_0"
+    error_message = "pre_token_generation_config lambda_version must be V2_0"
+  }
+
+  assert {
+    condition     = aws_cognito_user_pool.this.lambda_config[0].pre_token_generation_config[0].lambda_arn == "arn:aws:lambda:eu-central-1:123456789012:function:knotify-cognito-pre-token-generation-dev"
+    error_message = "pre_token_generation_config lambda_arn must equal var.pre_token_generation_lambda_arn"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 17: aws_lambda_permission for pre-token-generation grants correct rights
+#
+# Satisfies AC 4 (story 4.4): aws_lambda_permission grants the Cognito service
+# principal permission to invoke the pre-token-generation Lambda, scoped to the
+# specific User Pool ARN (source_arn) to prevent confused-deputy escalation.
+# ---------------------------------------------------------------------------
+run "lambda_permission_pre_token_generation_cognito_principal_and_user_pool_arn" {
+  command = plan
+
+  variables {
+    name                            = "knotify-test-user-pool"
+    environment                     = "test"
+    pre_token_generation_lambda_arn = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-cognito-pre-token-generation-dev"
+  }
+
+  override_resource {
+    target = aws_cognito_user_pool.this
+    values = {
+      arn = "arn:aws:cognito-idp:eu-central-1:123456789012:userpool/eu-central-1_TestPoolId"
+    }
+    override_during = plan
+  }
+
+  assert {
+    condition     = aws_lambda_permission.cognito_pre_token_generation_invoke.principal == "cognito-idp.amazonaws.com"
+    error_message = "pre-token-generation aws_lambda_permission principal must be cognito-idp.amazonaws.com"
+  }
+
+  assert {
+    condition     = aws_lambda_permission.cognito_pre_token_generation_invoke.action == "lambda:InvokeFunction"
+    error_message = "pre-token-generation aws_lambda_permission action must be lambda:InvokeFunction"
+  }
+
+  assert {
+    condition     = aws_lambda_permission.cognito_pre_token_generation_invoke.source_arn == "arn:aws:cognito-idp:eu-central-1:123456789012:userpool/eu-central-1_TestPoolId"
+    error_message = "pre-token-generation aws_lambda_permission source_arn must be the User Pool ARN"
   }
 }
 

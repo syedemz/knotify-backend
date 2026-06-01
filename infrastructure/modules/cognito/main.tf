@@ -142,6 +142,17 @@ resource "aws_cognito_user_pool" "this" {
 
   lambda_config {
     post_confirmation = var.post_confirmation_lambda_arn
+
+    # Story 4.4 — V2 PreTokenGeneration trigger.
+    # lambda_version MUST be "V2_0"; the V1 pre_token_generation field is
+    # explicitly forbidden (it cannot coexist with V2 and would silently
+    # downgrade the trigger shape). V2 requires AUDIT or ENFORCED Advanced
+    # Security Mode on the User Pool — that is set via var.advanced_security_mode
+    # (default "AUDIT" per brainstorm B2).
+    pre_token_generation_config {
+      lambda_version = "V2_0"
+      lambda_arn     = var.pre_token_generation_lambda_arn
+    }
   }
 }
 
@@ -161,6 +172,23 @@ resource "aws_lambda_permission" "cognito_post_confirmation_invoke" {
   statement_id  = "AllowCognitoInvokePostConfirmation"
   action        = "lambda:InvokeFunction"
   function_name = var.post_confirmation_lambda_arn
+  principal     = "cognito-idp.amazonaws.com"
+  source_arn    = aws_cognito_user_pool.this.arn
+}
+
+# ---------------------------------------------------------------------------
+# Lambda invoke permission — story 4.4
+#
+# Grants cognito-idp.amazonaws.com permission to invoke the pre-token-generation
+# Lambda. source_arn is scoped to this User Pool's ARN to prevent confused-
+# deputy privilege escalation (any other User Pool cannot use this permission
+# to invoke the function).
+# ---------------------------------------------------------------------------
+
+resource "aws_lambda_permission" "cognito_pre_token_generation_invoke" {
+  statement_id  = "AllowCognitoInvokePreTokenGeneration"
+  action        = "lambda:InvokeFunction"
+  function_name = var.pre_token_generation_lambda_arn
   principal     = "cognito-idp.amazonaws.com"
   source_arn    = aws_cognito_user_pool.this.arn
 }

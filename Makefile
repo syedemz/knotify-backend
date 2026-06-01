@@ -103,6 +103,8 @@ package-all:
 	cp "$(SRC_ROOT)/layers/db/knotify-db-layer.zip" "$(BUILD_DIR)/"
 	@echo "[package-all] Building cognito_post_confirmation function ..."
 	$(MAKE) package FUNC=cognito_post_confirmation
+	@echo "[package-all] Building cognito_pre_token_generation function ..."
+	$(MAKE) package FUNC=cognito_pre_token_generation
 	@echo "[package-all] Building db_migrator function ..."
 	$(MAKE) package FUNC=db_migrator
 	@echo "[package-all] Done — all artifacts in $(BUILD_DIR)/"
