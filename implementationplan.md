@@ -1,5 +1,5 @@
 project: knotify-backend
-last_updated: 2026-05-24 # phase-3 brainstorm resolutions applied (PRD ready)
+last_updated: 2026-06-01 # phase-4 merged into development (PR #53)
 
 phases:
 
@@ -31,7 +31,7 @@ phases:
   title: Cognito
   file: implementationplan/phase-4-cognito.md
   ready: true
-  done: false
+  done: true
 
 - phase: 5
   title: API edge (HTTP API + CloudFront + WAF)

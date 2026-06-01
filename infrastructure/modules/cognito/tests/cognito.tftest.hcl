@@ -445,9 +445,9 @@ run "lambda_config_post_confirmation_equals_input_arn" {
   command = plan
 
   variables {
-    name                          = "knotify-test-user-pool"
-    environment                   = "test"
-    post_confirmation_lambda_arn  = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-cognito-post-confirmation-dev"
+    name                         = "knotify-test-user-pool"
+    environment                  = "test"
+    post_confirmation_lambda_arn = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-cognito-post-confirmation-dev"
   }
 
   assert {
