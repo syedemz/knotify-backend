@@ -1,6 +1,6 @@
 phase: 4
 title: Cognito
-last_updated: 2026-05-29  # story 4.5 done
+last_updated: 2026-05-29  # story 4.6 done
 
 context_summary: |
   Provisions the Cognito User Pool and app clients per §4.1 of architecture.md, wires the post-confirmation trigger Lambda built in phase 3 so signup flows are complete end-to-end on the day this phase ships, and adds the PreTokenGeneration V2 trigger Lambda that embeds the `custom:profile_complete` claim in BOTH the issued ID token AND access token (layer 2 of the §13a enforcement model). Email is the only sign-in alias — `preferred_username` is NOT used for auth, NOT a signup attribute, and is set later via the profile-completion endpoint (phase 6). MFA enforcement is intentionally deferred to the pre-launch hardening phase (§13 #1 resolution in v1.6); Cognito Advanced Security Mode is set to AUDIT (the minimum required by V2 PreTokenGeneration), with the ENFORCED upgrade deferred to phase 11. Subsequent phases consume the Cognito User Pool ID for the HTTP API Cognito JWT authorizer (phase 5) and the AppSync Cognito auth mode (phase 8).
@@ -79,7 +79,7 @@ stories:
   - id: 4.6
     title: End-to-end signup test
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [4.1, 4.2, 4.3, 4.4, 4.5]
     tracking_issue: 52
     acceptance_criteria:
