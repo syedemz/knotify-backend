@@ -30,6 +30,19 @@ mock_provider "aws" {
 }
 
 # ---------------------------------------------------------------------------
+# File-level variable defaults
+#
+# post_confirmation_lambda_arn: supplied as a sentinel ARN so all run blocks
+# that don't exercise trigger wiring don't need to set it individually.
+# Run blocks for story 4.3 tests override this with the exact ARN being
+# asserted to keep those assertions precise.
+# ---------------------------------------------------------------------------
+
+variables {
+  post_confirmation_lambda_arn = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-cognito-post-confirmation-sentinel"
+}
+
+# ---------------------------------------------------------------------------
 # Test 1: Password policy meets all requirements
 #
 # Satisfies AC 1: password_policy minimum_length=12, require_uppercase=true,
@@ -405,6 +418,81 @@ run "outputs_user_pool_id_arn_endpoint_resolve" {
   assert {
     condition     = output.user_pool_endpoint == "https://cognito-idp.eu-central-1.amazonaws.com/eu-central-1_TestPoolId"
     error_message = "user_pool_endpoint must be https://cognito-idp.<region>.amazonaws.com/<user_pool_id>"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Story 4.3 tests
+#
+# Tests 14–15 cover post-confirmation trigger wiring added in story 4.3.
+# All use command = plan (hermetic — no AWS credentials required).
+#
+# Test 14: lambda_config.post_confirmation equals the input ARN.
+# Test 15: aws_lambda_permission grants cognito-idp.amazonaws.com invoke rights
+#          with the User Pool ARN as source_arn.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Test 14: lambda_config.post_confirmation is wired to the input variable ARN
+#
+# Satisfies AC 1 (story 4.3): the lambda_config nested block on
+# aws_cognito_user_pool.this sets post_confirmation to the ARN passed in via
+# var.post_confirmation_lambda_arn. Wiring lives in the block on the pool
+# itself — no standalone aws_cognito_user_pool_lambda_config resource exists.
+# ---------------------------------------------------------------------------
+run "lambda_config_post_confirmation_equals_input_arn" {
+  command = plan
+
+  variables {
+    name                          = "knotify-test-user-pool"
+    environment                   = "test"
+    post_confirmation_lambda_arn  = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-cognito-post-confirmation-dev"
+  }
+
+  assert {
+    condition     = aws_cognito_user_pool.this.lambda_config[0].post_confirmation == "arn:aws:lambda:eu-central-1:123456789012:function:knotify-cognito-post-confirmation-dev"
+    error_message = "lambda_config.post_confirmation must equal var.post_confirmation_lambda_arn"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 15: aws_lambda_permission grants cognito-idp.amazonaws.com invoke rights
+#          with the User Pool ARN as source_arn
+#
+# Satisfies AC 2 (story 4.3): aws_lambda_permission grants the Cognito service
+# principal permission to invoke the post-confirmation Lambda, scoped to the
+# specific User Pool ARN (source_arn) to prevent confused-deputy escalation.
+# ---------------------------------------------------------------------------
+run "lambda_permission_cognito_principal_and_user_pool_source_arn" {
+  command = plan
+
+  variables {
+    name                         = "knotify-test-user-pool"
+    environment                  = "test"
+    post_confirmation_lambda_arn = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-cognito-post-confirmation-dev"
+  }
+
+  override_resource {
+    target = aws_cognito_user_pool.this
+    values = {
+      arn = "arn:aws:cognito-idp:eu-central-1:123456789012:userpool/eu-central-1_TestPoolId"
+    }
+    override_during = plan
+  }
+
+  assert {
+    condition     = aws_lambda_permission.cognito_post_confirmation_invoke.principal == "cognito-idp.amazonaws.com"
+    error_message = "aws_lambda_permission principal must be cognito-idp.amazonaws.com"
+  }
+
+  assert {
+    condition     = aws_lambda_permission.cognito_post_confirmation_invoke.action == "lambda:InvokeFunction"
+    error_message = "aws_lambda_permission action must be lambda:InvokeFunction"
+  }
+
+  assert {
+    condition     = aws_lambda_permission.cognito_post_confirmation_invoke.source_arn == "arn:aws:cognito-idp:eu-central-1:123456789012:userpool/eu-central-1_TestPoolId"
+    error_message = "aws_lambda_permission source_arn must be the User Pool ARN"
   }
 }
 

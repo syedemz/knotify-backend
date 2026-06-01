@@ -214,8 +214,6 @@ resource "null_resource" "db_migrator_invoke" {
 # cognito_post_confirmation Lambda — story 3.6
 #
 # PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
-# Wiring (aws_cognito_user_pool_lambda_config and aws_lambda_permission
-# for cognito-idp.amazonaws.com) is deferred to phase 4 story 4.3.
 # ---------------------------------------------------------------------------
 
 module "cognito_post_confirmation" {
@@ -240,4 +238,26 @@ module "cognito_post_confirmation" {
   environment_variables = {
     DB_SECRET_NAME = "knotify-${var.environment}-app-user-credential"
   }
+}
+
+# ---------------------------------------------------------------------------
+# Cognito User Pool — story 4.1 / 4.2 / 4.3
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+#
+# Cognito Advanced Security set to AUDIT minimum to enable V2 PreTokenGeneration
+# (story 4.4 / brainstorm B2). ENFORCED upgrade and MFA enforcement deferred
+# to phase 11. See architecture.md §13 #1.
+# ---------------------------------------------------------------------------
+
+module "cognito" {
+  source = "../../modules/cognito"
+
+  name        = "knotify-${var.environment}-user-pool"
+  environment = var.environment
+
+  # Wire the post-confirmation trigger (story 4.3).
+  # function_arn is the unqualified ARN; alias_arn carries the live alias suffix
+  # which Cognito does not require for trigger invocation.
+  post_confirmation_lambda_arn = module.cognito_post_confirmation.function_arn
 }

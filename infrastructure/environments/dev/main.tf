@@ -241,10 +241,9 @@ resource "null_resource" "db_migrator_invoke" {
 # ---------------------------------------------------------------------------
 # cognito_post_confirmation Lambda — story 3.6
 #
-# Built and deployed here; NOT wired to the Cognito User Pool trigger.
-# Wiring (aws_cognito_user_pool_lambda_config and aws_lambda_permission
-# for cognito-idp.amazonaws.com) is deferred to phase 4 story 4.3
-# per brainstorm N1.
+# Built and deployed here. The Cognito User Pool trigger wiring and the
+# aws_lambda_permission granting cognito-idp.amazonaws.com invoke rights
+# live in module.cognito (story 4.3) — see below.
 #
 # The Lambda connects as app_user using the knotify-dev-app-user-credential
 # secret, which is created by the db_migrator Lambda in story 3.7.
@@ -278,4 +277,28 @@ module "cognito_post_confirmation" {
     # arn:...:secret:knotify-<env>-app-user-credential-*
     DB_SECRET_NAME = "knotify-${var.environment}-app-user-credential"
   }
+}
+
+# ---------------------------------------------------------------------------
+# Cognito User Pool — story 4.1 / 4.2 / 4.3
+#
+# module.cognito instantiates the User Pool, both app clients, and now
+# (story 4.3) wires the post-confirmation Lambda trigger + the
+# aws_lambda_permission that grants cognito-idp.amazonaws.com invoke rights.
+#
+# post_confirmation_lambda_arn uses the unqualified function ARN
+# (module.cognito_post_confirmation.function_arn) — not the alias ARN —
+# because Cognito invokes the function directly without going through an alias.
+# ---------------------------------------------------------------------------
+
+module "cognito" {
+  source = "../../modules/cognito"
+
+  name        = "knotify-${var.environment}-user-pool"
+  environment = var.environment
+
+  # Wire the post-confirmation trigger (story 4.3).
+  # function_arn is the unqualified ARN; alias_arn carries the live alias suffix
+  # which Cognito does not require for trigger invocation.
+  post_confirmation_lambda_arn = module.cognito_post_confirmation.function_arn
 }

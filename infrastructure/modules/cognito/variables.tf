@@ -3,6 +3,17 @@ variable "name" {
   type        = string
 }
 
+variable "post_confirmation_lambda_arn" {
+  description = <<-EOT
+    ARN of the cognito_post_confirmation Lambda function. Wired into the
+    lambda_config.post_confirmation field on the User Pool. Pass in the
+    unqualified function ARN (not the alias ARN) — Cognito invokes the
+    function directly. In dev/prod environments this is
+    module.cognito_post_confirmation.function_arn.
+  EOT
+  type        = string
+}
+
 variable "environment" {
   description = "Deployment environment (dev | prod). Used in resource names and tags."
   type        = string

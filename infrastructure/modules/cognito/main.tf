@@ -129,4 +129,38 @@ resource "aws_cognito_user_pool" "this" {
   user_pool_add_ons {
     advanced_security_mode = var.advanced_security_mode
   }
+
+  # ---------------------------------------------------------------------------
+  # Lambda triggers — story 4.3 (post_confirmation) and story 4.4
+  # (pre_token_generation_config, added when 4.4 ships).
+  #
+  # M3 resolution: wiring lives in this block on the pool itself.
+  # No standalone aws_cognito_user_pool_lambda_config resource is used —
+  # that resource conflicts with the lambda_config block here and cannot
+  # coexist with it.
+  # ---------------------------------------------------------------------------
+
+  lambda_config {
+    post_confirmation = var.post_confirmation_lambda_arn
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Lambda invoke permission — story 4.3
+#
+# Grants cognito-idp.amazonaws.com permission to invoke the post-confirmation
+# Lambda. source_arn is scoped to this User Pool's ARN to prevent confused-
+# deputy privilege escalation (any other User Pool cannot use this permission
+# to invoke the function).
+#
+# This permission was intentionally deferred from phase 3 story 3.6 because
+# the source_arn (User Pool ARN) was not yet known at phase 3 time.
+# ---------------------------------------------------------------------------
+
+resource "aws_lambda_permission" "cognito_post_confirmation_invoke" {
+  statement_id  = "AllowCognitoInvokePostConfirmation"
+  action        = "lambda:InvokeFunction"
+  function_name = var.post_confirmation_lambda_arn
+  principal     = "cognito-idp.amazonaws.com"
+  source_arn    = aws_cognito_user_pool.this.arn
 }
