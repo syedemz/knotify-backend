@@ -31,6 +31,7 @@ dist/
 build/
 .eggs/
 .scratch/
+questions/
 
 # Lambda layer build output (produced by build.sh — not committed)
 infrastructure/src/layers/*/python/

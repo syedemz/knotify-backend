@@ -36,7 +36,7 @@ phases:
 - phase: 5
   title: API edge (HTTP API + CloudFront + WAF)
   file: implementationplan/phase-5-api-edge.md
-  ready: false
+  ready: true
   done: false
 
 - phase: 6
