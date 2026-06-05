@@ -202,3 +202,51 @@ AC says the fixture is extracted into `infrastructure/src/tests/integration/conf
 
 PRD is dispatchable. The two MEDIUMS are worth one more revision pass for cleanliness; the MINORS can be absorbed during implementation by an alert subagent. The whole second-pass tier could also be left to the subagents to handle inline — they're small enough that a sensible implementer will spot and fix them.
 
+
+## 2026-06-05 13:20 brainstorm (third pass — pre-dispatch)
+
+Re-audit of the twice-revised PRD against the current repo state (`infrastructure/environments/{dev,prod}/`, modules already shipped through phase 4). Goal: confirm dispatchability and surface any residual gaps not caught in rounds 1–2.
+
+### BLOCKERS
+None.
+
+### MAJORS
+None.
+
+### MEDIUMS
+
+**Tb1 — Story 5.6 AC #5: `local_file` resource path resolution.**
+The PRD names the artifact path as `infrastructure/src/tests/integration/.env.test`, but a `local_file` resource is evaluated from the working directory of the env's `terraform apply` (i.e., `infrastructure/environments/dev/`). The literal string would write to `infrastructure/environments/dev/infrastructure/src/tests/integration/.env.test` — wrong location.
+
+**How to apply:** the implementer must compute the path via `${path.root}/../../src/tests/integration/.env.test` (or use `pathexpand`/`abspath`). Mention in the dispatch brief so the file lands where the pytest harness can find it. Not a PRD revision — an implementer note.
+
+**Tb2 — Story 5.1 AC #3: access log format requires JSON template string, not a JSON-object literal.**
+HTTP API access log fields are populated via `$context.*` template variables; the value of `access_log_settings.format` must be a JSON string literal containing those variables (e.g., `"{\"requestId\":\"$context.requestId\",\"status\":\"$context.status\",...}"`). The PRD says "JSON capturing requestId, status, …" which the alert backend dev will get right, but worth pinning in the dispatch brief so the access log is parseable by CloudWatch Logs Insights from day one.
+
+**How to apply:** brief story 5.1 with the exact field list and the reminder that `format` is a CloudFormation/HTTP-API template string, not a Terraform `jsonencode(...)`. Not a PRD revision.
+
+### MINORS
+
+**Tb3 — Story 5.3 AC #3: `random_password` attribute name.**
+The PRD spells the booleans `upper=true, lower=true, number=true`. The `hashicorp/random` provider has used `numeric` (not `number`) since 3.4; `number` still works but emits a deprecation warning. Worth using `numeric` for green plan output.
+
+**How to apply:** implementer detail — the subagent will catch this from the deprecation warning. No PRD revision needed.
+
+**Tb4 — Story 5.6 AC #1: `os.environ["EDGE_SECRET"]` vs `.get`.**
+AC explicitly says the helper raises `EdgeSecretRequired` when the env var is unset. The implementer must use `os.environ.get("EDGE_SECRET")` + explicit raise (not subscript, which would raise `KeyError`). PRD wording is unambiguous on the desired behavior; this is a "don't subscript" reminder for the implementer.
+
+**How to apply:** implementer detail. No PRD revision.
+
+**Tb5 — Story 5.7 AC (b)/(c) status codes: 401 vs 403.**
+HTTP API's built-in JWT authorizer returns **401** for missing/malformed Authorization header and **403** for valid-format-but-invalid-signature. PRD (b) asserts 401 for "no Authorization header" — correct. (c) asserts 403 for "missing edge secret via the in-Lambda check" — correct (the `@with_edge_secret` decorator returns 403). The codes are right; flag is just to remind the implementer not to write `== 200` and accept whatever else comes back.
+
+**How to apply:** implementer detail. No PRD revision.
+
+### Summary (third pass)
+
+- **0 BLOCKERS** — dispatchable.
+- **0 MAJORS** — dispatchable.
+- **2 MEDIUMS** — both are dispatch-brief notes, not PRD revisions. Adding them to the briefs for 5.6 (path resolution) and 5.1 (access log format) before dispatch.
+- **3 MINORS** — implementer-catchable. No action required pre-dispatch.
+
+PRD is **dispatchable as-is**. The two MEDIUMS will be folded into the dispatch briefs for stories 5.1 and 5.6, not into the PRD itself.

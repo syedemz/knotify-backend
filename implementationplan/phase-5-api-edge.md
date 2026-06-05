@@ -14,6 +14,7 @@ stories:
     title: us_east_1 provider alias in dev and prod environments
     agent: backenddeveloper
     done: false
+    tracking_issue: 58
     depends_on: []
     acceptance_criteria:
       - infrastructure/environments/dev/main.tf adds a second `provider "aws"` block with `alias = "us_east_1"` and `region = "us-east-1"`, copying the same `default_tags` block as the primary provider so resources created via the alias get the same Project/Environment/ManagedBy/Owner tags
@@ -26,6 +27,7 @@ stories:
     title: HTTP API Gateway Terraform module
     agent: backenddeveloper
     done: false
+    tracking_issue: 59
     depends_on: []
     acceptance_criteria:
       - infrastructure/modules/api_gateway/main.tf creates aws_apigatewayv2_api with protocol_type="HTTP" and a default stage with throttling burst_limit and rate_limit configurable via variables (defaults `dev: burst=10, rate=25`; `prod: burst=500, rate=1000`)
@@ -39,6 +41,7 @@ stories:
     title: ACM certificate for custom domain in us-east-1 (self-contained: cert + DNS validation records + validation wait)
     agent: backenddeveloper
     done: false
+    tracking_issue: 60
     depends_on: [5.0]
     acceptance_criteria:
       - infrastructure/modules/acm/main.tf accepts variables `domain_name` (string, default `""`), `hosted_zone_id` (string, default `""`), and `subject_alternative_names` (list(string), default `[]`)
@@ -53,6 +56,7 @@ stories:
     title: CloudFront distribution with origin secret header
     agent: backenddeveloper
     done: false
+    tracking_issue: 61
     depends_on: [5.1, 5.2]
     acceptance_criteria:
       - infrastructure/modules/cloudfront/main.tf creates `aws_cloudfront_distribution` with the HTTP API `execute_api_endpoint` as the origin (origin_id="api-gateway"); `enabled = true`, `is_ipv6_enabled = true`
@@ -68,6 +72,7 @@ stories:
     title: WAF web ACL attached to CloudFront
     agent: backenddeveloper
     done: false
+    tracking_issue: 62
     depends_on: [5.0, 5.3]
     acceptance_criteria:
       - infrastructure/modules/waf/main.tf creates `aws_wafv2_web_acl` with `scope = "CLOUDFRONT"` using `provider = aws.us_east_1` (alias declared in story 5.0); module declares `required_providers.aws.configuration_aliases = [aws.us_east_1]`
@@ -81,6 +86,7 @@ stories:
     title: Route 53 public-facing A-alias record for custom domain (prod only)
     agent: backenddeveloper
     done: false
+    tracking_issue: 63
     depends_on: [5.3]
     acceptance_criteria:
       - infrastructure/modules/route53/main.tf accepts variables `domain_name` (string, default `""`), `hosted_zone_id` (string, default `""`), `cloudfront_distribution_domain_name` (string, required), `cloudfront_hosted_zone_id` (string, required — always `Z2FDTNDATAQYW2`, the CloudFront global zone)
@@ -94,6 +100,7 @@ stories:
     title: Shared `require_edge_secret` helper + `@with_edge_secret` decorator in observability layer + integration test plumbing
     agent: backenddeveloper
     done: false
+    tracking_issue: 64
     depends_on: [5.3]
     acceptance_criteria:
       - infrastructure/src/layers/observability/knotify_obs/__init__.py adds a `require_edge_secret(event)` function. The function reads `event.get("headers", {})`, lowercases the keys (HTTP API event headers can arrive in either case), pulls the `x-knotify-edge-secret` header, compares it constant-time via `hmac.compare_digest` to the value of `os.environ["EDGE_SECRET"]`. On mismatch or missing header, raises an `EdgeSecretRequired` exception (defined alongside). When `EDGE_SECRET` env var is unset, raises `EdgeSecretRequired` defensively (treated as a Lambda config error).
@@ -110,6 +117,7 @@ stories:
     title: Stub hello endpoint and end-to-end edge smoke test
     agent: backenddeveloper
     done: false
+    tracking_issue: 65
     depends_on: [5.1, 5.3, 5.4, 5.6]
     acceptance_criteria:
       - infrastructure/src/functions/hello/handler.py is a minimal Lambda: imports `with_edge_secret` from the observability layer and applies it as a decorator on the handler function, then returns `{"statusCode": 200, "body": json.dumps({"ok": True, "user_id": event["requestContext"]["authorizer"]["jwt"]["claims"]["sub"]})}`. The decorator handles all 403 translation — the handler body assumes the edge secret is valid by the time it executes.
