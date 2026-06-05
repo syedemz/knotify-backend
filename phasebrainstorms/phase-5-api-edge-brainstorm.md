@@ -144,3 +144,61 @@ React Native HTTP clients don't preflight, so CORS isn't required for the v1 mob
 - **5 MINORS** — bookkeeping cleanup.
 
 The PRD as-it-stands is dispatchable IF B1 and B2 are resolved first. M-tier findings will save the subagents a round of clarifying questions; the medium tier mostly serve future-debuggability (access logs, secret charset).
+
+---
+
+## 2026-06-05 20:15 brainstorm (re-run)
+
+PRD revised in commit `da0d0d8` after the 18:30 audit. This re-run verifies the prior findings are addressed and surfaces anything new that the revisions introduced. Format follows the same severity buckets.
+
+### Prior findings — verification pass
+
+- **B1 (edge-secret enforcement mechanism)** — RESOLVED. Story 5.6 ships a shared `require_edge_secret(event)` helper in the observability layer; story 5.1 keeps the built-in JWT authorizer; story 5.7 wires the helper as the first line of the hello handler. The 403 vs 401 split (401 from JWT authorizer, 403 from require_edge_secret) is the clean separation §13a layer 3 expects.
+- **B2a (ACM/Route 53 cycle)** — RESOLVED. Story 5.2 self-contains cert + validation DNS records + `aws_acm_certificate_validation`. Story 5.5 now owns only the public-facing A-alias and `depends_on: [5.3]`. No cycle.
+- **B2b (us_east_1 alias)** — RESOLVED. New story 5.0 declares the alias in dev and prod env main.tf; stories 5.2 and 5.4 reference it via standard `providers = { aws.us_east_1 = aws.us_east_1 }` passthrough.
+- **M1 (audience list)**, **M2a (forwarded_values)**, **M2b (dev cert branch)**, **M3 (WAF count posture)**, **M4 (.env.test plumbing)**, **M5 (4.6 helper reference)**, **M6 (count idiom)** — ALL RESOLVED in the revised AC. Verified line by line.
+- **Md1 (access logs)**, **Md2 (random_password special chars)**, **Md3 (Makefile entry)**, **Md4 (SQLi 403 AC removed)**, **Md5 (phase-6 story 6.0)** — ALL RESOLVED. Phase-6 PRD now has story 6.0; the original AC #5 of 5.7 was replaced with a phase-6 ownership note.
+- **Mn1 (context.md)**, **Mn2 (out.json)**, **Mn3 (PRD last_updated)**, **Mn4 (throttling)**, **Mn5 (CORS note)** — ALL RESOLVED.
+
+### NEW FINDINGS (introduced by the revisions)
+
+**Nb1 — Story 5.6: `EdgeSecretRequired` exception translation pattern is not pinned.**
+AC says the helper "raises a `EdgeSecretRequired` exception ... whose handler-side translation is a Lambda return of `{statusCode: 403, body: ...}`." Who actually performs the translation? Three possibilities the implementer might reach for:
+
+- (a) The hello handler in 5.7 wraps its body in `try / except EdgeSecretRequired: return 403_dict` — every Lambda re-implements the wrap.
+- (b) A decorator like `@edge_secret_required` that wraps the handler and converts the exception — cleanest.
+- (c) AWS Lambda Powertools' `APIGatewayHttpResolver` has an `exception_handler` decorator that does this idiomatically; Powertools is already on the observability layer.
+
+Without pinning, phase-6 Lambdas will each pick a different pattern. Recommendation: change the helper to expose **both** the raising form (`require_edge_secret(event)`) and a **decorator form** (`@require_edge_secret_decorator` or `@with_edge_secret` that wraps a handler). The hello Lambda in 5.7 uses the decorator. Phase-6 PRD adopts the same.
+
+**Severity:** MEDIUM — the helper still works without this, but inconsistent error handling across the fleet is a hardening-phase smell.
+
+**Nb2 — Story 5.6: `.env.test` is written but not added to .gitignore by any AC.**
+AC says the `local_file` resource writes `infrastructure/src/tests/integration/.env.test` and "the file is git-ignored". But no AC says "add the path to .gitignore." The first `terraform apply` will create the file; the next `git status` will show it untracked unless the gitignore line is in place. The implementer should add it — but the AC doesn't compel it.
+
+**Severity:** MINOR — quality-of-life; AC #4 should include "add the path to `.gitignore` in the same commit that introduces the local_file resource."
+
+**Nb3 — Story 5.6: `local_file` resource requires the `hashicorp/local` provider, which is not yet declared.**
+Phase-3 backend.tf added `hashicorp/null` (for null_resource) but not `hashicorp/local`. Story 5.6 introduces the first `local_file` usage — the env `required_providers` block must be extended to include `local = { source = "hashicorp/local", version = "~> 2.5" }`.
+
+**Severity:** MINOR — `terraform init` will fetch the provider once declared; the AC should call out the provider addition explicitly so it isn't missed.
+
+**Nb4 — Story 5.0: AC #3 wording "no plan diff against existing state" overpromises.**
+AC #3 says `terraform validate` is clean AND "no resources moved, no plan diff against existing state". `terraform validate` doesn't consult state; only `terraform plan` does. The intent is right — the alias is a no-op until referenced — but the assertion mixes validate with plan. Re-word as "`terraform validate` is clean; `terraform plan` shows zero resource changes" so the verification command actually matches the claim.
+
+**Severity:** MINOR — wording tightness.
+
+**Nb5 — Story 5.7 AC integration test path: `signed_in_user` fixture refactored to `conftest.py`.**
+AC says the fixture is extracted into `infrastructure/src/tests/integration/conftest.py` so phase-4 AND phase-5 tests share it. That means **phase-4's `test_cognito_signup.py` test must also be refactored** to consume the new fixture in this story. The AC doesn't explicitly call out that the phase-4 test gets touched — the implementer might add the fixture and only wire phase-5 to it, leaving the phase-4 test with its inline boto3 dance and creating divergence.
+
+**Severity:** MEDIUM — either: (a) AC explicitly says "phase-4 `test_cognito_signup.py` is updated to consume the new `signed_in_user` fixture", or (b) drop the "shared" claim and accept duplication.
+
+### Summary (re-run)
+
+- **0 BLOCKERS** — both original blockers fully resolved.
+- **0 MAJORS** — all original majors resolved.
+- **2 MEDIUMS** — Nb1 exception translation pattern, Nb5 phase-4 test refactor scope.
+- **3 MINORS** — Nb2 .gitignore line, Nb3 local provider declaration, Nb4 AC wording.
+
+PRD is dispatchable. The two MEDIUMS are worth one more revision pass for cleanliness; the MINORS can be absorbed during implementation by an alert subagent. The whole second-pass tier could also be left to the subagents to handle inline — they're small enough that a sensible implementer will spot and fix them.
+
