@@ -1,11 +1,27 @@
 phase: 6
 title: Profile, friends, bookmarks, blocks domain Lambdas
-last_updated: 2026-05-24
+last_updated: 2026-06-05  # phase-5 brainstorm Md5: story 6.0 added to own the phase-5 hello cleanup
 
 context_summary: |
-  Ships the first wave of business-logic Lambdas: knotify-profile, knotify-friends, knotify-bookmarks, knotify-blocks. Each Lambda derives user_id from the JWT sub (never from URL or body), sets the RLS session GUCs after authorizing, and uses the shared Aurora layer from phase 3. The corresponding REST routes (per §4.2 migration map) are wired through the HTTP API + JWT authorizer + CloudFront stack from phase 5. The stub /v1/_internal/hello endpoint from phase 5 story 5.7 is removed. Subsequent phases consume these domain Lambdas — chat (phase 8) calls friends and blocks logic to authorize room creation; match (phase 7) calls block lookups to filter results.
+  Ships the first wave of business-logic Lambdas: knotify-profile, knotify-friends, knotify-bookmarks, knotify-blocks. Each Lambda derives user_id from the JWT sub (never from URL or body), sets the RLS session GUCs after authorizing, and uses the shared Aurora layer from phase 3. The corresponding REST routes (per §4.2 migration map) are wired through the HTTP API + JWT authorizer + CloudFront stack from phase 5. The stub /v1/_internal/hello endpoint from phase 5 story 5.7 is removed in story 6.0 BEFORE any domain Lambda lands. Subsequent phases consume these domain Lambdas — chat (phase 8) calls friends and blocks logic to authorize room creation; match (phase 7) calls block lookups to filter results.
 
 stories:
+  - id: 6.0
+    title: Remove the phase-5 /v1/_internal/hello stub before any domain Lambda lands
+    agent: backenddeveloper
+    done: false
+    depends_on: []
+    acceptance_criteria:
+      - Delete infrastructure/src/functions/hello/ (the entire directory)
+      - Delete infrastructure/src/tests/integration/test_edge_smoke.py
+      - Remove the `module "hello"` block from infrastructure/environments/dev/main.tf and infrastructure/environments/prod/main.tf
+      - Remove the `aws_apigatewayv2_route` for `GET /v1/_internal/hello` (and any associated `aws_apigatewayv2_integration` + `aws_lambda_permission`) from the same files
+      - Remove the hello entry from Makefile `package-all`
+      - The `signed_in_user` pytest fixture extracted into `infrastructure/src/tests/integration/conftest.py` in phase 5.7 STAYS — phase-6 integration tests reuse it
+      - `terraform plan` against dev shows only the removals (negative diff); no positive diff and no warnings
+      - `terraform validate` clean; full unit + integration test suite still passes (with the smoke test gone)
+    notes: "Brainstorm Md5 (phase-5): the throwaway hello smoke endpoint must be removed BEFORE the first real domain Lambda is introduced — keeping it leaks a public unauthenticated-by-edge-secret-only route. The cleanup is intentionally story 6.0 (not a notes-field tracking item) so it cannot be missed."
+
   - id: 6.1
     title: knotify-profile Lambda
     agent: backenddeveloper
