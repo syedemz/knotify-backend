@@ -418,3 +418,27 @@ module "waf" {
   environment                 = var.environment
   cloudfront_distribution_arn = module.cloudfront.distribution_arn
 }
+
+# ---------------------------------------------------------------------------
+# Route 53 A-alias record — story 5.5
+#
+# prod path: domain_name and hosted_zone_id default to "" (module defaults)
+# until the prod cutover documented in docs/PROD_CUTOVER.md §4d. Once both
+# are set in prod.tfvars, this module creates one A-alias record pointing
+# the custom domain at the CloudFront distribution.
+#
+# cloudfront_hosted_zone_id is the CloudFront global hosted zone ID — the
+# same well-known constant (Z2FDTNDATAQYW2) in every AWS account.
+#
+# PROD NOTE: authored for `terraform plan`; alias record apply requires
+# setting domain_name + hosted_zone_id in prod.tfvars per PROD_CUTOVER.md §4d.
+# ---------------------------------------------------------------------------
+
+module "route53" {
+  source = "../../modules/route53"
+
+  domain_name                         = var.domain_name
+  hosted_zone_id                      = var.hosted_zone_id
+  cloudfront_distribution_domain_name = module.cloudfront.distribution_domain_name
+  cloudfront_hosted_zone_id           = "Z2FDTNDATAQYW2"
+}

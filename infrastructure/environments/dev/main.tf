@@ -481,3 +481,23 @@ module "waf" {
   environment                 = var.environment
   cloudfront_distribution_arn = module.cloudfront.distribution_arn
 }
+
+# ---------------------------------------------------------------------------
+# Route 53 A-alias record — story 5.5
+#
+# dev path: domain_name = "" and hosted_zone_id = "" → module produces ZERO
+# resources (count = 0 branch). No Route 53 hosted zone is required in dev;
+# the app connects via the auto-generated d*.cloudfront.net hostname.
+#
+# cloudfront_hosted_zone_id is the CloudFront global hosted zone ID — the
+# same well-known constant (Z2FDTNDATAQYW2) in every AWS account.
+# ---------------------------------------------------------------------------
+
+module "route53" {
+  source = "../../modules/route53"
+
+  domain_name                         = var.domain_name
+  hosted_zone_id                      = var.hosted_zone_id
+  cloudfront_distribution_domain_name = module.cloudfront.distribution_domain_name
+  cloudfront_hosted_zone_id           = "Z2FDTNDATAQYW2"
+}
