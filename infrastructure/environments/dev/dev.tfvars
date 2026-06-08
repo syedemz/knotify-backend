@@ -1,5 +1,11 @@
 environment = "dev"
 
+# ACM certificate — story 5.2
+# Empty strings → module produces zero resources (dev path).
+# The us_east_1 provider alias is still exercised end-to-end.
+domain_name    = ""
+hosted_zone_id = ""
+
 # Aurora — dev values per story 2.14 AC
 aurora_min_acu                 = 0
 aurora_max_acu                 = 2.0

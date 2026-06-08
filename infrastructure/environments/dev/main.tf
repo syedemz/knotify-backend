@@ -387,3 +387,25 @@ module "cognito" {
   # V2_0 trigger shape — requires AUDIT Advanced Security Mode (default).
   pre_token_generation_lambda_arn = module.cognito_pre_token_generation.function_arn
 }
+
+# ---------------------------------------------------------------------------
+# ACM certificate — story 5.2
+#
+# dev path: domain_name = "" → module produces ZERO resources. The alias
+# hand-off is exercised here so the providers block is validated end-to-end
+# even though no AWS calls are made. The module will produce real resources
+# in prod once prod.tfvars sets domain_name and hosted_zone_id (see
+# docs/PROD_CUTOVER.md §4b).
+# ---------------------------------------------------------------------------
+
+module "acm" {
+  source = "../../modules/acm"
+
+  providers = {
+    aws           = aws
+    aws.us_east_1 = aws.us_east_1
+  }
+
+  domain_name    = var.domain_name
+  hosted_zone_id = var.hosted_zone_id
+}

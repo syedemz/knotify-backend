@@ -80,3 +80,21 @@ variable "advanced_security_mode" {
   type        = string
   default     = "AUDIT"
 }
+
+# ---------------------------------------------------------------------------
+# ACM certificate module variables — story 5.2
+# Empty string in dev → module produces zero resources (dev path).
+# Prod values are set in prod/prod.tfvars per docs/PROD_CUTOVER.md §4b.
+# ---------------------------------------------------------------------------
+
+variable "domain_name" {
+  description = "Primary domain name for the ACM certificate. Empty string in dev (zero resources). Set in prod.tfvars for the prod cutover."
+  type        = string
+  default     = ""
+}
+
+variable "hosted_zone_id" {
+  description = "Route 53 hosted zone ID for DNS validation records. Empty string in dev. Set in prod.tfvars for the prod cutover."
+  type        = string
+  default     = ""
+}

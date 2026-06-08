@@ -43,6 +43,16 @@ Execute these in order. Each step has a clear stop condition.
 - [ ] In GitHub repo settings, set the variable `DEPLOY_PROD` to `"true"`.
 - [ ] Confirm the `prod` GitHub Environment still has required-reviewer protection enabled (it must — this is the surviving safety layer).
 
+### 4b. Provision the custom domain ACM certificate (phase-5 story 5.2)
+
+Before flipping the prod CloudFront distribution to use a custom domain:
+- [ ] Register or transfer the domain in Route 53 (or confirm an existing hosted zone exists).
+- [ ] Set `domain_name` and `hosted_zone_id` in `infrastructure/environments/prod/prod.tfvars`.
+- [ ] Run `terraform plan` in `environments/prod/` and confirm the ACM cert + validation DNS records + validation wait will be created.
+- [ ] Apply — the `aws_acm_certificate_validation` resource will block until Route 53 propagation completes (typically 1–5 minutes).
+- [ ] Confirm `module.acm.certificate_arn` is non-empty in the Terraform state.
+- [ ] Wire `module.cloudfront` (story 5.3) to use the ARN for the viewer certificate.
+
 ### 5. Run the deferred phase-0 prod smoke
 - [ ] Push `smoke-test/prod` branch; approve the prod environment gate when prompted.
 - [ ] Confirm the smoke bucket is created in the prod account.

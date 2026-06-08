@@ -324,3 +324,29 @@ module "cognito" {
   # V2_0 trigger shape — requires AUDIT Advanced Security Mode (default).
   pre_token_generation_lambda_arn = module.cognito_pre_token_generation.function_arn
 }
+
+# ---------------------------------------------------------------------------
+# ACM certificate — story 5.2
+#
+# prod path: domain_name = "" (module default) until the prod cutover
+# documented in docs/PROD_CUTOVER.md §4b. Once domain_name and hosted_zone_id
+# are set in prod.tfvars, this module creates the cert, DNS validation records,
+# and the aws_acm_certificate_validation wait resource in us-east-1.
+# The alias hand-off is exercised here so the providers block is validated
+# end-to-end even in the current zero-resource state.
+#
+# PROD NOTE: authored for `terraform plan`; cert apply requires setting
+# domain_name + hosted_zone_id in prod.tfvars per PROD_CUTOVER.md §4b.
+# ---------------------------------------------------------------------------
+
+module "acm" {
+  source = "../../modules/acm"
+
+  providers = {
+    aws           = aws
+    aws.us_east_1 = aws.us_east_1
+  }
+
+  domain_name    = var.domain_name
+  hosted_zone_id = var.hosted_zone_id
+}
