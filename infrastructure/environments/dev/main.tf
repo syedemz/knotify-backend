@@ -409,3 +409,52 @@ module "acm" {
   domain_name    = var.domain_name
   hosted_zone_id = var.hosted_zone_id
 }
+
+# ---------------------------------------------------------------------------
+# HTTP API Gateway — story 5.1 module, env wiring deferred to story 5.3
+#
+# CloudFront (below) needs execute_api_endpoint as its origin, so the API
+# Gateway must be instantiated here. See story 5.1 notes: "env-level wiring
+# landed in story 5.3 (CloudFront needed an origin)."
+#
+# Cognito outputs from phase 4 feed the JWT authorizer:
+#   user_pool_endpoint       → issuer URL for JWKS validation
+#   cognito_audience_client_ids → compact list of both app clients so dev
+#                                 integration-test tokens (minted via
+#                                 ADMIN_USER_PASSWORD_AUTH) are accepted
+# ---------------------------------------------------------------------------
+
+module "api_gateway" {
+  source = "../../modules/api_gateway"
+
+  name = "knotify-${var.environment}-api"
+
+  cognito_user_pool_endpoint  = module.cognito.user_pool_endpoint
+  cognito_audience_client_ids = compact([module.cognito.app_client_id, module.cognito.integration_test_app_client_id])
+
+  throttling_burst_limit = var.api_gateway_throttling_burst_limit
+  throttling_rate_limit  = var.api_gateway_throttling_rate_limit
+}
+
+# ---------------------------------------------------------------------------
+# CloudFront distribution — story 5.3
+#
+# Sits in front of the HTTP API Gateway.  The origin receives an injected
+# x-knotify-edge-secret header so every Lambda can verify the request
+# arrived via CloudFront (not via the raw execute-api endpoint).
+#
+# dev path: domain_name = "" → cloudfront_default_certificate, no aliases.
+#   The ACM module returns certificate_arn = "" on the dev path; the
+#   CloudFront module ignores it when domain_name is empty.
+#
+# replace() strips the "https://" scheme — CloudFront's domain_name field
+# on an origin block requires a hostname only.
+# ---------------------------------------------------------------------------
+
+module "cloudfront" {
+  source = "../../modules/cloudfront"
+
+  api_gateway_domain_name = replace(module.api_gateway.execute_api_endpoint, "https://", "")
+  domain_name             = var.domain_name
+  acm_certificate_arn     = module.acm.certificate_arn
+}

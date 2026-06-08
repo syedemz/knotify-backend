@@ -350,3 +350,46 @@ module "acm" {
   domain_name    = var.domain_name
   hosted_zone_id = var.hosted_zone_id
 }
+
+# ---------------------------------------------------------------------------
+# HTTP API Gateway — story 5.1 module, env wiring deferred to story 5.3
+#
+# CloudFront (below) needs execute_api_endpoint as its origin, so the API
+# Gateway must be instantiated here. See story 5.1 notes: "env-level wiring
+# landed in story 5.3 (CloudFront needed an origin)."
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+# ---------------------------------------------------------------------------
+
+module "api_gateway" {
+  source = "../../modules/api_gateway"
+
+  name = "knotify-${var.environment}-api"
+
+  cognito_user_pool_endpoint = module.cognito.user_pool_endpoint
+
+  # prod: integration_test_app_client_id is "" → compact() drops it,
+  # leaving only the production app client in the audience list.
+  cognito_audience_client_ids = compact([module.cognito.app_client_id, module.cognito.integration_test_app_client_id])
+
+  throttling_burst_limit = var.api_gateway_throttling_burst_limit
+  throttling_rate_limit  = var.api_gateway_throttling_rate_limit
+}
+
+# ---------------------------------------------------------------------------
+# CloudFront distribution — story 5.3
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+#
+# prod path: domain_name is set in prod.tfvars once the prod cutover begins
+# (docs/PROD_CUTOVER.md §4c). Until then domain_name = "" (module default)
+# and cloudfront_default_certificate is used, matching the dev behaviour.
+# ---------------------------------------------------------------------------
+
+module "cloudfront" {
+  source = "../../modules/cloudfront"
+
+  api_gateway_domain_name = replace(module.api_gateway.execute_api_endpoint, "https://", "")
+  domain_name             = var.domain_name
+  acm_certificate_arn     = module.acm.certificate_arn
+}

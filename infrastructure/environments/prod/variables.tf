@@ -99,3 +99,20 @@ variable "hosted_zone_id" {
   type        = string
   default     = ""
 }
+
+# ---------------------------------------------------------------------------
+# API Gateway throttling — story 5.3 (env-level wiring, deferred from 5.1)
+# Prod uses production-capacity values (brainstorm Mn4).
+# ---------------------------------------------------------------------------
+
+variable "api_gateway_throttling_burst_limit" {
+  description = "Maximum concurrent requests allowed by the API Gateway default stage. Dev: 10. Prod: 500."
+  type        = number
+  default     = 500
+}
+
+variable "api_gateway_throttling_rate_limit" {
+  description = "Maximum steady-state request rate (req/s) for the API Gateway default stage. Dev: 25. Prod: 1000."
+  type        = number
+  default     = 1000
+}
