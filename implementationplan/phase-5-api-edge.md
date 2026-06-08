@@ -1,6 +1,6 @@
 phase: 5
 title: API edge (HTTP API + CloudFront + WAF)
-last_updated: 2026-06-05  # story 5.1 done
+last_updated: 2026-06-05  # story 5.2 done
 
 context_summary: |
   Builds the inbound HTTPS surface per §4.2 of architecture.md: HTTP API Gateway behind CloudFront with WAF attached at the edge, a Cognito JWT authorizer wired to the User Pool from phase 4, and an origin-secret header that prevents bypassing CloudFront. No domain Lambdas attach yet — that begins in phase 6. A stub "hello" Lambda is wired only as a smoke endpoint to validate that JWT enforcement, WAF rules, and the origin-secret check all function end-to-end through the edge stack.
@@ -40,7 +40,7 @@ stories:
   - id: 5.2
     title: ACM certificate for custom domain in us-east-1 (self-contained: cert + DNS validation records + validation wait)
     agent: backenddeveloper
-    done: false
+    done: true
     tracking_issue: 60
     depends_on: [5.0]
     acceptance_criteria:
