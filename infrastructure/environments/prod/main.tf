@@ -11,6 +11,32 @@ provider "aws" {
   }
 }
 
+# ---------------------------------------------------------------------------
+# us-east-1 provider alias — story 5.0
+#
+# CloudFront-scoped WAF (story 5.4) and CloudFront viewer certificates
+# (story 5.2) must reside in us-east-1 regardless of the environment's
+# primary region. This alias is the canonical Terraform pattern for that
+# constraint. The alias is a no-op until story 5.2 and story 5.4 reference
+# it via `providers = { aws.us_east_1 = aws.us_east_1 }` in their module
+# calls. Modules that accept the alias declare
+# `configuration_aliases = [aws.us_east_1]` in their required_providers block.
+# ---------------------------------------------------------------------------
+
+provider "aws" {
+  alias  = "us_east_1"
+  region = "us-east-1"
+
+  default_tags {
+    tags = {
+      Project     = "knotify"
+      Environment = var.environment
+      ManagedBy   = "terraform"
+      Owner       = "knotify-team"
+    }
+  }
+}
+
 module "networking" {
   source      = "../../modules/networking"
   environment = var.environment
