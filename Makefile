@@ -107,6 +107,8 @@ package-all:
 	$(MAKE) package FUNC=cognito_pre_token_generation
 	@echo "[package-all] Building db_migrator function ..."
 	$(MAKE) package FUNC=db_migrator
+	@echo "[package-all] Building hello function ..."
+	$(MAKE) package FUNC=hello
 	@echo "[package-all] Done — all artifacts in $(BUILD_DIR)/"
 
 # ---------------------------------------------------------------------------
