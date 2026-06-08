@@ -18,6 +18,10 @@ terraform {
       source  = "hashicorp/random"
       version = "~> 3.6"
     }
+    local = {
+      source  = "hashicorp/local"
+      version = "~> 2.5"
+    }
   }
   # Single state file for the entire prod environment across phases 1–11.
   # Phases 2–11 add module blocks to main.tf and write to this same key.

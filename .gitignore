@@ -44,6 +44,10 @@ infrastructure/src/layers/*.zip
 *.pem
 *.key
 
+# Integration test env file written by Terraform local_file (story 5.6)
+# Contains EDGE_SECRET — never commit
+infrastructure/src/tests/integration/.env.test
+
 # OS artefacts
 .DS_Store
 Thumbs.db

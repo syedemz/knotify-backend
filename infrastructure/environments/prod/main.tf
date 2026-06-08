@@ -442,3 +442,26 @@ module "route53" {
   cloudfront_distribution_domain_name = module.cloudfront.distribution_domain_name
   cloudfront_hosted_zone_id           = "Z2FDTNDATAQYW2"
 }
+
+# ---------------------------------------------------------------------------
+# Integration test environment file — story 5.6
+#
+# PROD NOTE: authored for completeness so `terraform plan` succeeds; the file
+# would be written at the path relative to the prod environment directory.
+# In practice, integration tests run against dev only; this resource is
+# included for consistency so plan output is clean on both envs.
+#
+# Same path resolution as dev: path.root = infrastructure/environments/prod;
+# ../../src/tests/integration/.env.test resolves to the repo-relative path.
+# ---------------------------------------------------------------------------
+
+resource "local_file" "integration_test_env" {
+  filename        = "${path.root}/../../src/tests/integration/.env.test"
+  file_permission = "0600"
+  content = join("\n", [
+    "EXECUTE_API_ENDPOINT=${module.api_gateway.execute_api_endpoint}",
+    "DISTRIBUTION_DOMAIN_NAME=${module.cloudfront.distribution_domain_name}",
+    "EDGE_SECRET=${module.cloudfront.edge_secret}",
+    "",
+  ])
+}

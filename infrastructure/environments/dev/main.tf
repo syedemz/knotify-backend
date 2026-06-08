@@ -501,3 +501,33 @@ module "route53" {
   cloudfront_distribution_domain_name = module.cloudfront.distribution_domain_name
   cloudfront_hosted_zone_id           = "Z2FDTNDATAQYW2"
 }
+
+# ---------------------------------------------------------------------------
+# Integration test environment file — story 5.6
+#
+# Writes three Terraform outputs to infrastructure/src/tests/integration/.env.test
+# so the phase-5.7 integration tests (and future phase-6 tests) can load
+# endpoint URLs and the edge secret without hard-coding them.
+#
+# The file contains only key=value pairs (no shell export syntax); test code
+# uses python-dotenv or a simple parser to read them.
+#
+# file_permission = "0600" — the file contains the edge secret (a sensitive
+# Terraform value). Terraform writes it but the plan/apply output shows
+# (sensitive value) for the content field.
+#
+# path.root resolves to infrastructure/environments/dev; the relative path
+# ../../src/tests/integration/.env.test resolves to the correct repo-relative
+# path regardless of which directory terraform is invoked from.
+# ---------------------------------------------------------------------------
+
+resource "local_file" "integration_test_env" {
+  filename        = "${path.root}/../../src/tests/integration/.env.test"
+  file_permission = "0600"
+  content = join("\n", [
+    "EXECUTE_API_ENDPOINT=${module.api_gateway.execute_api_endpoint}",
+    "DISTRIBUTION_DOMAIN_NAME=${module.cloudfront.distribution_domain_name}",
+    "EDGE_SECRET=${module.cloudfront.edge_secret}",
+    "",
+  ])
+}
