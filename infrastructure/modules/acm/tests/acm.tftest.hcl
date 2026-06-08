@@ -124,12 +124,12 @@ run "prod_path_certificate_created_with_dns_validation" {
       arn               = "arn:aws:acm:us-east-1:123456789012:certificate/test-cert-id"
       domain_name       = "api.example.com"
       validation_method = "DNS"
-      domain_validation_options = toset([{
+      domain_validation_options = [{
         domain_name           = "api.example.com"
         resource_record_name  = "_abc123.api.example.com."
         resource_record_type  = "CNAME"
         resource_record_value = "_def456.acm-validations.aws."
-      }])
+      }]
     }
     override_during = plan
   }
@@ -170,12 +170,12 @@ run "prod_path_certificate_validation_resource_created" {
       arn               = "arn:aws:acm:us-east-1:123456789012:certificate/test-cert-id"
       domain_name       = "api.example.com"
       validation_method = "DNS"
-      domain_validation_options = toset([{
+      domain_validation_options = [{
         domain_name           = "api.example.com"
         resource_record_name  = "_abc123.api.example.com."
         resource_record_type  = "CNAME"
         resource_record_value = "_def456.acm-validations.aws."
-      }])
+      }]
     }
     override_during = plan
   }
@@ -211,12 +211,12 @@ run "prod_path_certificate_arn_output_wired_to_cert" {
       arn               = "arn:aws:acm:us-east-1:123456789012:certificate/test-cert-id"
       domain_name       = "api.example.com"
       validation_method = "DNS"
-      domain_validation_options = toset([{
+      domain_validation_options = [{
         domain_name           = "api.example.com"
         resource_record_name  = "_abc123.api.example.com."
         resource_record_type  = "CNAME"
         resource_record_value = "_def456.acm-validations.aws."
-      }])
+      }]
     }
     override_during = plan
   }
@@ -252,12 +252,12 @@ run "prod_path_certificate_validated_output_non_empty" {
       arn               = "arn:aws:acm:us-east-1:123456789012:certificate/test-cert-id"
       domain_name       = "api.example.com"
       validation_method = "DNS"
-      domain_validation_options = toset([{
+      domain_validation_options = [{
         domain_name           = "api.example.com"
         resource_record_name  = "_abc123.api.example.com."
         resource_record_type  = "CNAME"
         resource_record_value = "_def456.acm-validations.aws."
-      }])
+      }]
     }
     override_during = plan
   }
@@ -302,8 +302,8 @@ run "prod_path_subject_alternative_names_flow_through" {
       arn                       = "arn:aws:acm:us-east-1:123456789012:certificate/test-cert-id"
       domain_name               = "api.example.com"
       validation_method         = "DNS"
-      subject_alternative_names = toset(["api.example.com", "www.example.com", "staging.example.com"])
-      domain_validation_options = toset([
+      subject_alternative_names = ["api.example.com", "www.example.com", "staging.example.com"]
+      domain_validation_options = [
         {
           domain_name           = "api.example.com"
           resource_record_name  = "_abc123.api.example.com."
@@ -322,7 +322,7 @@ run "prod_path_subject_alternative_names_flow_through" {
           resource_record_type  = "CNAME"
           resource_record_value = "_def456.acm-validations.aws."
         }
-      ])
+      ]
     }
     override_during = plan
   }
@@ -369,12 +369,12 @@ run "prod_path_route53_validation_record_created" {
       arn               = "arn:aws:acm:us-east-1:123456789012:certificate/test-cert-id"
       domain_name       = "api.example.com"
       validation_method = "DNS"
-      domain_validation_options = toset([{
+      domain_validation_options = [{
         domain_name           = "api.example.com"
         resource_record_name  = "_abc123.api.example.com."
         resource_record_type  = "CNAME"
         resource_record_value = "_def456.acm-validations.aws."
-      }])
+      }]
     }
     override_during = plan
   }
