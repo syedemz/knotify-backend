@@ -393,3 +393,28 @@ module "cloudfront" {
   domain_name             = var.domain_name
   acm_certificate_arn     = module.acm.certificate_arn
 }
+
+# ---------------------------------------------------------------------------
+# WAF web ACL — story 5.4
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+#
+# CLOUDFRONT-scoped WAF must reside in us-east-1 (CloudFront control plane).
+# The alias is threaded here from the provider block added in story 5.0.
+# The ACL ships with:
+#   - AWSManagedRulesCommonRuleSet   (count — monitor; flip to none in phase 11)
+#   - AWSManagedRulesKnownBadInputsRuleSet (none — enforce from day one)
+#   - AWSManagedRulesSQLiRuleSet      (count — observe; flip to none in phase 11)
+#   - Rate-based per-IP               (block at 2000 req/5 min)
+# ---------------------------------------------------------------------------
+
+module "waf" {
+  source = "../../modules/waf"
+
+  providers = {
+    aws.us_east_1 = aws.us_east_1
+  }
+
+  environment                 = var.environment
+  cloudfront_distribution_arn = module.cloudfront.distribution_arn
+}
