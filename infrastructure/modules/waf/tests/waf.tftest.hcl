@@ -62,9 +62,8 @@ run "common_rule_set_override_action_is_count" {
   assert {
     condition = anytrue([
       for rule in aws_wafv2_web_acl.this.rule :
-      rule.name == "AWSManagedRulesCommonRuleSet" &&
-      length(rule.override_action) > 0 &&
-      length(rule.override_action[0].count) > 0
+      length(rule.override_action) > 0 && length(rule.override_action[0].count) > 0
+      if rule.name == "AWSManagedRulesCommonRuleSet"
     ])
     error_message = "AWSManagedRulesCommonRuleSet must have override_action.count (monitor mode)"
   }
@@ -80,9 +79,8 @@ run "known_bad_inputs_rule_set_override_action_is_none" {
   assert {
     condition = anytrue([
       for rule in aws_wafv2_web_acl.this.rule :
-      rule.name == "AWSManagedRulesKnownBadInputsRuleSet" &&
-      length(rule.override_action) > 0 &&
-      length(rule.override_action[0].none) > 0
+      length(rule.override_action) > 0 && length(rule.override_action[0].none) > 0
+      if rule.name == "AWSManagedRulesKnownBadInputsRuleSet"
     ])
     error_message = "AWSManagedRulesKnownBadInputsRuleSet must have override_action.none (enforce from day one)"
   }
@@ -98,9 +96,8 @@ run "sqli_rule_set_override_action_is_count" {
   assert {
     condition = anytrue([
       for rule in aws_wafv2_web_acl.this.rule :
-      rule.name == "AWSManagedRulesSQLiRuleSet" &&
-      length(rule.override_action) > 0 &&
-      length(rule.override_action[0].count) > 0
+      length(rule.override_action) > 0 && length(rule.override_action[0].count) > 0
+      if rule.name == "AWSManagedRulesSQLiRuleSet"
     ])
     error_message = "AWSManagedRulesSQLiRuleSet must have override_action.count (observe before enforcing)"
   }
@@ -122,6 +119,7 @@ run "rate_based_rule_blocks_at_2000_per_ip" {
       length(rule.statement[0].rate_based_statement) > 0 &&
       rule.statement[0].rate_based_statement[0].limit == 2000 &&
       rule.statement[0].rate_based_statement[0].aggregate_key_type == "IP"
+      if rule.name == "RateBasedPerIP"
     ])
     error_message = "Rate-based rule must have action=block, limit=2000, aggregate_key_type=IP"
   }
