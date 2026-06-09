@@ -10,11 +10,11 @@
 #   (f) each rule's visibility_config has both metrics and sampled_requests enabled
 #   (g) ACL-level visibility_config has cloudwatch_metrics_enabled + sampled_requests_enabled
 #   (h) default_action.allow at ACL level
-#   (i) aws_wafv2_web_acl_association targets the CloudFront distribution ARN
-#   (j) outputs web_acl_id and web_acl_arn resolve
+#   (i) outputs web_acl_id and web_acl_arn resolve
 #
-# The mock provider eliminates real AWS calls. A sentinel CloudFront ARN is
-# supplied so the association resource can be planned without a live distribution.
+# The mock provider eliminates real AWS calls. WAF-to-CloudFront attachment
+# is performed on the CloudFront distribution (web_acl_id argument), not via
+# aws_wafv2_web_acl_association — see modules/cloudfront tests.
 # ---------------------------------------------------------------------------
 
 provider "aws" {
@@ -33,10 +33,9 @@ provider "aws" {
 }
 
 variables {
-  environment                 = "test"
-  cloudfront_distribution_arn = "arn:aws:cloudfront::123456789012:distribution/EXXXXXXXXXXXXXX"
-  rate_limit                  = 2000
-  tags                        = {}
+  environment = "test"
+  rate_limit  = 2000
+  tags        = {}
 }
 
 # ---------------------------------------------------------------------------
@@ -177,20 +176,7 @@ run "acl_default_action_is_allow" {
 }
 
 # ---------------------------------------------------------------------------
-# (i) aws_wafv2_web_acl_association targets the CloudFront distribution ARN
-# ---------------------------------------------------------------------------
-
-run "association_targets_cloudfront_distribution_arn" {
-  command = plan
-
-  assert {
-    condition     = aws_wafv2_web_acl_association.cloudfront.resource_arn == var.cloudfront_distribution_arn
-    error_message = "Association resource_arn must match var.cloudfront_distribution_arn"
-  }
-}
-
-# ---------------------------------------------------------------------------
-# (j) Outputs resolve: web_acl_id and web_acl_arn surface the correct resource
+# (i) Outputs resolve: web_acl_id and web_acl_arn surface the correct resource
 #     attributes.
 #
 # aws_wafv2_web_acl.this.id and .arn are computed (unknown at plan time) so a

@@ -377,30 +377,15 @@ module "api_gateway" {
 }
 
 # ---------------------------------------------------------------------------
-# CloudFront distribution — story 5.3
-#
-# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
-#
-# prod path: domain_name is set in prod.tfvars once the prod cutover begins
-# (docs/PROD_CUTOVER.md §4c). Until then domain_name = "" (module default)
-# and cloudfront_default_certificate is used, matching the dev behaviour.
-# ---------------------------------------------------------------------------
-
-module "cloudfront" {
-  source = "../../modules/cloudfront"
-
-  api_gateway_domain_name = replace(module.api_gateway.execute_api_endpoint, "https://", "")
-  domain_name             = var.domain_name
-  acm_certificate_arn     = module.acm.certificate_arn
-}
-
-# ---------------------------------------------------------------------------
 # WAF web ACL — story 5.4
 #
 # PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
 #
 # CLOUDFRONT-scoped WAF must reside in us-east-1 (CloudFront control plane).
-# The alias is threaded here from the provider block added in story 5.0.
+# Declared BEFORE the CloudFront distribution so the distribution can attach
+# the ACL via its web_acl_id field (WAFv2 AssociateWebACL does not accept
+# CloudFront resource ARNs, so the attachment must happen on the distribution
+# side, not via aws_wafv2_web_acl_association).
 # The ACL ships with:
 #   - AWSManagedRulesCommonRuleSet   (count — monitor; flip to none in phase 11)
 #   - AWSManagedRulesKnownBadInputsRuleSet (none — enforce from day one)
@@ -415,8 +400,29 @@ module "waf" {
     aws.us_east_1 = aws.us_east_1
   }
 
-  environment                 = var.environment
-  cloudfront_distribution_arn = module.cloudfront.distribution_arn
+  environment = var.environment
+}
+
+# ---------------------------------------------------------------------------
+# CloudFront distribution — story 5.3
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+#
+# prod path: domain_name is set in prod.tfvars once the prod cutover begins
+# (docs/PROD_CUTOVER.md §4c). Until then domain_name = "" (module default)
+# and cloudfront_default_certificate is used, matching the dev behaviour.
+#
+# web_acl_id accepts the WAFv2 ARN directly — supported path for
+# CloudFront-scoped WAFs.
+# ---------------------------------------------------------------------------
+
+module "cloudfront" {
+  source = "../../modules/cloudfront"
+
+  api_gateway_domain_name = replace(module.api_gateway.execute_api_endpoint, "https://", "")
+  domain_name             = var.domain_name
+  acm_certificate_arn     = module.acm.certificate_arn
+  web_acl_id              = module.waf.web_acl_arn
 }
 
 # ---------------------------------------------------------------------------

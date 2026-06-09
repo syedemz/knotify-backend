@@ -76,6 +76,7 @@ resource "aws_cloudfront_distribution" "this" {
   is_ipv6_enabled = true
   price_class     = var.price_class
   aliases         = local.aliases
+  web_acl_id      = var.web_acl_id != "" ? var.web_acl_id : null
 
   # Origin — the HTTP API Gateway execute-api endpoint
   #

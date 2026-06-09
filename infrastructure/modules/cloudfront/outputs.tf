@@ -9,7 +9,7 @@ output "distribution_domain_name" {
 }
 
 output "distribution_arn" {
-  description = "ARN of the CloudFront distribution. Required by aws_wafv2_web_acl_association (story 5.4)."
+  description = "ARN of the CloudFront distribution."
   value       = aws_cloudfront_distribution.this.arn
 }
 

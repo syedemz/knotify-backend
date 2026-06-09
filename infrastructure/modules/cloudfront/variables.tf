@@ -15,6 +15,12 @@ variable "acm_certificate_arn" {
   default     = ""
 }
 
+variable "web_acl_id" {
+  description = "ARN of the WAFv2 web ACL to associate with this distribution. Empty string disables the association. The CloudFront distribution's web_acl_id field accepts the WAFv2 ARN directly (do not use aws_wafv2_web_acl_association — WAFv2 does not support CloudFront resources via that API)."
+  type        = string
+  default     = ""
+}
+
 variable "price_class" {
   description = "CloudFront price class. PriceClass_100 restricts edge locations to NA + EU. Widen in phase 11 if user geography demands it."
   type        = string

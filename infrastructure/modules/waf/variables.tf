@@ -9,11 +9,6 @@ variable "name" {
   default     = ""
 }
 
-variable "cloudfront_distribution_arn" {
-  description = "ARN of the CloudFront distribution to attach the WAF web ACL to. Required — CLOUDFRONT-scoped WAF must be explicitly associated with a distribution."
-  type        = string
-}
-
 variable "rate_limit" {
   description = "Maximum number of requests from a single IP in any 5-minute window before the rate-based rule blocks the source IP. Default 2000 is a generous ceiling for a pre-launch app."
   type        = number

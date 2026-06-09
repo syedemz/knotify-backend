@@ -4,6 +4,6 @@ output "web_acl_id" {
 }
 
 output "web_acl_arn" {
-  description = "ARN of the WAF web ACL. Used when attaching the ACL to the CloudFront distribution via aws_wafv2_web_acl_association."
+  description = "ARN of the WAF web ACL. Wire to aws_cloudfront_distribution.web_acl_id (which accepts the WAFv2 ARN) to attach the ACL to the distribution."
   value       = aws_wafv2_web_acl.this.arn
 }

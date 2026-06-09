@@ -179,17 +179,7 @@ resource "aws_wafv2_web_acl" "this" {
   tags = var.tags
 }
 
-# ---------------------------------------------------------------------------
-# WAF Web ACL Association — attach to CloudFront distribution
-#
-# For CLOUDFRONT-scoped ACLs the association resource must also use the
-# us-east-1 provider alias. The resource_arn is the CloudFront distribution
-# ARN produced by module.cloudfront.distribution_arn (story 5.3).
-# ---------------------------------------------------------------------------
-
-resource "aws_wafv2_web_acl_association" "cloudfront" {
-  provider = aws.us_east_1
-
-  resource_arn = var.cloudfront_distribution_arn
-  web_acl_arn  = aws_wafv2_web_acl.this.arn
-}
+# Note: CloudFront-scoped WAFv2 ACLs are NOT attached via aws_wafv2_web_acl_association
+# (WAFv2 AssociateWebACL rejects CloudFront resource ARNs). The attachment is made on the
+# CloudFront distribution itself via the web_acl_id argument, which accepts the WAFv2 ARN.
+# See aws_cloudfront_distribution.web_acl_id wired to module.waf.web_acl_arn at the env level.

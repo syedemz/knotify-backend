@@ -437,33 +437,13 @@ module "api_gateway" {
 }
 
 # ---------------------------------------------------------------------------
-# CloudFront distribution — story 5.3
-#
-# Sits in front of the HTTP API Gateway.  The origin receives an injected
-# x-knotify-edge-secret header so every Lambda can verify the request
-# arrived via CloudFront (not via the raw execute-api endpoint).
-#
-# dev path: domain_name = "" → cloudfront_default_certificate, no aliases.
-#   The ACM module returns certificate_arn = "" on the dev path; the
-#   CloudFront module ignores it when domain_name is empty.
-#
-# replace() strips the "https://" scheme — CloudFront's domain_name field
-# on an origin block requires a hostname only.
-# ---------------------------------------------------------------------------
-
-module "cloudfront" {
-  source = "../../modules/cloudfront"
-
-  api_gateway_domain_name = replace(module.api_gateway.execute_api_endpoint, "https://", "")
-  domain_name             = var.domain_name
-  acm_certificate_arn     = module.acm.certificate_arn
-}
-
-# ---------------------------------------------------------------------------
 # WAF web ACL — story 5.4
 #
 # CLOUDFRONT-scoped WAF must reside in us-east-1 (CloudFront control plane).
-# The alias is threaded here from the provider block added in story 5.0.
+# Declared BEFORE the CloudFront distribution so the distribution can attach
+# the ACL via its web_acl_id field (WAFv2 AssociateWebACL does not accept
+# CloudFront resource ARNs, so the attachment must happen on the distribution
+# side, not via aws_wafv2_web_acl_association).
 # The ACL ships with:
 #   - AWSManagedRulesCommonRuleSet   (count — monitor; flip to none in phase 11)
 #   - AWSManagedRulesKnownBadInputsRuleSet (none — enforce from day one)
@@ -478,8 +458,34 @@ module "waf" {
     aws.us_east_1 = aws.us_east_1
   }
 
-  environment                 = var.environment
-  cloudfront_distribution_arn = module.cloudfront.distribution_arn
+  environment = var.environment
+}
+
+# ---------------------------------------------------------------------------
+# CloudFront distribution — story 5.3
+#
+# Sits in front of the HTTP API Gateway.  The origin receives an injected
+# x-knotify-edge-secret header so every Lambda can verify the request
+# arrived via CloudFront (not via the raw execute-api endpoint).
+#
+# dev path: domain_name = "" → cloudfront_default_certificate, no aliases.
+#   The ACM module returns certificate_arn = "" on the dev path; the
+#   CloudFront module ignores it when domain_name is empty.
+#
+# replace() strips the "https://" scheme — CloudFront's domain_name field
+# on an origin block requires a hostname only.
+#
+# web_acl_id accepts the WAFv2 ARN directly — this is the supported path for
+# CloudFront-scoped WAFs.
+# ---------------------------------------------------------------------------
+
+module "cloudfront" {
+  source = "../../modules/cloudfront"
+
+  api_gateway_domain_name = replace(module.api_gateway.execute_api_endpoint, "https://", "")
+  domain_name             = var.domain_name
+  acm_certificate_arn     = module.acm.certificate_arn
+  web_acl_id              = module.waf.web_acl_arn
 }
 
 # ---------------------------------------------------------------------------
