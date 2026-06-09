@@ -509,64 +509,6 @@ module "route53" {
 }
 
 # ---------------------------------------------------------------------------
-# hello stub Lambda — story 5.7
-#
-# Minimal smoke endpoint used to validate the full edge stack end-to-end:
-#   CloudFront → WAF → HTTP API JWT authorizer → Lambda (@with_edge_secret).
-#
-# This Lambda, its API Gateway integration, route, and permission are
-# REMOVED in phase-6 story 6.0 before any domain Lambda lands.
-# ---------------------------------------------------------------------------
-
-module "hello" {
-  source = "../../modules/lambda"
-
-  function_name = "knotify-${var.environment}-hello"
-  handler       = "handler.handler"
-  filename      = "${path.module}/../../../build/hello.zip"
-
-  # Only the observability layer is needed — hello never touches Aurora.
-  layers = [module.observability_layer.layer_arn]
-
-  role_arn = module.iam_roles.role_arns["aurora_reader"]
-
-  # No VPC config — this Lambda does not connect to Aurora or DynamoDB.
-
-  environment_variables = {
-    EDGE_SECRET = module.cloudfront.edge_secret
-  }
-}
-
-# HTTP API integration for hello Lambda (proxy integration to the alias ARN).
-resource "aws_apigatewayv2_integration" "hello" {
-  api_id                 = module.api_gateway.api_id
-  integration_type       = "AWS_PROXY"
-  integration_uri        = module.hello.invoke_arn
-  payload_format_version = "2.0"
-}
-
-# HTTP API route: GET /v1/_internal/hello — JWT-protected.
-# Removed by phase-6 story 6.0.
-resource "aws_apigatewayv2_route" "hello" {
-  api_id             = module.api_gateway.api_id
-  route_key          = "GET /v1/_internal/hello"
-  target             = "integrations/${aws_apigatewayv2_integration.hello.id}"
-  authorization_type = "JWT"
-  authorizer_id      = module.api_gateway.authorizer_id
-}
-
-# Allow the HTTP API to invoke the hello Lambda alias.
-# source_arn is scoped to this specific route so the permission is least-privilege.
-resource "aws_lambda_permission" "hello_api_gateway" {
-  statement_id  = "AllowAPIGatewayInvokeHello"
-  action        = "lambda:InvokeFunction"
-  function_name = module.hello.function_name
-  qualifier     = "live"
-  principal     = "apigateway.amazonaws.com"
-  source_arn    = "${module.api_gateway.api_arn}/*/*/v1/_internal/hello"
-}
-
-# ---------------------------------------------------------------------------
 # Integration test environment file — story 5.6
 #
 # Writes three Terraform outputs to infrastructure/src/tests/integration/.env.test
