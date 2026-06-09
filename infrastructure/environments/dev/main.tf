@@ -537,3 +537,105 @@ resource "local_file" "integration_test_env" {
     "",
   ])
 }
+
+# ---------------------------------------------------------------------------
+# knotify-profile Lambda — story 6.1
+#
+# Handles four routes:
+#   GET  /v1/profile/me              — own full profile (RLS own-row exception)
+#   PATCH /v1/profile/me             — partial update with immutable-field semantics
+#   GET  /v1/profiles?username=...   — case-insensitive username search (deck-view)
+#   GET  /v1/profiles/{userId}       — profile by ID (deck-view only)
+#
+# Uses the aurora_writer IAM role (Aurora rights via app_user credential;
+# no DynamoDB access needed for profile operations).
+# EDGE_SECRET is injected so the @with_edge_secret decorator can validate
+# that all traffic arrived via CloudFront.
+# ---------------------------------------------------------------------------
+
+module "profile" {
+  source = "../../modules/lambda"
+
+  function_name = "knotify-profile-${var.environment}"
+  handler       = "handler.handler"
+  filename      = "${path.module}/../../../build/profile.zip"
+
+  layers = [
+    module.observability_layer.layer_arn,
+    module.db_layer.layer_arn,
+  ]
+
+  role_arn = module.iam_roles.role_arns["aurora_writer"]
+
+  vpc_config = {
+    subnet_ids         = module.networking.private_subnet_ids
+    security_group_ids = [module.networking.lambda_security_group_id]
+  }
+
+  environment_variables = {
+    DB_SECRET_NAME = "knotify-${var.environment}-app-user-credential"
+    EDGE_SECRET    = module.cloudfront.edge_secret
+  }
+}
+
+# ---------------------------------------------------------------------------
+# API Gateway wiring — story 6.1
+#
+# One integration + four routes + one Lambda permission.
+# All routes use JWT authorization (Cognito User Pool, same authorizer as
+# every other route in the HTTP API).
+# ---------------------------------------------------------------------------
+
+resource "aws_apigatewayv2_integration" "profile" {
+  api_id                 = module.api_gateway.api_id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = module.profile.invoke_arn
+  payload_format_version = "2.0"
+}
+
+resource "aws_apigatewayv2_route" "get_profile_me" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "GET /v1/profile/me"
+  target             = "integrations/${aws_apigatewayv2_integration.profile.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+resource "aws_apigatewayv2_route" "patch_profile_me" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "PATCH /v1/profile/me"
+  target             = "integrations/${aws_apigatewayv2_integration.profile.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+resource "aws_apigatewayv2_route" "get_profiles" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "GET /v1/profiles"
+  target             = "integrations/${aws_apigatewayv2_integration.profile.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+resource "aws_apigatewayv2_route" "get_profiles_by_id" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "GET /v1/profiles/{userId}"
+  target             = "integrations/${aws_apigatewayv2_integration.profile.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+# Lambda permission — scoped to the four profile routes' source ARNs.
+# Using a wildcard over the profile function's paths avoids having to
+# enumerate the execute-API ARN pattern for each route individually while
+# remaining tightly scoped to the profile function (not the entire API).
+resource "aws_lambda_permission" "profile_api_gateway" {
+  statement_id  = "AllowProfileAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = module.profile.function_name
+  qualifier     = "live"
+  principal     = "apigateway.amazonaws.com"
+  # Scoped to all routes on this API — the route-level JWT authorizer already
+  # gates access so wildcard source_arn within this API is safe.
+  source_arn = "${module.api_gateway.default_stage_arn}/*/*/v1/profile*"
+}
