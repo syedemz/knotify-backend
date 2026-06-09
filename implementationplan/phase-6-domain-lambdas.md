@@ -1,6 +1,6 @@
 phase: 6
 title: Profile, friends, bookmarks, blocks domain Lambdas
-last_updated: 2026-06-09  # story 6.0 done. 3rd brainstorm: B1 (drop impossible plan-diff AC), M1 (6.2 declined_auto → 404), M2 (6.2/6.3 depends_on += 6.4), M3 (6.4 HTTP 200 + chat_deactivation_pending), Md2 (6.0b parameterized-binding AC for is_blocked), Mi1 (consolidated phase-11 carryover), Mi2 (app_user_conn pytest.skip). 4th brainstorm: G1 (6.7 owns the consolidated carryover writes to phase-11 + phase-8 PRDs). 5th brainstorm (pre-dispatch readiness): 6.4 depends_on += 6.1 (consumes completed_profile_user fixture); 6.4 integration test rewritten to seed friendship via direct master-credential INSERT (friends Lambda not yet deployed at 6.4 dispatch time); trailing 409 BLOCKED assertion deleted from 6.4 (already covered by 6.2's block-aware test).
+last_updated: 2026-06-09  # story 6.0a done. 3rd brainstorm: B1 (drop impossible plan-diff AC), M1 (6.2 declined_auto → 404), M2 (6.2/6.3 depends_on += 6.4), M3 (6.4 HTTP 200 + chat_deactivation_pending), Md2 (6.0b parameterized-binding AC for is_blocked), Mi1 (consolidated phase-11 carryover), Mi2 (app_user_conn pytest.skip). 4th brainstorm: G1 (6.7 owns the consolidated carryover writes to phase-11 + phase-8 PRDs). 5th brainstorm (pre-dispatch readiness): 6.4 depends_on += 6.1 (consumes completed_profile_user fixture); 6.4 integration test rewritten to seed friendship via direct master-credential INSERT (friends Lambda not yet deployed at 6.4 dispatch time); trailing 409 BLOCKED assertion deleted from 6.4 (already covered by 6.2's block-aware test).
 
 context_summary: |
   Ships the first wave of business-logic Lambdas: knotify-profile, knotify-friends, knotify-bookmarks, knotify-blocks. Each Lambda derives user_id from the JWT sub (never from URL or body), sets the RLS session GUCs after authorizing, and uses the shared Aurora layer from phase 3. The corresponding REST routes (per §4.2 migration map) are wired through the HTTP API + JWT authorizer + CloudFront stack from phase 5. The stub /v1/_internal/hello endpoint from phase 5 story 5.7 is removed in story 6.0 BEFORE any domain Lambda lands. Subsequent phases consume these domain Lambdas — chat (phase 8) calls friends and blocks logic to authorize room creation; match (phase 7) calls block lookups to filter results.
@@ -33,7 +33,7 @@ stories:
   - id: 6.0a
     title: Add `username` UNIQUE constraint (migration 0010)
     agent: backenddeveloper
-    done: false
+    done: true
     tracking_issue: 73
     depends_on: [6.0]
     acceptance_criteria:
