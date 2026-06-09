@@ -42,7 +42,7 @@ phases:
 - phase: 6
   title: Profile, friends, bookmarks, blocks domain Lambdas
   file: implementationplan/phase-6-domain-lambdas.md
-  ready: false
+  ready: true
   done: false
 
 - phase: 7
