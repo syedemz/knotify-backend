@@ -14,6 +14,14 @@ Public API (as specified in story 5.6):
                                     raises EdgeSecretRequired on mismatch or absence
   with_edge_secret                → decorator: translates EdgeSecretRequired → 403
 
+Public API (as specified in story 6.0b):
+  chat_room_id(user_a, user_b)    → stable, symmetric SHA-256 room ID derived from
+                                    the lexicographically ordered pair of user UUIDs
+  block_filter(other_user_col)    → SQL NOT EXISTS fragment for filtering blocked pairs;
+                                    other_user_col must be in the hard-coded whitelist
+  is_blocked(conn, user_a, user_b) → True if a block exists between the pair in either
+                                    direction; uses parameter binding only
+
 NOTE: verify_cognito_jwt is rarely used in v1.  The HTTP API Cognito JWT
 authorizer (phase 5) handles routine validation natively — business Lambdas
 read claims from event.requestContext.authorizer.jwt.claims.  This helper
@@ -25,6 +33,8 @@ from knotify_obs._logger import init_logger
 from knotify_obs._middleware import correlation_id_middleware
 from knotify_obs._jwt import verify_cognito_jwt
 from knotify_obs._edge_secret import EdgeSecretRequired, require_edge_secret, with_edge_secret
+from knotify_obs._chat_room_id import chat_room_id
+from knotify_obs._blocks import block_filter, is_blocked
 
 __all__ = [
     "init_logger",
@@ -33,4 +43,7 @@ __all__ = [
     "EdgeSecretRequired",
     "require_edge_secret",
     "with_edge_secret",
+    "chat_room_id",
+    "block_filter",
+    "is_blocked",
 ]
