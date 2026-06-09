@@ -1,6 +1,6 @@
 phase: 6
 title: Profile, friends, bookmarks, blocks domain Lambdas
-last_updated: 2026-06-09  # incorporated brainstorm answers (B1/B2-A+E/B3-B/M1-A/M2-A/M3-A/M4-A/M5-A/M6-A) + re-brainstorm NEW-2 (block_filter whitelist), NEW-3 (RLS test seed fix), NEW-4 (deactivation ConditionExpression), NEW-5 (reactivation ConditionExpression), NEW-6 (re-login in fixture), NEW-7 (layer-version wording)
+last_updated: 2026-06-09  # 3rd brainstorm: B1 (drop impossible plan-diff AC), M1 (6.2 declined_auto → 404), M2 (6.2/6.3 depends_on += 6.4), M3 (6.4 HTTP 200 + chat_deactivation_pending), Md2 (6.0b parameterized-binding AC for is_blocked), Mi1 (consolidated phase-11 carryover), Mi2 (app_user_conn pytest.skip). 4th brainstorm: G1 (6.7 owns the consolidated carryover writes to phase-11 + phase-8 PRDs).
 
 context_summary: |
   Ships the first wave of business-logic Lambdas: knotify-profile, knotify-friends, knotify-bookmarks, knotify-blocks. Each Lambda derives user_id from the JWT sub (never from URL or body), sets the RLS session GUCs after authorizing, and uses the shared Aurora layer from phase 3. The corresponding REST routes (per §4.2 migration map) are wired through the HTTP API + JWT authorizer + CloudFront stack from phase 5. The stub /v1/_internal/hello endpoint from phase 5 story 5.7 is removed in story 6.0 BEFORE any domain Lambda lands. Subsequent phases consume these domain Lambdas — chat (phase 8) calls friends and blocks logic to authorize room creation; match (phase 7) calls block lookups to filter results.
@@ -25,7 +25,7 @@ stories:
       - Remove the `aws_apigatewayv2_route` for `GET /v1/_internal/hello` (and any associated `aws_apigatewayv2_integration` + `aws_lambda_permission`) from the same files
       - Remove the hello entry from Makefile `package-all`
       - The `signed_in_user` pytest fixture extracted into `infrastructure/src/tests/integration/conftest.py` in phase 5.7 STAYS — phase-6 integration tests reuse it
-      - `terraform plan` against dev shows only the removals; no positive resource diff aside from null-diff data-source refreshes (e.g., `random_password.edge_secret` re-read is acceptable as it produces no resource change)
+      - `terraform plan` against dev contains zero `+ create` lines mentioning `hello` or `_internal/hello` (e.g. `terraform plan -no-color | grep -E '(^|\s)\+\s.*(hello|_internal/hello)' | wc -l` is 0). The total plan size is not asserted — dev infra is currently destroyed (see context.md 2026-06-09 destroy run 27188014855), so the first phase-6 apply will be a full bring-up, not an incremental diff. Brainstorm B1 (third pass).
       - `terraform validate` clean; full unit + integration test suite still passes (with the smoke test gone)
     notes: "Brainstorm Md5 (phase-5): the throwaway hello smoke endpoint must be removed BEFORE the first real domain Lambda is introduced — keeping it leaks a public unauthenticated-by-edge-secret-only route. The cleanup is intentionally story 6.0 (not a notes-field tracking item) so it cannot be missed."
 
@@ -39,7 +39,7 @@ stories:
       - Create the matching `0010_username_unique.rollback.sql` that drops the index
       - The migration applies cleanly via the db_migrator Lambda against the existing dev cluster (no schema rewrite of `users` required — pure index add)
       - A docker-compose unit test under `infrastructure/src/tests/db/test_username_unique.py` inserts two rows with the same `username` (case differing) and asserts the second INSERT raises `psycopg2.errors.UniqueViolation`; also inserts two rows with NULL `username` and asserts both succeed (partial-index correctness)
-      - The 1/30-day username rate limit from architecture §5.7 is explicitly DEFERRED to phase 11 (hardening). A `## Carryovers from phase 6` note added to `implementationplan/phase-11-hardening.md` (under its context_summary) records the deferral so it cannot be forgotten
+      - The 1/30-day username rate limit from architecture §5.7 is explicitly DEFERRED to phase 11 (hardening). Brainstorm Mi1 (third pass): the carryover note is no longer written per-story; instead, a single consolidated `## Carryovers from phase 6` block is appended to `implementationplan/phase-11-hardening.md` at phase-completion handoff (see phase-completion checklist below) listing the username rename limit, per-route throttling (story 6.7), and any other phase-6 deferrals
       - `terraform plan` clean against dev; null_resource.db_migrator_invoke fires on apply because `migrations_hash` changes
     notes: "Brainstorm B2 (Option A + E): adds the database-side defense against username races; the API-side 30-day rename limit is deferred."
 
@@ -52,7 +52,7 @@ stories:
       - In `infrastructure/src/layers/observability/knotify_obs/`, add a new module `_chat_room_id.py` exporting `chat_room_id(user_a: str, user_b: str) -> str` that returns `hashlib.sha256(f"{min}:{max}".encode("utf-8")).hexdigest()` where `min`/`max` are the lexicographically ordered user UUIDs (string compare). Re-export from `knotify_obs.__init__`
       - In the same layer, add `_blocks.py` exporting:
           - (a) `block_filter(other_user_col: str) -> str` — a Python builder function (NOT a raw string template) that returns a SQL fragment of the form `NOT EXISTS (SELECT 1 FROM blocks b WHERE (b.blocker_id = <other_user_col> AND b.blocked_id = %s) OR (b.blocker_id = %s AND b.blocked_id = <other_user_col>))`. Brainstorm NEW-2 — to keep column-name substitution safe, `other_user_col` is validated INSIDE the function against a hard-coded whitelist of legal column references (initial whitelist: `friendships.user_a`, `friendships.user_b`, `friend_requests.requester_id`, `friend_requests.receiver_id`, `bookmarks.bookmarked_user_id`, `users.user_id`). Any value outside the whitelist raises `ValueError`. The function does NOT format user-supplied values into SQL — only the whitelisted column identifier. The caller binds two `%s` parameters (the requesting user's id, twice) at `cur.execute(...)` time.
-          - (b) `is_blocked(conn, user_a: str, user_b: str) -> bool` that issues a single SELECT against the `blocks` table for the pair in either direction and returns True if any row exists.
+          - (b) `is_blocked(conn, user_a: str, user_b: str) -> bool` that issues a single SELECT against the `blocks` table for the pair in either direction and returns True if any row exists. Brainstorm Md2 (third pass) — the SELECT MUST be issued via `cur.execute(sql, (user_a, user_b, user_b, user_a))` with parameter binding; no f-string interpolation or string concatenation of `user_a`/`user_b` into the SQL. UUID-format validation is the caller's responsibility (Lambda handlers parse the URL path through a UUID regex before invoking `is_blocked`).
           - Re-export both from `knotify_obs.__init__`.
       - Unit tests (docker-compose; under `infrastructure/src/layers/observability/tests/`):
           - `chat_room_id` is symmetric (`chat_room_id(a,b) == chat_room_id(b,a)`), deterministic across calls, and produces a 64-char hex string
@@ -105,27 +105,27 @@ stories:
     title: knotify-friends Lambda (block-aware, own Terraform wiring)
     agent: backenddeveloper
     done: false
-    depends_on: [6.0a, 6.0b]
+    depends_on: [6.0a, 6.0b, 6.4]  # Brainstorm M2 (third pass): block-aware integration test POSTs /v1/blocks → 6.4 must be deployed first.
     acceptance_criteria:
       - `src/functions/friends/` implements GET /v1/friends, DELETE /v1/friends/{userId}, GET /v1/friend-requests, POST /v1/friend-requests, POST /v1/friend-requests/{id}/accept, POST /v1/friend-requests/{id}/decline, DELETE /v1/friend-requests/{id}
       - Block-aware behavior (Brainstorm B3 / Option B — consumes shared helpers from 6.0b):
           - POST /v1/friend-requests calls `is_blocked(conn, requester, target)` before any INSERT. If True, return HTTP 409 + `{"error":"blocked"}`. The block check happens INSIDE the same transaction as the INSERT so a freshly-arriving block (under concurrent load) cannot race the request through.
           - GET /v1/friends queries `friendships` AND joins/applies `BLOCK_FILTER_SQL` from `knotify_obs._blocks` against the candidate `other_user_id` column so any pair where a block exists in either direction is filtered out.
           - GET /v1/friend-requests applies the same filter against both sender and receiver dimensions.
-          - POST .../accept and POST .../decline on a request where either party has since blocked the other: the operation succeeds at the data layer (status flip) but the corresponding friendship row is NOT inserted on accept (the block makes the friendship semantically invalid). The endpoint returns HTTP 200 with `{"status":"declined_auto","reason":"blocked"}` regardless of the requested action. This makes the system self-consistent with story 6.4's auto-clean of pending requests when a block lands.
+          - POST .../accept and POST .../decline on a `request_id` that no longer exists return HTTP 404 + `{"error":"not_found"}`. Brainstorm M1 (third pass): story 6.4's POST /v1/blocks DELETEs any pending `friend_requests` rows between the pair in the same transaction, so the prior "accept-with-stale-block → HTTP 200 declined_auto" branch is unreachable in practice. The 404 path is the correct contract; no `declined_auto` enum is introduced.
       - POST /v1/friend-requests rejects with HTTP 409 + `{"error":"already_pending"}` when a pending request already exists between the same pair (enforced by the UNIQUE constraint from phase 2)
       - Accepting a request inserts a `friendships` row using `chat_room_id`-style canonical ordering (`user_a` is the lexicographically smaller UUID, `user_b` is the larger one — this is the same lexicographic-min/max contract that backs `chat_room_id`) AND updates the `friend_requests.status` to 'accepted' in a single transaction
       - Lambda uses `knotify_db.rls_context()` on every request; uses the existing `aurora_writer` IAM role
       - Terraform wiring owned by this story (Brainstorm M6 / Option A): `module "friends"` + integration + 7 routes + permission, in both dev and prod main.tf. EDGE_SECRET injected; handler decorated with `@with_edge_secret`.
       - Integration test against the dev API: two `completed_profile_user` instances (opposite sex). A sends request to B, B accepts, GET /v1/friends from both sides shows the other user. A DELETE /v1/friends/{B} removes the friendship row.
-      - Block-aware integration test: A blocks B (POST /v1/blocks, exercising story 6.4 which must already be deployed at the time this test runs — adjust the integration-test ordering to run AFTER 6.4's wiring lands). A POST /v1/friend-requests {toUserId: B} returns 409 BLOCKED. (If story 6.4 has not yet been dispatched at this story's integration-test time, defer the block-aware integration test to story 6.7's E2E and document the deferral inline.)
+      - Block-aware integration test: A blocks B via POST /v1/blocks (story 6.4 is now a hard `depends_on` per third-pass M2, so it is always deployed at this point). A POST /v1/friend-requests {toUserId: B} returns 409 BLOCKED. Additionally: B creates a friend-request to A, A blocks B (which DELETEs the pending request), B's POST /v1/friend-requests/{id}/accept on the now-stale request_id returns HTTP 404 (third-pass M1).
     notes: "Brainstorm B3 (Option B), M6 (Option A). The canonical pairing convention used here (lexicographic min/max of UUIDs) matches the contract from `knotify_obs.chat_room_id` so phase-8 chat sees consistent pair ordering."
 
   - id: 6.3
     title: knotify-bookmarks Lambda (block-aware, own Terraform wiring)
     agent: backenddeveloper
     done: false
-    depends_on: [6.0a, 6.0b]
+    depends_on: [6.0a, 6.0b, 6.4]  # Brainstorm M2 (third pass): integration test POSTs /v1/blocks to verify "bookmark a blocked user → 409" — 6.4 must be deployed first.
     acceptance_criteria:
       - `src/functions/bookmarks/` implements GET /v1/bookmarks, POST /v1/bookmarks, DELETE /v1/bookmarks/{userId}
       - POST is idempotent — a second POST with the same `userId` returns HTTP 200 (not 409). Implementation: `INSERT ... ON CONFLICT (user_id, bookmarked_user_id) DO NOTHING RETURNING *` with the empty `RETURNING` treated as success.
@@ -152,7 +152,7 @@ stories:
           - `room_id` keyed via `knotify_obs.chat_room_id(blocker_id, blocked_id)` (Brainstorm M5 — the shared helper from story 6.0b)
           - SET status='deactivated', deactivated_reason='blocked', deactivated_by=<blocker_id>, deactivated_at=<NOW iso8601>
           - ConditionExpression: `attribute_exists(room_id) AND (attribute_not_exists(#status) OR #status = :active)` with ExpressionAttributeNames `{"#status": "status"}` and ExpressionAttributeValues `{":active": "active"}`. Brainstorm NEW-4: the conjunctive condition ensures (a) the row exists (no-op when no room was ever created) AND (b) the room is currently `active`. If the room was previously deactivated for ANOTHER reason (e.g., `user_deleted_account`), the SET would clobber that reason — the condition prevents it.
-          - The Lambda catches `botocore.exceptions.ClientError` with `Code == "ConditionalCheckFailedException"` (Brainstorm Md3 + NEW-4) and treats it as success (logged at INFO level, not WARN/ERROR). The log line distinguishes the two no-op cases by checking `attribute_exists` with a separate GetItem before the UpdateItem is cheaper to skip — just log "block: chat-room deactivation no-op (room absent or already deactivated for another reason)". Any other DynamoDB error surfaces as HTTP 500 and the Aurora transaction is NOT rolled back (the block is committed; chat deactivation is best-effort).
+          - The Lambda catches `botocore.exceptions.ClientError` with `Code == "ConditionalCheckFailedException"` (Brainstorm Md3 + NEW-4) and treats it as success (logged at INFO level, not WARN/ERROR). The log line is "block: chat-room deactivation no-op (room absent or already deactivated for another reason)". Brainstorm M3 (third pass) — any other DynamoDB error is caught, logged at ERROR with the boto error code, and the endpoint returns HTTP 200 with response body `{"chat_deactivation_pending": true, ...}` (the rest of the body is the normal block response). The Aurora transaction is NOT rolled back — the block is committed. The `chat_deactivation_pending` flag tells the client the chat room may still appear active until phase 8's per-write status re-check picks up the lag; the lag is self-healing. The client never sees HTTP 500 when the block succeeded at the database. (Returning HTTP 500 with a committed Aurora block would mislead the client into thinking the block failed, even though the user is in fact blocked.)
       - DELETE /v1/blocks/{userId} is the dual operation: DELETE FROM blocks, then DynamoDB UpdateItem to reactivate the chat room. Reactivation per architecture §5.4.1, with safety:
           - SET status='active', REMOVE deactivated_reason, REMOVE deactivated_by, REMOVE deactivated_at, SET reactivated_at=<NOW iso8601>
           - ConditionExpression: `attribute_exists(room_id) AND deactivated_reason = :blocked AND deactivated_by = :unblocker` with ExpressionAttributeValues `{":blocked": "blocked", ":unblocker": <unblocker_id>}`. Brainstorm NEW-5: the reactivation only fires when (a) the room exists, (b) it was deactivated specifically because of a block, AND (c) the block was placed by the same user now removing it. This prevents an unblock from resurrecting rooms deactivated for unrelated reasons (account deletion) or by a different blocker.
@@ -192,7 +192,7 @@ stories:
           - Test: a Male user calls GET /v1/profiles?username=<existing-male-username> and receives HTTP 404 even though the user exists (because RLS hides the row at the DB and the handler converts an empty result to 404).
           - Test: the same Male user calls GET /v1/profile/me and receives his own row (RLS exception path — `OR user_id = current_setting(...)`).
           - Both tests use `completed_profile_user(sex)` from the fixture introduced in story 6.1.
-          - Adds an `app_user_conn` pytest fixture in `conftest.py` (Brainstorm N4) that connects to Aurora as `app_user` (not master) using the credential from `knotify-${env}-app-user-credential` — RLS only fires against app_user under FORCE ROW LEVEL SECURITY, so visibility tests that need the policy to apply must use this fixture.
+          - Adds an `app_user_conn` pytest fixture in `conftest.py` (Brainstorm N4) that connects to Aurora as `app_user` (not master) using the credential from `knotify-${env}-app-user-credential` — RLS only fires against app_user under FORCE ROW LEVEL SECURITY, so visibility tests that need the policy to apply must use this fixture. Brainstorm Mi2 (third pass): the fixture calls `pytest.skip("app_user credential not yet materialized — first phase-6 apply has not run db_migrator")` if `secretsmanager.GetSecretValue` raises `ResourceNotFoundException`. This makes the test a no-op on a freshly-destroyed env (e.g. the current 2026-06-09 dev destroy state) and runs normally once the secret materializes.
       - A separate docker-compose unit test `infrastructure/src/tests/db/test_rls_fail_closed.py` (Brainstorm M3 / Option A) verifies the fail-closed behavior at the migration level. Seed three users (one extra Male) so both branches of the policy are exercised:
           - Apply all migrations against the local Postgres container.
           - Open a connection as `app_user` (using the local password from `local_init.sql`).
@@ -217,5 +217,19 @@ stories:
           - block + unblock affecting friend-request behavior (POST /v1/blocks → POST /v1/friend-requests returns 409 BLOCKED → DELETE /v1/blocks/{userId} → POST /v1/friend-requests now succeeds)
       - Makefile `test-e2e` target added (Brainstorm N2): runs `pytest infrastructure/src/tests/integration/test_domains_e2e.py -v -m integration` with the required env vars sourced from `infrastructure/src/tests/integration/.env.test` (the file written by story 5.6).
       - The entire suite passes against dev when invoked with `make test-e2e` and exits zero.
-      - Throttling on hot routes (Brainstorm Md5 / Q12) deferred to phase 11 (hardening); note added to `implementationplan/phase-11-hardening.md` under its `## Carryovers from phase 6` section.
-    notes: "Brainstorm N2 (Makefile target), N3 (transitive depends_on expanded for clarity)."
+      - Throttling on hot routes (Brainstorm Md5 / Q12) deferred to phase 11 (hardening). The deferral is recorded by the carryover writes below — not as a separate handoff step.
+      - Carryover writes (Brainstorm G1, fourth pass — owns the consolidated carryover write that Mi1 left without a home):
+          - Append the following block to `implementationplan/phase-11-hardening.md` immediately after its `context_summary:` field (create the block if absent; if a `## Carryovers from phase 6` block already exists, append the new bullets under it instead of duplicating the heading):
+            ```
+            ## Carryovers from phase 6
+            - 1/30-day `username` rename rate limit (architecture §5.7) — DB-side UNIQUE constraint shipped in phase 6.0a; API-side rate limit must land here. Source: phase-6 story 6.0a.
+            - Per-route throttling on hot routes (architecture §13 / Brainstorm Md5/Q12) — phase 6 stories 6.1–6.4 ship default HTTP API stage throttling only (burst=10/rate=25 from phase-5 story 5.1); per-route overrides for /v1/profiles?username=, /v1/friend-requests, /v1/blocks land here. Source: phase-6 story 6.7.
+            ```
+          - Append the following block to `implementationplan/phase-8-chat.md` immediately after its `context_summary:` field (same idempotency rule):
+            ```
+            ## Carryovers from phase 6
+            - Chat-room-without-backing-friendship is read-only — phase-6 story 6.4 deletes the friendship row on POST /v1/blocks and reactivates the chat room on DELETE /v1/blocks, but does NOT recreate the friendship on unblock. Phase 8's chat-write path must treat an `active` ChatRooms row whose canonical pair has no `friendships` entry as read-only. Source: phase-6 third-pass Md1.
+            ```
+          - Both writes are idempotent (running them twice is a no-op): the subagent checks for an existing `## Carryovers from phase 6` heading and, if found, only appends bullets that aren't already present.
+          - The phase-11 and phase-8 PRD `last_updated:` fields are bumped to today's date in the same edit.
+    notes: "Brainstorm N2 (Makefile target), N3 (transitive depends_on expanded for clarity), G1 (fourth pass — own the consolidated carryover write)."

@@ -265,3 +265,82 @@ Two NEW majors (NEW-2, NEW-3) warrant a PRD edit; the rest can be batched into a
 
 Or, if you want to move faster: PROCEED now and let the subagent handle NEW-2/NEW-3/NEW-4/NEW-5/NEW-6 in-flight by including them as explicit dispatch-brief notes. Slightly riskier (no audit trail in the PRD), but workable.
 
+---
+
+## 2026-06-09 12:00 brainstorm
+
+Third pass — re-run at `/implement-phase 6` after the prior two passes (B1–B3 / M1–M6 then NEW-2 through NEW-7) have already been folded into the PRD. Focus is on NEW gaps only: missing/non-testable AC, scope drift, wrong `depends_on`, drift from already-merged phase-5, unvalidated external assumptions. Dev infra is currently DESTROYED (context.md last entry) — phase 6's first apply will be a full bring-up, not an incremental diff.
+
+### Blockers
+
+**B1 (new) — Story 6.0's plan-diff AC is impossible against the current destroyed-dev state.**
+AC reads: "`terraform plan` against dev shows only the removals; no positive resource diff aside from null-diff data-source refreshes." With dev destroyed via run 27188014855, the first plan will show ~91+ resources to CREATE. There are no "removals" because nothing is deployed. Following the AC literally blocks story 6.0 indefinitely.
+**Resolution:** drop the plan-shape assertion. Keep the file-deletion AC and `terraform validate` clean. Or assert `terraform plan -no-color | grep -E 'hello|_internal/hello' | grep -E '^\s*\+ ' | wc -l == 0` — i.e. zero `+ create` lines for hello resources, irrespective of the rest of the plan.
+
+### Majors
+
+**M1 — Story 6.2's "accept/decline a friend_request whose blocker has already blocked" branch is dead code.**
+Story 6.4's POST /v1/blocks DELETEs any pending `friend_requests` rows between the two users in the same transaction. After that DELETE commits, 6.2's POST .../accept does a SELECT on `friend_requests.id` and finds nothing → 404. The "succeeds at the data layer (status flip), inserts no friendship" branch and its `{"status":"declined_auto","reason":"blocked"}` HTTP 200 shape will not be reachable through any normal flow.
+**Resolution:** delete that AC bullet from 6.2 and spec the realistic behavior: POST .../accept on a friend_request that no longer exists returns HTTP 404. The block-aware integration test asserts 404. This removes the only place in the PRD that introduces a `declined_auto` enum the rest of the system doesn't carry.
+
+**M2 — Stories 6.1–6.4 are all `depends_on: [6.0a, 6.0b]` (same tier), but 6.2's and 6.3's block-aware integration tests require 6.4 to be deployed first.**
+6.2's last AC says "exercising story 6.4 which must already be deployed at the time this test runs — adjust the integration-test ordering to run AFTER 6.4's wiring lands". 6.3 has the same shape ("a third Female who has blocked A"). The dependency is informal — `depends_on` does not encode it. Within-tier dispatch order is undefined, so the main agent could pick 6.2 before 6.4 and have to invoke the PRD's "defer to 6.7" fallback, leaving 6.2's exit gate weaker than intended.
+**Resolution:** add `6.4` to `6.2.depends_on` and `6.3.depends_on`. This makes the dispatch loop deterministic: 6.0 → 6.0a → 6.0b → 6.1 → 6.4 → 6.2 → 6.3 → 6.5 → 6.6 → 6.7.
+
+**M3 — Story 6.4 returns HTTP 500 on a post-commit DynamoDB error even though the Aurora block has already committed. Client sees "block failed"; user is in fact blocked.**
+AC: "Any other DynamoDB error surfaces as HTTP 500 and the Aurora transaction is NOT rolled back (the block is committed; chat deactivation is best-effort)." This is a real divergence between client-observed and server-actual state. Retrying the block is idempotent at Aurora but will retry the same DynamoDB call, returning 500 again until DynamoDB recovers.
+**Resolution:** catch the non-`ConditionalCheckFailedException` DynamoDB error, log ERROR, return HTTP 200 with `{"chat_deactivation_pending": true}` in the response body. Phase 8 will re-check chat-room status on every write so the pending state is self-healing. The pin in 6.4's AC is small: replace the "HTTP 500 ... best-effort" sentence with the 200+flag contract.
+
+### Mediums
+
+**Md1 — Story 6.4's DELETE /v1/blocks reactivation reactivates a chat room with no backing friendship.**
+On block, 6.4 deletes the friendship. On unblock, 6.4 reactivates the chat room (status=active) but does NOT recreate the friendship. Phase 8 will then see an active chat room for two non-friends.
+**Resolution:** the ConditionExpression already restricts reactivation to the same blocker who placed the block, so the no-op cases are covered. The remaining issue is purely phase-8's: it should treat "active chat room without backing friendship" as read-only. Capture this in a `## Carryovers from phase 6` block appended to `implementationplan/phase-8-chat.md` at phase-6 completion handoff (no PRD edit needed in phase 6 itself).
+
+**Md2 — Story 6.0b's `is_blocked(conn, user_a, user_b)` has no AC forbidding SQL string-formatting of the user UUIDs.**
+`block_filter`'s column-name whitelist is solid, but `is_blocked` only specifies "a single SELECT against blocks for the pair in either direction". The user UUIDs flow from the JWT sub and the URL path/body — attacker-controllable surfaces.
+**Resolution:** add an AC: "`is_blocked` issues the SELECT via `cur.execute(sql, (user_a, user_b, user_b, user_a))` with parameter binding; no f-string interpolation of user_a/user_b. UUID-format validation is the caller's responsibility (Lambda handlers parse the URL path through a UUID regex before calling)."
+
+### Minors
+
+**Mi1 — Two stories (6.0a and 6.7) each ask for a `## Carryovers from phase 6` note in `implementationplan/phase-11-hardening.md`. The pattern should land once.**
+**Resolution:** drop the per-story carryover AC bullets from 6.0a and 6.7. Move the carryover write to the phase-completion handoff: append a single block listing the username rename limit (from 6.0a), per-route throttling (from 6.7), and — if Md1 above is accepted — the chat-room-without-friendship rule into phase-8's PRD too.
+
+**Mi2 — Story 6.6's `app_user_conn` fixture depends on the secret `knotify-${env}-app-user-credential`, which db_migrator creates on first migration apply. After the dev destroy, that secret does not exist.**
+**Resolution:** no PRD change needed (the same apply that ships 6.6's wiring also runs db_migrator). But add: "the fixture `pytest.skip`s if the secret is absent — no-op on a freshly-destroyed env, runs once the secret materializes."
+
+### No action needed (verified during this pass)
+
+- `modules/lambda` log retention is 7d (`infrastructure/modules/lambda/main.tf:42`) — story 6.1's claim is correct.
+- `modules/dynamodb` exports `chat_rooms_table_name` (`infrastructure/modules/dynamodb/outputs.tf:1`) — story 6.4's env-var wiring is valid.
+- `signed_in_user` fixture lives in `infrastructure/src/tests/integration/conftest.py` (phase 5.7) — story 6.1's fixture-layering plan is grounded.
+- `@with_edge_secret` decorator + `EDGE_SECRET` env-var pattern are proven by the now-removed hello stub — stories 6.1–6.4 inherit the same shape.
+
+### Recommendation
+
+Three majors (M1, M2, M3) and one blocker (B1) are worth a PRD edit before dispatch — all are small. Md1, Mi1 are phase-completion handoff items (no in-story edit). Md2, Mi2 can land via dispatch-brief notes if the user wants to move faster.
+
+---
+
+## 2026-06-09 12:30 brainstorm
+
+Fourth pass — narrow sweep after the third-pass edits (B1/M1/M2/M3/Md2/Mi1/Mi2) were applied. Only checked for edit-induced regressions: dependency cycles, AC contradictions across stories, missing-home for moved content.
+
+### Verified clean
+
+- M2 — `6.2.depends_on = [6.0a, 6.0b, 6.4]` and `6.3.depends_on = [6.0a, 6.0b, 6.4]`; `6.4.depends_on = [6.0a, 6.0b]`. No cycle. Topological order is deterministic: 6.0 → 6.0a → 6.0b → 6.1 → 6.4 → 6.2 → 6.3 → 6.5 → 6.6 → 6.7.
+- M1 — story 6.2's HTTP 404 for stale-request accept does not collide with story 6.7's E2E flow (6.7 tests only the happy-path accept and the 409-BLOCKED-on-block path).
+- M3 — story 6.4's new HTTP 200 + `chat_deactivation_pending: true` contract on DynamoDB error does not conflict with any other AC (6.5 auth sweep is status-agnostic for /v1/blocks; 6.7 E2E does not assert 500).
+- Md2 — `is_blocked` parameterized-binding AC is code-review testable; no other story makes a contradictory claim.
+- Mi2 — `pytest.skip` in `app_user_conn` cleanly cascades to story 6.6's two tests that consume it.
+
+### New gap
+
+**G1 — Mi1 removed the per-story carryover bullets from 6.0a and 6.7 in favor of "a single consolidated `## Carryovers from phase 6` block written at phase-completion handoff", but the orchestrator's "Phase completion handoff" checklist has no step for writing carryover notes to other phases' PRDs.** If followed literally, the carryover deferral note disappears.
+**Resolution (applied):** added a final AC to story 6.7 owning the carryover write directly — appends `## Carryovers from phase 6` blocks to both `implementationplan/phase-11-hardening.md` (1/30-day username rename limit + per-route throttling) and `implementationplan/phase-8-chat.md` (chat-room-without-friendship is read-only, from third-pass Md1). Writes are idempotent (heading detection + bullet dedup). PRD `last_updated:` annotation bumped to record the fourth-pass edit.
+
+### Recommendation
+
+Edits applied. No further blockers. Proceed to Step 1 (tracking-issue creation) on the next `/implement-phase 6` run.
+
+
