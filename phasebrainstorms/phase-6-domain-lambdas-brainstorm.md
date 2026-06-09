@@ -343,4 +343,64 @@ Fourth pass — narrow sweep after the third-pass edits (B1/M1/M2/M3/Md2/Mi1/Mi2
 
 Edits applied. No further blockers. Proceed to Step 1 (tracking-issue creation) on the next `/implement-phase 6` run.
 
+## 2026-06-09 14:30 brainstorm (pre-dispatch readiness check, 5th pass)
+
+Scope: final pre-execution sweep. Surface only material NEW concerns since the 4th-pass brainstorm and the phase-5 merge + dev destroy.
+
+### Findings
+
+**1. MAJOR — Story 6.4 depends_on is missing 6.1, and its integration-test setup is self-contradictory.**
+
+- Story 6.4 (`depends_on: [6.0a, 6.0b]`) consumes the `completed_profile_user(sex)` pytest fixture, which is introduced by story 6.1. At 6.4 dispatch time under the current depends_on, 6.1 has not yet been dispatched — the fixture does not exist.
+- Story 6.4's integration-test AC says "A (Male) and B (Female) are friends (set up via 6.2 friend-request flow which is also deployed)." But topologically 6.2 runs AFTER 6.4 (`6.2 depends_on: [..., 6.4]`). At 6.4 dispatch time the friends Lambda is NOT yet deployed; the API path the AC names is unavailable.
+- **Resolution (PRD edit required):**
+  - Add `6.1` to story 6.4's `depends_on` → `depends_on: [6.0a, 6.0b, 6.1]`.
+  - Replace the integration-test setup clause: instead of "set up via 6.2 friend-request flow", the test seeds the friendship row via direct master-credential INSERT against `friendships` (canonical lex-min/max ordering matching `chat_room_id`). The block + chat-room deactivation behaviors under test do not require the friends Lambda to be deployed.
+  - The follow-up assertion "POST /v1/friend-requests {toUserId: B} returns 409 BLOCKED" must be deleted from 6.4 (the friends Lambda doesn't exist yet); that scenario is already covered by story 6.2's own block-aware integration test.
+
+**2. MINOR — Story 6.0's hello-removal AC over-states the prod cleanup.**
+
+- The AC says "Remove the `module \"hello\"` block from infrastructure/environments/dev/main.tf and infrastructure/environments/prod/main.tf." On disk, hello references exist ONLY in `dev/main.tf` (phase-5 story 5.7 was dev-only — confirmed via grep: 12 hits in dev/main.tf, 0 in prod/main.tf).
+- **Resolution (no PRD edit needed):** the subagent will grep prod, find nothing, and treat it as a no-op. The AC is over-broad but not incorrect.
+
+**3. DRIFT NOTE — dev infrastructure is currently destroyed.**
+
+- Per context.md line 7 and 47, dev was destroyed via `deploy.yml workflow_dispatch action=destroy environment=dev` (run 27188014855) on 2026-06-09 to halt cost.
+- Story 6.0's `terraform plan` AC already accounts for this (third-pass B1: full bring-up, no incremental diff assertion). Integration tests in 6.1–6.7 cannot run until the first phase-6 apply rebuilds phase-1..5 infra (Aurora cluster, Cognito User Pool, HTTP API, CloudFront, WAF) plus phase-6 Lambdas. The subagent must understand this — the first apply will create ~90+ resources, not just the new domain Lambdas.
+- **Resolution (no PRD edit; brief subagent at dispatch).** Include in the per-story brief for 6.0 (and downstream stories that have integration tests) a one-line reminder: "dev infra is currently destroyed; the first apply on your branch will bring up everything from phase 1 through phase 6."
+
+**4. MINOR — `module.dynamodb.chat_rooms_table_name` output exists** ✓ (verified). `module.cloudfront.edge_secret`, `module.api_gateway.authorizer_id`, `module.observability_layer.layer_arn` all exist ✓. No drift on referenced module outputs.
+
+**5. Process — phase-5 hotfix-on-development violation is already a recorded lesson** (per context.md and the hotfix-branch memory). No new lesson required pre-dispatch; any new phase-6 lessons get appended at handoff per the standard checklist.
+
+### Recommendation
+
+One PRD edit required (finding #1: story 6.4 `depends_on` and integration-test setup). Findings #2–#5 are informational only. Recommend the user pick **address** to apply the 6.4 edit, then re-run `/implement-phase 6`.
+
+## 2026-06-09 14:55 brainstorm (re-run verification, 6th pass)
+
+Scope: verify the 5th-pass patch to story 6.4 lands cleanly and no new concerns surfaced after the edit.
+
+### Patch verification
+
+- Story 6.4 line 143: `depends_on: [6.0a, 6.0b, 6.1]` ✓ — `6.1` added, comment explains the rationale.
+- Story 6.4 line 166: integration test rewritten — friendship seeded via direct master-credential INSERT into `friendships` (lex-min/max ordering matching `chat_room_id`); ChatRooms row optionally pre-created via direct boto3 PutItem; trailing 409 BLOCKED assertion deleted with explicit pointer to story 6.2 which owns that coverage ✓.
+- Story 6.4 negative integration test (line 167) unchanged — still asserts 409 NOT_FRIENDS when blocker and target aren't friends ✓.
+
+### Topological dispatch order (10 stories)
+
+With the patched dependencies, topological order is unambiguous:
+`6.0 → 6.0a → 6.0b → 6.1 → 6.4 → 6.2 → 6.3 → 6.5 → 6.6 → 6.7`
+
+Single DAG, no cycles. No story is unreachable.
+
+### New concerns
+
+None. The patch resolves the prior finding without introducing new gaps.
+
+### Recommendation
+
+Patch verified. Proceed to Step 1 (tracking-issue creation) and dispatch.
+
+
 
