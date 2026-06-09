@@ -1,5 +1,5 @@
 project: knotify-backend
-last_updated: 2026-06-05 # phase-5 complete (all stories 5.0–5.7 done)
+last_updated: 2026-06-09 # phase-5 merged + tagged phase-5-complete; dev infra destroyed for cost control
 
 phases:
 
