@@ -80,3 +80,39 @@ variable "advanced_security_mode" {
   type        = string
   default     = "AUDIT"
 }
+
+# ---------------------------------------------------------------------------
+# ACM certificate module variables — story 5.2
+# Default "" → module produces zero resources (pre-cutover prod plan-only mode).
+# Set domain_name + hosted_zone_id in prod.tfvars per docs/PROD_CUTOVER.md §4b
+# when ready to create the prod certificate.
+# ---------------------------------------------------------------------------
+
+variable "domain_name" {
+  description = "Primary domain name for the ACM certificate. Default empty string (zero resources until prod cutover). Set in prod.tfvars per PROD_CUTOVER.md §4b."
+  type        = string
+  default     = ""
+}
+
+variable "hosted_zone_id" {
+  description = "Route 53 hosted zone ID for DNS validation records. Default empty string. Set in prod.tfvars per PROD_CUTOVER.md §4b."
+  type        = string
+  default     = ""
+}
+
+# ---------------------------------------------------------------------------
+# API Gateway throttling — story 5.3 (env-level wiring, deferred from 5.1)
+# Prod uses production-capacity values (brainstorm Mn4).
+# ---------------------------------------------------------------------------
+
+variable "api_gateway_throttling_burst_limit" {
+  description = "Maximum concurrent requests allowed by the API Gateway default stage. Dev: 10. Prod: 500."
+  type        = number
+  default     = 500
+}
+
+variable "api_gateway_throttling_rate_limit" {
+  description = "Maximum steady-state request rate (req/s) for the API Gateway default stage. Dev: 25. Prod: 1000."
+  type        = number
+  default     = 1000
+}

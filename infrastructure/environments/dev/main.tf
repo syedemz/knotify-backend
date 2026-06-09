@@ -11,6 +11,32 @@ provider "aws" {
   }
 }
 
+# ---------------------------------------------------------------------------
+# us-east-1 provider alias — story 5.0
+#
+# CloudFront-scoped WAF (story 5.4) and CloudFront viewer certificates
+# (story 5.2) must reside in us-east-1 regardless of the environment's
+# primary region. This alias is the canonical Terraform pattern for that
+# constraint. The alias is a no-op until story 5.2 and story 5.4 reference
+# it via `providers = { aws.us_east_1 = aws.us_east_1 }` in their module
+# calls. Modules that accept the alias declare
+# `configuration_aliases = [aws.us_east_1]` in their required_providers block.
+# ---------------------------------------------------------------------------
+
+provider "aws" {
+  alias  = "us_east_1"
+  region = "us-east-1"
+
+  default_tags {
+    tags = {
+      Project     = "knotify"
+      Environment = var.environment
+      ManagedBy   = "terraform"
+      Owner       = "knotify-team"
+    }
+  }
+}
+
 module "networking" {
   source      = "../../modules/networking"
   environment = var.environment
@@ -360,4 +386,206 @@ module "cognito" {
   # Wire the pre-token-generation trigger (story 4.4).
   # V2_0 trigger shape — requires AUDIT Advanced Security Mode (default).
   pre_token_generation_lambda_arn = module.cognito_pre_token_generation.function_arn
+}
+
+# ---------------------------------------------------------------------------
+# ACM certificate — story 5.2
+#
+# dev path: domain_name = "" → module produces ZERO resources. The alias
+# hand-off is exercised here so the providers block is validated end-to-end
+# even though no AWS calls are made. The module will produce real resources
+# in prod once prod.tfvars sets domain_name and hosted_zone_id (see
+# docs/PROD_CUTOVER.md §4b).
+# ---------------------------------------------------------------------------
+
+module "acm" {
+  source = "../../modules/acm"
+
+  providers = {
+    aws           = aws
+    aws.us_east_1 = aws.us_east_1
+  }
+
+  domain_name    = var.domain_name
+  hosted_zone_id = var.hosted_zone_id
+}
+
+# ---------------------------------------------------------------------------
+# HTTP API Gateway — story 5.1 module, env wiring deferred to story 5.3
+#
+# CloudFront (below) needs execute_api_endpoint as its origin, so the API
+# Gateway must be instantiated here. See story 5.1 notes: "env-level wiring
+# landed in story 5.3 (CloudFront needed an origin)."
+#
+# Cognito outputs from phase 4 feed the JWT authorizer:
+#   user_pool_endpoint       → issuer URL for JWKS validation
+#   cognito_audience_client_ids → compact list of both app clients so dev
+#                                 integration-test tokens (minted via
+#                                 ADMIN_USER_PASSWORD_AUTH) are accepted
+# ---------------------------------------------------------------------------
+
+module "api_gateway" {
+  source = "../../modules/api_gateway"
+
+  name = "knotify-${var.environment}-api"
+
+  cognito_user_pool_endpoint  = module.cognito.user_pool_endpoint
+  cognito_audience_client_ids = compact([module.cognito.app_client_id, module.cognito.integration_test_app_client_id])
+
+  throttling_burst_limit = var.api_gateway_throttling_burst_limit
+  throttling_rate_limit  = var.api_gateway_throttling_rate_limit
+}
+
+# ---------------------------------------------------------------------------
+# CloudFront distribution — story 5.3
+#
+# Sits in front of the HTTP API Gateway.  The origin receives an injected
+# x-knotify-edge-secret header so every Lambda can verify the request
+# arrived via CloudFront (not via the raw execute-api endpoint).
+#
+# dev path: domain_name = "" → cloudfront_default_certificate, no aliases.
+#   The ACM module returns certificate_arn = "" on the dev path; the
+#   CloudFront module ignores it when domain_name is empty.
+#
+# replace() strips the "https://" scheme — CloudFront's domain_name field
+# on an origin block requires a hostname only.
+# ---------------------------------------------------------------------------
+
+module "cloudfront" {
+  source = "../../modules/cloudfront"
+
+  api_gateway_domain_name = replace(module.api_gateway.execute_api_endpoint, "https://", "")
+  domain_name             = var.domain_name
+  acm_certificate_arn     = module.acm.certificate_arn
+}
+
+# ---------------------------------------------------------------------------
+# WAF web ACL — story 5.4
+#
+# CLOUDFRONT-scoped WAF must reside in us-east-1 (CloudFront control plane).
+# The alias is threaded here from the provider block added in story 5.0.
+# The ACL ships with:
+#   - AWSManagedRulesCommonRuleSet   (count — monitor; flip to none in phase 11)
+#   - AWSManagedRulesKnownBadInputsRuleSet (none — enforce from day one)
+#   - AWSManagedRulesSQLiRuleSet      (count — observe; flip to none in phase 11)
+#   - Rate-based per-IP               (block at 2000 req/5 min)
+# ---------------------------------------------------------------------------
+
+module "waf" {
+  source = "../../modules/waf"
+
+  providers = {
+    aws.us_east_1 = aws.us_east_1
+  }
+
+  environment                 = var.environment
+  cloudfront_distribution_arn = module.cloudfront.distribution_arn
+}
+
+# ---------------------------------------------------------------------------
+# Route 53 A-alias record — story 5.5
+#
+# dev path: domain_name = "" and hosted_zone_id = "" → module produces ZERO
+# resources (count = 0 branch). No Route 53 hosted zone is required in dev;
+# the app connects via the auto-generated d*.cloudfront.net hostname.
+#
+# cloudfront_hosted_zone_id is the CloudFront global hosted zone ID — the
+# same well-known constant (Z2FDTNDATAQYW2) in every AWS account.
+# ---------------------------------------------------------------------------
+
+module "route53" {
+  source = "../../modules/route53"
+
+  domain_name                         = var.domain_name
+  hosted_zone_id                      = var.hosted_zone_id
+  cloudfront_distribution_domain_name = module.cloudfront.distribution_domain_name
+  cloudfront_hosted_zone_id           = "Z2FDTNDATAQYW2"
+}
+
+# ---------------------------------------------------------------------------
+# hello stub Lambda — story 5.7
+#
+# Minimal smoke endpoint used to validate the full edge stack end-to-end:
+#   CloudFront → WAF → HTTP API JWT authorizer → Lambda (@with_edge_secret).
+#
+# This Lambda, its API Gateway integration, route, and permission are
+# REMOVED in phase-6 story 6.0 before any domain Lambda lands.
+# ---------------------------------------------------------------------------
+
+module "hello" {
+  source = "../../modules/lambda"
+
+  function_name = "knotify-${var.environment}-hello"
+  handler       = "handler.handler"
+  filename      = "${path.module}/../../../build/hello.zip"
+
+  # Only the observability layer is needed — hello never touches Aurora.
+  layers = [module.observability_layer.layer_arn]
+
+  role_arn = module.iam_roles.role_arns["aurora_reader"]
+
+  # No VPC config — this Lambda does not connect to Aurora or DynamoDB.
+
+  environment_variables = {
+    EDGE_SECRET = module.cloudfront.edge_secret
+  }
+}
+
+# HTTP API integration for hello Lambda (proxy integration to the alias ARN).
+resource "aws_apigatewayv2_integration" "hello" {
+  api_id                 = module.api_gateway.api_id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = module.hello.invoke_arn
+  payload_format_version = "2.0"
+}
+
+# HTTP API route: GET /v1/_internal/hello — JWT-protected.
+# Removed by phase-6 story 6.0.
+resource "aws_apigatewayv2_route" "hello" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "GET /v1/_internal/hello"
+  target             = "integrations/${aws_apigatewayv2_integration.hello.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+# Allow the HTTP API to invoke the hello Lambda alias.
+# source_arn is scoped to this specific route so the permission is least-privilege.
+resource "aws_lambda_permission" "hello_api_gateway" {
+  statement_id  = "AllowAPIGatewayInvokeHello"
+  action        = "lambda:InvokeFunction"
+  function_name = module.hello.function_name
+  qualifier     = "live"
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${module.api_gateway.api_arn}/*/*/v1/_internal/hello"
+}
+
+# ---------------------------------------------------------------------------
+# Integration test environment file — story 5.6
+#
+# Writes three Terraform outputs to infrastructure/src/tests/integration/.env.test
+# so the phase-5.7 integration tests (and future phase-6 tests) can load
+# endpoint URLs and the edge secret without hard-coding them.
+#
+# The file contains only key=value pairs (no shell export syntax); test code
+# uses python-dotenv or a simple parser to read them.
+#
+# file_permission = "0600" — the file contains the edge secret (a sensitive
+# Terraform value). Terraform writes it but the plan/apply output shows
+# (sensitive value) for the content field.
+#
+# path.root resolves to infrastructure/environments/dev; the relative path
+# ../../src/tests/integration/.env.test resolves to the correct repo-relative
+# path regardless of which directory terraform is invoked from.
+# ---------------------------------------------------------------------------
+
+resource "local_file" "integration_test_env" {
+  filename        = "${path.root}/../../src/tests/integration/.env.test"
+  file_permission = "0600"
+  content = join("\n", [
+    "EXECUTE_API_ENDPOINT=${module.api_gateway.execute_api_endpoint}",
+    "DISTRIBUTION_DOMAIN_NAME=${module.cloudfront.distribution_domain_name}",
+    "EDGE_SECRET=${module.cloudfront.edge_secret}",
+    "",
+  ])
 }

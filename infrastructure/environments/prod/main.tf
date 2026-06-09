@@ -11,6 +11,32 @@ provider "aws" {
   }
 }
 
+# ---------------------------------------------------------------------------
+# us-east-1 provider alias — story 5.0
+#
+# CloudFront-scoped WAF (story 5.4) and CloudFront viewer certificates
+# (story 5.2) must reside in us-east-1 regardless of the environment's
+# primary region. This alias is the canonical Terraform pattern for that
+# constraint. The alias is a no-op until story 5.2 and story 5.4 reference
+# it via `providers = { aws.us_east_1 = aws.us_east_1 }` in their module
+# calls. Modules that accept the alias declare
+# `configuration_aliases = [aws.us_east_1]` in their required_providers block.
+# ---------------------------------------------------------------------------
+
+provider "aws" {
+  alias  = "us_east_1"
+  region = "us-east-1"
+
+  default_tags {
+    tags = {
+      Project     = "knotify"
+      Environment = var.environment
+      ManagedBy   = "terraform"
+      Owner       = "knotify-team"
+    }
+  }
+}
+
 module "networking" {
   source      = "../../modules/networking"
   environment = var.environment
@@ -297,4 +323,145 @@ module "cognito" {
   # Wire the pre-token-generation trigger (story 4.4).
   # V2_0 trigger shape — requires AUDIT Advanced Security Mode (default).
   pre_token_generation_lambda_arn = module.cognito_pre_token_generation.function_arn
+}
+
+# ---------------------------------------------------------------------------
+# ACM certificate — story 5.2
+#
+# prod path: domain_name = "" (module default) until the prod cutover
+# documented in docs/PROD_CUTOVER.md §4b. Once domain_name and hosted_zone_id
+# are set in prod.tfvars, this module creates the cert, DNS validation records,
+# and the aws_acm_certificate_validation wait resource in us-east-1.
+# The alias hand-off is exercised here so the providers block is validated
+# end-to-end even in the current zero-resource state.
+#
+# PROD NOTE: authored for `terraform plan`; cert apply requires setting
+# domain_name + hosted_zone_id in prod.tfvars per PROD_CUTOVER.md §4b.
+# ---------------------------------------------------------------------------
+
+module "acm" {
+  source = "../../modules/acm"
+
+  providers = {
+    aws           = aws
+    aws.us_east_1 = aws.us_east_1
+  }
+
+  domain_name    = var.domain_name
+  hosted_zone_id = var.hosted_zone_id
+}
+
+# ---------------------------------------------------------------------------
+# HTTP API Gateway — story 5.1 module, env wiring deferred to story 5.3
+#
+# CloudFront (below) needs execute_api_endpoint as its origin, so the API
+# Gateway must be instantiated here. See story 5.1 notes: "env-level wiring
+# landed in story 5.3 (CloudFront needed an origin)."
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+# ---------------------------------------------------------------------------
+
+module "api_gateway" {
+  source = "../../modules/api_gateway"
+
+  name = "knotify-${var.environment}-api"
+
+  cognito_user_pool_endpoint = module.cognito.user_pool_endpoint
+
+  # prod: integration_test_app_client_id is "" → compact() drops it,
+  # leaving only the production app client in the audience list.
+  cognito_audience_client_ids = compact([module.cognito.app_client_id, module.cognito.integration_test_app_client_id])
+
+  throttling_burst_limit = var.api_gateway_throttling_burst_limit
+  throttling_rate_limit  = var.api_gateway_throttling_rate_limit
+}
+
+# ---------------------------------------------------------------------------
+# CloudFront distribution — story 5.3
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+#
+# prod path: domain_name is set in prod.tfvars once the prod cutover begins
+# (docs/PROD_CUTOVER.md §4c). Until then domain_name = "" (module default)
+# and cloudfront_default_certificate is used, matching the dev behaviour.
+# ---------------------------------------------------------------------------
+
+module "cloudfront" {
+  source = "../../modules/cloudfront"
+
+  api_gateway_domain_name = replace(module.api_gateway.execute_api_endpoint, "https://", "")
+  domain_name             = var.domain_name
+  acm_certificate_arn     = module.acm.certificate_arn
+}
+
+# ---------------------------------------------------------------------------
+# WAF web ACL — story 5.4
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+#
+# CLOUDFRONT-scoped WAF must reside in us-east-1 (CloudFront control plane).
+# The alias is threaded here from the provider block added in story 5.0.
+# The ACL ships with:
+#   - AWSManagedRulesCommonRuleSet   (count — monitor; flip to none in phase 11)
+#   - AWSManagedRulesKnownBadInputsRuleSet (none — enforce from day one)
+#   - AWSManagedRulesSQLiRuleSet      (count — observe; flip to none in phase 11)
+#   - Rate-based per-IP               (block at 2000 req/5 min)
+# ---------------------------------------------------------------------------
+
+module "waf" {
+  source = "../../modules/waf"
+
+  providers = {
+    aws.us_east_1 = aws.us_east_1
+  }
+
+  environment                 = var.environment
+  cloudfront_distribution_arn = module.cloudfront.distribution_arn
+}
+
+# ---------------------------------------------------------------------------
+# Route 53 A-alias record — story 5.5
+#
+# prod path: domain_name and hosted_zone_id default to "" (module defaults)
+# until the prod cutover documented in docs/PROD_CUTOVER.md §4d. Once both
+# are set in prod.tfvars, this module creates one A-alias record pointing
+# the custom domain at the CloudFront distribution.
+#
+# cloudfront_hosted_zone_id is the CloudFront global hosted zone ID — the
+# same well-known constant (Z2FDTNDATAQYW2) in every AWS account.
+#
+# PROD NOTE: authored for `terraform plan`; alias record apply requires
+# setting domain_name + hosted_zone_id in prod.tfvars per PROD_CUTOVER.md §4d.
+# ---------------------------------------------------------------------------
+
+module "route53" {
+  source = "../../modules/route53"
+
+  domain_name                         = var.domain_name
+  hosted_zone_id                      = var.hosted_zone_id
+  cloudfront_distribution_domain_name = module.cloudfront.distribution_domain_name
+  cloudfront_hosted_zone_id           = "Z2FDTNDATAQYW2"
+}
+
+# ---------------------------------------------------------------------------
+# Integration test environment file — story 5.6
+#
+# PROD NOTE: authored for completeness so `terraform plan` succeeds; the file
+# would be written at the path relative to the prod environment directory.
+# In practice, integration tests run against dev only; this resource is
+# included for consistency so plan output is clean on both envs.
+#
+# Same path resolution as dev: path.root = infrastructure/environments/prod;
+# ../../src/tests/integration/.env.test resolves to the repo-relative path.
+# ---------------------------------------------------------------------------
+
+resource "local_file" "integration_test_env" {
+  filename        = "${path.root}/../../src/tests/integration/.env.test"
+  file_permission = "0600"
+  content = join("\n", [
+    "EXECUTE_API_ENDPOINT=${module.api_gateway.execute_api_endpoint}",
+    "DISTRIBUTION_DOMAIN_NAME=${module.cloudfront.distribution_domain_name}",
+    "EDGE_SECRET=${module.cloudfront.edge_secret}",
+    "",
+  ])
 }

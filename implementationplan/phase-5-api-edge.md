@@ -1,6 +1,6 @@
 phase: 5
 title: API edge (HTTP API + CloudFront + WAF)
-last_updated: 2026-06-05  # brainstorm-driven revision (B1, B2, M1-M6, Md1-Md5, Mn1-Mn5 + re-run Nb1-Nb5 incorporated)
+last_updated: 2026-06-05  # story 5.7 done — phase 5 complete
 
 context_summary: |
   Builds the inbound HTTPS surface per §4.2 of architecture.md: HTTP API Gateway behind CloudFront with WAF attached at the edge, a Cognito JWT authorizer wired to the User Pool from phase 4, and an origin-secret header that prevents bypassing CloudFront. No domain Lambdas attach yet — that begins in phase 6. A stub "hello" Lambda is wired only as a smoke endpoint to validate that JWT enforcement, WAF rules, and the origin-secret check all function end-to-end through the edge stack.
@@ -13,7 +13,7 @@ stories:
   - id: 5.0
     title: us_east_1 provider alias in dev and prod environments
     agent: backenddeveloper
-    done: false
+    done: true
     tracking_issue: 58
     depends_on: []
     acceptance_criteria:
@@ -26,7 +26,7 @@ stories:
   - id: 5.1
     title: HTTP API Gateway Terraform module
     agent: backenddeveloper
-    done: false
+    done: true
     tracking_issue: 59
     depends_on: []
     acceptance_criteria:
@@ -35,12 +35,12 @@ stories:
       - Default stage configures access_log_settings.destination_arn pointing at an aws_cloudwatch_log_group with retention_in_days=7 (matches the project-wide log retention convention from architecture.md §10.6); access log format is JSON capturing requestId, status, routeKey, integrationLatency, authLatency, sourceIp, userAgent
       - Module outputs api_id, api_arn, execute_api_endpoint, authorizer_id, default_stage_arn, access_log_group_name
       - CORS is intentionally NOT configured — the v1 mobile React Native client uses native HTTP libraries and does not send CORS preflight; a notes block in the module README states this and flags CORS as future work if Expo Web ever ships (phase 11 hardening or later)
-    notes: "Brainstorm M1: `audience` MUST be a list using `compact(...)` over both app client outputs; using only the production client breaks phase-4.6-style integration tests that mint tokens via the dev-only ADMIN_USER_PASSWORD_AUTH client. Brainstorm Md1: access logs are required from day one — they're cheap and the only way to debug 5.6/5.7's 403/401/200 assertions when they regress. Brainstorm Mn4: throttling defaults bumped down in dev (10/25) to reflect pre-launch reality; prod stays at 500/1000. Brainstorm Mn5: CORS is deferred."
+    notes: "Brainstorm M1: `audience` MUST be a list using `compact(...)` over both app client outputs; using only the production client breaks phase-4.6-style integration tests that mint tokens via the dev-only ADMIN_USER_PASSWORD_AUTH client. Brainstorm Md1: access logs are required from day one — they're cheap and the only way to debug 5.6/5.7's 403/401/200 assertions when they regress. Brainstorm Mn4: throttling defaults bumped down in dev (10/25) to reflect pre-launch reality; prod stays at 500/1000. Brainstorm Mn5: CORS is deferred. Env-level wiring (module.api_gateway in dev/main.tf and prod/main.tf) landed in story 5.3 because CloudFront needed an origin endpoint to wire against."
 
   - id: 5.2
     title: ACM certificate for custom domain in us-east-1 (self-contained: cert + DNS validation records + validation wait)
     agent: backenddeveloper
-    done: false
+    done: true
     tracking_issue: 60
     depends_on: [5.0]
     acceptance_criteria:
@@ -55,7 +55,7 @@ stories:
   - id: 5.3
     title: CloudFront distribution with origin secret header
     agent: backenddeveloper
-    done: false
+    done: true
     tracking_issue: 61
     depends_on: [5.1, 5.2]
     acceptance_criteria:
@@ -71,7 +71,7 @@ stories:
   - id: 5.4
     title: WAF web ACL attached to CloudFront
     agent: backenddeveloper
-    done: false
+    done: true
     tracking_issue: 62
     depends_on: [5.0, 5.3]
     acceptance_criteria:
@@ -85,7 +85,7 @@ stories:
   - id: 5.5
     title: Route 53 public-facing A-alias record for custom domain (prod only)
     agent: backenddeveloper
-    done: false
+    done: true
     tracking_issue: 63
     depends_on: [5.3]
     acceptance_criteria:
@@ -99,7 +99,7 @@ stories:
   - id: 5.6
     title: Shared `require_edge_secret` helper + `@with_edge_secret` decorator in observability layer + integration test plumbing
     agent: backenddeveloper
-    done: false
+    done: true
     tracking_issue: 64
     depends_on: [5.3]
     acceptance_criteria:
@@ -116,7 +116,7 @@ stories:
   - id: 5.7
     title: Stub hello endpoint and end-to-end edge smoke test
     agent: backenddeveloper
-    done: false
+    done: true
     tracking_issue: 65
     depends_on: [5.1, 5.3, 5.4, 5.6]
     acceptance_criteria:

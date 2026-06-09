@@ -1,5 +1,5 @@
 project: knotify-backend
-last_updated: 2026-06-01 # phase-4 merged into development (PR #53)
+last_updated: 2026-06-05 # phase-5 complete (all stories 5.0–5.7 done)
 
 phases:
 
@@ -37,7 +37,7 @@ phases:
   title: API edge (HTTP API + CloudFront + WAF)
   file: implementationplan/phase-5-api-edge.md
   ready: true
-  done: false
+  done: true
 
 - phase: 6
   title: Profile, friends, bookmarks, blocks domain Lambdas
