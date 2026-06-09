@@ -17,6 +17,7 @@ stories:
     title: Remove the phase-5 /v1/_internal/hello stub before any domain Lambda lands
     agent: backenddeveloper
     done: false
+    tracking_issue: 72
     depends_on: []
     acceptance_criteria:
       - Delete infrastructure/src/functions/hello/ (the entire directory)
@@ -33,6 +34,7 @@ stories:
     title: Add `username` UNIQUE constraint (migration 0010)
     agent: backenddeveloper
     done: false
+    tracking_issue: 73
     depends_on: [6.0]
     acceptance_criteria:
       - Create `infrastructure/db/migrations/0010_username_unique.sql` adding a case-insensitive partial unique index, e.g. `CREATE UNIQUE INDEX users_username_lower_unique ON users (lower(username)) WHERE username IS NOT NULL;` — partial on NOT NULL so the many NULL-username bootstrap rows do not collide
@@ -47,6 +49,7 @@ stories:
     title: Add shared helpers to the observability layer — chat_room_id + block-aware filter
     agent: backenddeveloper
     done: false
+    tracking_issue: 74
     depends_on: [6.0]
     acceptance_criteria:
       - In `infrastructure/src/layers/observability/knotify_obs/`, add a new module `_chat_room_id.py` exporting `chat_room_id(user_a: str, user_b: str) -> str` that returns `hashlib.sha256(f"{min}:{max}".encode("utf-8")).hexdigest()` where `min`/`max` are the lexicographically ordered user UUIDs (string compare). Re-export from `knotify_obs.__init__`
@@ -66,6 +69,7 @@ stories:
     title: knotify-profile Lambda (including PATCH-completion semantics, username search, and own Terraform wiring)
     agent: backenddeveloper
     done: false
+    tracking_issue: 75
     depends_on: [6.0a, 6.0b]
     acceptance_criteria:
       - `src/functions/profile/` implements handlers for GET /v1/profile/me, PATCH /v1/profile/me, GET /v1/profiles?username=..., GET /v1/profiles/{userId}
@@ -105,6 +109,7 @@ stories:
     title: knotify-friends Lambda (block-aware, own Terraform wiring)
     agent: backenddeveloper
     done: false
+    tracking_issue: 76
     depends_on: [6.0a, 6.0b, 6.4]  # Brainstorm M2 (third pass): block-aware integration test POSTs /v1/blocks → 6.4 must be deployed first.
     acceptance_criteria:
       - `src/functions/friends/` implements GET /v1/friends, DELETE /v1/friends/{userId}, GET /v1/friend-requests, POST /v1/friend-requests, POST /v1/friend-requests/{id}/accept, POST /v1/friend-requests/{id}/decline, DELETE /v1/friend-requests/{id}
@@ -125,6 +130,7 @@ stories:
     title: knotify-bookmarks Lambda (block-aware, own Terraform wiring)
     agent: backenddeveloper
     done: false
+    tracking_issue: 77
     depends_on: [6.0a, 6.0b, 6.4]  # Brainstorm M2 (third pass): integration test POSTs /v1/blocks to verify "bookmark a blocked user → 409" — 6.4 must be deployed first.
     acceptance_criteria:
       - `src/functions/bookmarks/` implements GET /v1/bookmarks, POST /v1/bookmarks, DELETE /v1/bookmarks/{userId}
@@ -140,6 +146,7 @@ stories:
     title: knotify-blocks Lambda (new IAM role, chat-room deactivation, own Terraform wiring)
     agent: backenddeveloper
     done: false
+    tracking_issue: 78
     depends_on: [6.0a, 6.0b, 6.1]  # 5th brainstorm: 6.1 added because 6.4's integration test consumes the `completed_profile_user` fixture introduced by 6.1.
     acceptance_criteria:
       - `src/functions/blocks/` implements GET /v1/blocks, POST /v1/blocks, DELETE /v1/blocks/{userId}
@@ -171,6 +178,7 @@ stories:
     title: HTTP API route wiring regression sweep (replaces batch-wiring; verifies authorization invariants)
     agent: backenddeveloper
     done: false
+    tracking_issue: 79
     depends_on: [6.1, 6.2, 6.3, 6.4]
     acceptance_criteria:
       - For every route registered by stories 6.1–6.4, verify (programmatically via an integration test) that:
@@ -186,6 +194,7 @@ stories:
     title: RLS session GUC enforcement integration tests
     agent: backenddeveloper
     done: false
+    tracking_issue: 80
     depends_on: [6.1, 6.2, 6.3, 6.4, 6.5]
     acceptance_criteria:
       - A new integration test suite `infrastructure/src/tests/integration/test_rls_enforcement.py` drives the deployed dev API end-to-end and verifies opposite-sex enforcement at the API layer:
@@ -207,6 +216,7 @@ stories:
     title: End-to-end suite for the four domains
     agent: backenddeveloper
     done: false
+    tracking_issue: 81
     depends_on: [6.1, 6.2, 6.3, 6.4, 6.5, 6.6]
     acceptance_criteria:
       - `infrastructure/src/tests/integration/test_domains_e2e.py` signs up two opposite-sex users via Cognito (using `completed_profile_user`), then exercises in a single test flow:
