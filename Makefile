@@ -109,6 +109,8 @@ package-all:
 	$(MAKE) package FUNC=db_migrator
 	@echo "[package-all] Building profile function ..."
 	$(MAKE) package FUNC=profile
+	@echo "[package-all] Building blocks function ..."
+	$(MAKE) package FUNC=blocks
 	@echo "[package-all] Done — all artifacts in $(BUILD_DIR)/"
 
 # ---------------------------------------------------------------------------

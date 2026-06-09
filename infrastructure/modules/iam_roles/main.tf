@@ -259,6 +259,66 @@ resource "aws_iam_role_policy_attachment" "dynamodb_notifications_writer_vpc_acc
 }
 
 # ===========================================================================
+# Role: blocks_writer
+#
+# For the knotify-blocks Lambda (phase 6 story 6.4).
+# Needs Aurora app-user access (same as aurora_writer) PLUS DynamoDB UpdateItem
+# on the ChatRooms table to deactivate/reactivate chat rooms on block/unblock.
+# The DynamoDB action is scoped to the ChatRooms table only — no other tables.
+# ===========================================================================
+
+resource "aws_iam_role" "blocks_writer" {
+  name               = "knotify-${var.environment}-blocks-writer"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+resource "aws_iam_role_policy_attachment" "blocks_writer_vpc_access" {
+  role       = aws_iam_role.blocks_writer.name
+  policy_arn = local.vpc_access_policy_arn
+}
+
+# Allow reading the app_user credential so the blocks Lambda can connect to Aurora.
+data "aws_iam_policy_document" "blocks_writer_app_user_credential" {
+  statement {
+    sid    = "ReadAppUserCredential"
+    effect = "Allow"
+    actions = [
+      "secretsmanager:GetSecretValue",
+    ]
+    resources = [
+      "${local.sm_arn_prefix}:secret:knotify-${var.environment}-app-user-credential-*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "blocks_writer_app_user_credential" {
+  name   = "blocks-writer-app-user-credential"
+  role   = aws_iam_role.blocks_writer.name
+  policy = data.aws_iam_policy_document.blocks_writer_app_user_credential.json
+}
+
+# Allow DynamoDB UpdateItem on the ChatRooms table ONLY.
+# No other DynamoDB actions and no other tables — least-privilege per codingprinciples.md.
+data "aws_iam_policy_document" "blocks_writer_dynamodb" {
+  statement {
+    sid    = "ChatRoomsUpdateItem"
+    effect = "Allow"
+    actions = [
+      "dynamodb:UpdateItem",
+    ]
+    resources = [
+      "arn:aws:dynamodb:*:*:table/ChatRooms",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "blocks_writer_dynamodb" {
+  name   = "blocks-writer-dynamodb"
+  role   = aws_iam_role.blocks_writer.name
+  policy = data.aws_iam_policy_document.blocks_writer_dynamodb.json
+}
+
+# ===========================================================================
 # Role: stepfn_task
 #
 # For Step Functions state machine tasks (phase 8–9 orchestration flows).

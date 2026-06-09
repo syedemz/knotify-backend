@@ -639,3 +639,93 @@ resource "aws_lambda_permission" "profile_api_gateway" {
   # gates access so wildcard source_arn within this API is safe.
   source_arn = "${module.api_gateway.default_stage_arn}/*/*/v1/profile*"
 }
+
+# ---------------------------------------------------------------------------
+# knotify-blocks Lambda — story 6.4
+#
+# Handles three routes:
+#   GET    /v1/blocks           — list the caller's block list
+#   POST   /v1/blocks           — block a current friend (auto-unfriend +
+#                                 deactivate chat room)
+#   DELETE /v1/blocks/{userId}  — unblock a user (reactivate chat room)
+#
+# Uses the blocks_writer IAM role (Aurora + DynamoDB:UpdateItem on ChatRooms).
+# EDGE_SECRET is injected so the @with_edge_secret decorator validates all
+# traffic arrived via CloudFront (not via the raw execute-api endpoint).
+# TABLE_CHAT_ROOMS is resolved from the dynamodb module output.
+# ---------------------------------------------------------------------------
+
+module "blocks" {
+  source = "../../modules/lambda"
+
+  function_name = "knotify-blocks-${var.environment}"
+  handler       = "handler.handler"
+  filename      = "${path.module}/../../../build/blocks.zip"
+
+  layers = [
+    module.observability_layer.layer_arn,
+    module.db_layer.layer_arn,
+  ]
+
+  role_arn = module.iam_roles.role_arns["blocks_writer"]
+
+  vpc_config = {
+    subnet_ids         = module.networking.private_subnet_ids
+    security_group_ids = [module.networking.lambda_security_group_id]
+  }
+
+  environment_variables = {
+    DB_SECRET_NAME   = "knotify-${var.environment}-app-user-credential"
+    EDGE_SECRET      = module.cloudfront.edge_secret
+    TABLE_CHAT_ROOMS = module.dynamodb.chat_rooms_table_name
+  }
+}
+
+# ---------------------------------------------------------------------------
+# API Gateway wiring — story 6.4
+#
+# One integration + three routes + one Lambda permission.
+# All routes use JWT authorization (Cognito User Pool, same authorizer as
+# every other route in the HTTP API).
+# ---------------------------------------------------------------------------
+
+resource "aws_apigatewayv2_integration" "blocks" {
+  api_id                 = module.api_gateway.api_id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = module.blocks.invoke_arn
+  payload_format_version = "2.0"
+}
+
+resource "aws_apigatewayv2_route" "get_blocks" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "GET /v1/blocks"
+  target             = "integrations/${aws_apigatewayv2_integration.blocks.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+resource "aws_apigatewayv2_route" "post_blocks" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "POST /v1/blocks"
+  target             = "integrations/${aws_apigatewayv2_integration.blocks.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+resource "aws_apigatewayv2_route" "delete_block" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "DELETE /v1/blocks/{userId}"
+  target             = "integrations/${aws_apigatewayv2_integration.blocks.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+# Lambda permission — scoped to all blocks routes on this API.
+resource "aws_lambda_permission" "blocks_api_gateway" {
+  statement_id  = "AllowBlocksAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = module.blocks.function_name
+  qualifier     = "live"
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${module.api_gateway.default_stage_arn}/*/*/v1/blocks*"
+}
