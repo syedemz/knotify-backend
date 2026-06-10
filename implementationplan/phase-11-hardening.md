@@ -1,9 +1,13 @@
 phase: 11
 title: Pre-launch hardening
-last_updated: 2026-05-24
+last_updated: 2026-06-10
 
 context_summary: |
   Production-readiness consolidation, applied to BOTH environments. Every hardening change in this phase is wired into dev as well as prod — dev gets the same Secrets Manager-sourced DB credentials, the same OIDC deploy role, the same WAF rule set, the same sg-lambda egress tightening, and the same CloudTrail trail as prod. The deliberate dev/prod asymmetries are limited and narrow: (a) Cognito Advanced Security runs in AUDIT mode in dev and ENFORCED in prod (story 11.4) so devs see the risk signals without being blocked, (b) MFA is OPTIONAL in dev and ON in prod (story 11.5) so dev signup flows don't require TOTP enrollment, and (c) the DB_PASSWORD env-var fallback is retained in dev only (story 11.2) so local development against a non-Secrets-Manager backend keeps working. Per docs/PROD_CUTOVER.md the prod deploy gate is closed, so all prod-side applies are produced as terraform plans and consumed by the dev-side apply for validation; stories complete on dev-applied + prod-planned. Migrates DB credentials from Lambda environment variables to Secrets Manager with a rotation Lambda and a Secrets Manager VPC endpoint (§4.4, §7.6 of architecture.md). Switches GitHub Actions from static IAM keys (v1 choice from §3.2) to OIDC federation. Enables Cognito Advanced Security Features (§7.5, §13 #1). Tightens WAF rules and security-group egress on sg-lambda. Enables CloudTrail with root-API alerting. This phase has no business-logic dependencies of its own — it touches existing modules from phases 2, 3, 4, 5 and bumps them to prod-ready posture.
+
+## Carryovers from phase 6
+- 1/30-day `username` rename rate limit (architecture §5.7) — DB-side UNIQUE constraint shipped in phase 6.0a; API-side rate limit must land here. Source: phase-6 story 6.0a.
+- Per-route throttling on hot routes (architecture §13 / Brainstorm Md5/Q12) — phase 6 stories 6.1–6.4 ship default HTTP API stage throttling only (burst=10/rate=25 from phase-5 story 5.1); per-route overrides for /v1/profiles?username=, /v1/friend-requests, /v1/blocks land here. Source: phase-6 story 6.7.
 
 stories:
   - id: 11.1

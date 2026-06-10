@@ -1,9 +1,12 @@
 phase: 8
 title: Chat (AppSync + DynamoDB Streams + push fan-out)
-last_updated: 2026-05-21
+last_updated: 2026-06-10
 
 context_summary: |
   Delivers the full chat capability in a single phase per the owner's resolved Option A: the AppSync GraphQL API with a hand-written schema (no Amplify auto-generation, no auto-CRUD subscriptions), pipeline resolvers that enforce membership and block checks against Aurora before establishing subscriptions, the deterministic-room-id creation flow from §5.4.1, DynamoDB Streams from ChatMessages and Notifications wired to a PushFanout Lambda that targets Expo Push (per the §13 #7 resolution in v1.6), the POST /v1/push-tokens REST endpoint for token registration, and the stale-token cleanup scheduled Lambda. This phase intentionally ships data plane and API plane together because the GraphQL schema and the DynamoDB key design are tightly coupled. After this phase only account deletion, observability consolidation, hardening, and S3 photos remain.
+
+## Carryovers from phase 6
+- Chat-room-without-backing-friendship is read-only — phase-6 story 6.4 deletes the friendship row on POST /v1/blocks and reactivates the chat room on DELETE /v1/blocks, but does NOT recreate the friendship on unblock. Phase 8's chat-write path must treat an `active` ChatRooms row whose canonical pair has no `friendships` entry as read-only. Source: phase-6 third-pass Md1.
 
 stories:
   - id: 8.1
