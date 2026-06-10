@@ -1,5 +1,5 @@
 project: knotify-backend
-last_updated: 2026-06-09 # phase-5 merged + tagged phase-5-complete; dev infra destroyed for cost control
+last_updated: 2026-06-10 # phase-6 all 10 stories done; PR #82 open against development
 
 phases:
 
@@ -43,7 +43,7 @@ phases:
   title: Profile, friends, bookmarks, blocks domain Lambdas
   file: implementationplan/phase-6-domain-lambdas.md
   ready: true
-  done: false
+  done: true
 
 - phase: 7
   title: Match and deck
