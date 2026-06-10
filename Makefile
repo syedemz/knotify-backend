@@ -113,6 +113,8 @@ package-all:
 	$(MAKE) package FUNC=blocks
 	@echo "[package-all] Building friends function ..."
 	$(MAKE) package FUNC=friends
+	@echo "[package-all] Building bookmarks function ..."
+	$(MAKE) package FUNC=bookmarks
 	@echo "[package-all] Done — all artifacts in $(BUILD_DIR)/"
 
 # ---------------------------------------------------------------------------
