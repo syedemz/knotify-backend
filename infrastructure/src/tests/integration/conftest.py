@@ -516,3 +516,95 @@ def completed_profile_user(request, signed_in_user):
         "access_token": fresh_auth["AccessToken"],
         "refresh_token": fresh_auth["RefreshToken"],
     }
+
+
+# ---------------------------------------------------------------------------
+# app_user_conn fixture — story 6.6 (Brainstorm N4 + Mi2)
+#
+# Opens a psycopg2 connection to Aurora as the `app_user` role (NOT master).
+# RLS only fires against non-superuser, non-BYPASSRLS roles under FORCE ROW
+# LEVEL SECURITY; any direct-DB test that needs the policy to apply must use
+# this fixture rather than the master connection exposed by signed_in_user.
+#
+# Skip-gate (Brainstorm Mi2):
+#   If `secretsmanager.GetSecretValue` raises ResourceNotFoundException, the
+#   fixture calls pytest.skip(...) so the test is a no-op on a freshly-
+#   destroyed dev environment (the secret is created by the db_migrator Lambda
+#   on the first phase-6 apply — see migration 0007 header). Once the secret
+#   materialises the fixture connects normally.
+#
+# Credential source:
+#   Secret name: knotify-${env}-app-user-credential (env defaults to "dev").
+#   Secret payload: {"username": "app_user", "password": "<random>"}
+#
+# Required env vars:
+#   AURORA_HOST, AURORA_PORT, AURORA_DBNAME, AWS_REGION
+#   APP_USER_SECRET_NAME (optional override; default: knotify-dev-app-user-credential)
+#
+# Yields a psycopg2 connection object. Teardown closes it.
+#
+# Note: the live tests in test_rls_enforcement.py drive the deployed HTTP API
+# and therefore exercise RLS via the Lambda's internal connection. They do NOT
+# use app_user_conn directly. The fixture exists here for future RLS unit
+# tests that need a direct DB connection under the app_user role.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="function")
+def app_user_conn():
+    """
+    Yield a psycopg2 connection to Aurora as app_user (RLS-enforced role).
+
+    Skips the test if the app_user credential secret does not exist yet
+    (ResourceNotFoundException means the db_migrator Lambda has not run).
+    """
+    try:
+        import boto3
+    except ImportError:
+        pytest.skip("boto3 is not installed — live AWS environment required")
+
+    try:
+        import psycopg2 as _psycopg2
+    except ImportError:
+        pytest.skip("psycopg2 is not installed — live Aurora environment required")
+
+    aurora_host = _require_env("AURORA_HOST")
+    aurora_port = int(_require_env("AURORA_PORT"))
+    aurora_dbname = _require_env("AURORA_DBNAME")
+    region = _require_env("AWS_REGION")
+
+    env = os.environ.get("KNOTIFY_ENV", "dev")
+    secret_name = os.environ.get(
+        "APP_USER_SECRET_NAME",
+        f"knotify-{env}-app-user-credential",
+    )
+
+    sm_client = boto3.client("secretsmanager", region_name=region)
+
+    try:
+        response = sm_client.get_secret_value(SecretId=secret_name)
+    except sm_client.exceptions.ResourceNotFoundException:
+        pytest.skip(
+            f"app_user credential not yet materialized — "
+            f"first phase-6 apply has not run db_migrator "
+            f"(secret {secret_name!r} does not exist)"
+        )
+
+    creds = json.loads(response["SecretString"])
+    app_user_password = creds["password"]
+
+    conn = _psycopg2.connect(
+        host=aurora_host,
+        port=aurora_port,
+        dbname=aurora_dbname,
+        user="app_user",
+        password=app_user_password,
+    )
+
+    try:
+        yield conn
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
