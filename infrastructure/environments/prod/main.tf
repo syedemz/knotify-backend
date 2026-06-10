@@ -626,3 +626,109 @@ resource "aws_lambda_permission" "blocks_api_gateway" {
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${module.api_gateway.default_stage_arn}/*/*/v1/blocks*"
 }
+
+# ---------------------------------------------------------------------------
+# knotify-friends Lambda — story 6.2
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+# Mirrors the dev wiring exactly. Seven routes (GET/DELETE /v1/friends,
+# GET/POST /v1/friend-requests, POST accept/decline, DELETE request) with
+# JWT authorization.
+# ---------------------------------------------------------------------------
+
+module "friends" {
+  source = "../../modules/lambda"
+
+  function_name = "knotify-friends-${var.environment}"
+  handler       = "handler.handler"
+  filename      = "${path.module}/../../../build/friends.zip"
+
+  layers = [
+    module.observability_layer.layer_arn,
+    module.db_layer.layer_arn,
+  ]
+
+  role_arn = module.iam_roles.role_arns["aurora_writer"]
+
+  vpc_config = {
+    subnet_ids         = module.networking.private_subnet_ids
+    security_group_ids = [module.networking.lambda_security_group_id]
+  }
+
+  environment_variables = {
+    DB_SECRET_NAME = "knotify-${var.environment}-app-user-credential"
+    EDGE_SECRET    = module.cloudfront.edge_secret
+  }
+}
+
+resource "aws_apigatewayv2_integration" "friends" {
+  api_id                 = module.api_gateway.api_id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = module.friends.invoke_arn
+  payload_format_version = "2.0"
+}
+
+resource "aws_apigatewayv2_route" "get_friends" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "GET /v1/friends"
+  target             = "integrations/${aws_apigatewayv2_integration.friends.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+resource "aws_apigatewayv2_route" "delete_friend" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "DELETE /v1/friends/{userId}"
+  target             = "integrations/${aws_apigatewayv2_integration.friends.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+resource "aws_apigatewayv2_route" "get_friend_requests" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "GET /v1/friend-requests"
+  target             = "integrations/${aws_apigatewayv2_integration.friends.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+resource "aws_apigatewayv2_route" "post_friend_requests" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "POST /v1/friend-requests"
+  target             = "integrations/${aws_apigatewayv2_integration.friends.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+resource "aws_apigatewayv2_route" "post_friend_requests_accept" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "POST /v1/friend-requests/{id}/accept"
+  target             = "integrations/${aws_apigatewayv2_integration.friends.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+resource "aws_apigatewayv2_route" "post_friend_requests_decline" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "POST /v1/friend-requests/{id}/decline"
+  target             = "integrations/${aws_apigatewayv2_integration.friends.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+resource "aws_apigatewayv2_route" "delete_friend_request" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "DELETE /v1/friend-requests/{id}"
+  target             = "integrations/${aws_apigatewayv2_integration.friends.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+resource "aws_lambda_permission" "friends_api_gateway" {
+  statement_id  = "AllowFriendsAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = module.friends.function_name
+  qualifier     = "live"
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${module.api_gateway.default_stage_arn}/*/*/v1/friend*"
+}

@@ -729,3 +729,130 @@ resource "aws_lambda_permission" "blocks_api_gateway" {
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${module.api_gateway.default_stage_arn}/*/*/v1/blocks*"
 }
+
+# ---------------------------------------------------------------------------
+# knotify-friends Lambda — story 6.2
+#
+# Handles seven routes:
+#   GET    /v1/friends                          — block-filtered friend list
+#   DELETE /v1/friends/{userId}                 — remove a friendship
+#   GET    /v1/friend-requests                  — block-filtered request list
+#   POST   /v1/friend-requests                  — send a request (block-aware)
+#   POST   /v1/friend-requests/{id}/accept      — accept a pending request
+#   POST   /v1/friend-requests/{id}/decline     — decline a pending request
+#   DELETE /v1/friend-requests/{id}             — cancel an outgoing request
+#
+# Uses the aurora_writer IAM role (Aurora rights via app_user credential;
+# no DynamoDB access needed — friends operations are Aurora-only).
+# EDGE_SECRET is injected so the @with_edge_secret decorator validates all
+# traffic arrived via CloudFront.
+# ---------------------------------------------------------------------------
+
+module "friends" {
+  source = "../../modules/lambda"
+
+  function_name = "knotify-friends-${var.environment}"
+  handler       = "handler.handler"
+  filename      = "${path.module}/../../../build/friends.zip"
+
+  layers = [
+    module.observability_layer.layer_arn,
+    module.db_layer.layer_arn,
+  ]
+
+  role_arn = module.iam_roles.role_arns["aurora_writer"]
+
+  vpc_config = {
+    subnet_ids         = module.networking.private_subnet_ids
+    security_group_ids = [module.networking.lambda_security_group_id]
+  }
+
+  environment_variables = {
+    DB_SECRET_NAME = "knotify-${var.environment}-app-user-credential"
+    EDGE_SECRET    = module.cloudfront.edge_secret
+  }
+}
+
+# ---------------------------------------------------------------------------
+# API Gateway wiring — story 6.2
+#
+# One integration + seven routes + one Lambda permission.
+# All routes use JWT authorization (Cognito User Pool, same authorizer as
+# every other route in the HTTP API).
+# ---------------------------------------------------------------------------
+
+resource "aws_apigatewayv2_integration" "friends" {
+  api_id                 = module.api_gateway.api_id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = module.friends.invoke_arn
+  payload_format_version = "2.0"
+}
+
+resource "aws_apigatewayv2_route" "get_friends" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "GET /v1/friends"
+  target             = "integrations/${aws_apigatewayv2_integration.friends.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+resource "aws_apigatewayv2_route" "delete_friend" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "DELETE /v1/friends/{userId}"
+  target             = "integrations/${aws_apigatewayv2_integration.friends.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+resource "aws_apigatewayv2_route" "get_friend_requests" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "GET /v1/friend-requests"
+  target             = "integrations/${aws_apigatewayv2_integration.friends.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+resource "aws_apigatewayv2_route" "post_friend_requests" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "POST /v1/friend-requests"
+  target             = "integrations/${aws_apigatewayv2_integration.friends.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+resource "aws_apigatewayv2_route" "post_friend_requests_accept" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "POST /v1/friend-requests/{id}/accept"
+  target             = "integrations/${aws_apigatewayv2_integration.friends.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+resource "aws_apigatewayv2_route" "post_friend_requests_decline" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "POST /v1/friend-requests/{id}/decline"
+  target             = "integrations/${aws_apigatewayv2_integration.friends.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+resource "aws_apigatewayv2_route" "delete_friend_request" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "DELETE /v1/friend-requests/{id}"
+  target             = "integrations/${aws_apigatewayv2_integration.friends.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+# Lambda permission — single wildcard covering both /v1/friends* and
+# /v1/friend-requests* via the /v1/friend* prefix. This is intentionally
+# broad within the friends function boundary; the JWT authorizer gates
+# every request before it reaches the Lambda.
+resource "aws_lambda_permission" "friends_api_gateway" {
+  statement_id  = "AllowFriendsAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = module.friends.function_name
+  qualifier     = "live"
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${module.api_gateway.default_stage_arn}/*/*/v1/friend*"
+}

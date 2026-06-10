@@ -111,6 +111,8 @@ package-all:
 	$(MAKE) package FUNC=profile
 	@echo "[package-all] Building blocks function ..."
 	$(MAKE) package FUNC=blocks
+	@echo "[package-all] Building friends function ..."
+	$(MAKE) package FUNC=friends
 	@echo "[package-all] Done — all artifacts in $(BUILD_DIR)/"
 
 # ---------------------------------------------------------------------------
