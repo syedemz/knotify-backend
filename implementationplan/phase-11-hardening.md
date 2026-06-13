@@ -8,6 +8,7 @@ context_summary: |
 ## Carryovers from phase 6
 - 1/30-day `username` rename rate limit (architecture §5.7) — DB-side UNIQUE constraint shipped in phase 6.0a; API-side rate limit must land here. Source: phase-6 story 6.0a.
 - Per-route throttling on hot routes (architecture §13 / Brainstorm Md5/Q12) — phase 6 stories 6.1–6.4 ship default HTTP API stage throttling only (burst=10/rate=25 from phase-5 story 5.1); per-route overrides for /v1/profiles?username=, /v1/friend-requests, /v1/blocks land here. Source: phase-6 story 6.7.
+- Post-apply `e2e-dev` CI job in `.github/workflows/deploy.yml` — phase 6 stories 6.1–6.7 shipped 4 domain integration test files (test_profile/friends/bookmarks/blocks.py), RLS integration (test_rls_enforcement.py), and the end-to-end suite (test_domains_e2e.py), all gated by `@pytest.mark.integration` and skip-gated on `EXECUTE_API_ENDPOINT` / `COGNITO_USER_POOL_ID` / `DB_HOST` env vars. Today the apply-dev job ends after `terraform apply` and the `.env.test` written by `local_file.integration_test_env` (dev/main.tf:530) is never consumed by CI; e2e tests can only run manually. Add an `e2e-dev` job that runs after `apply-dev`, sources `.env.test` for EXECUTE_API_ENDPOINT/DISTRIBUTION_DOMAIN_NAME/EDGE_SECRET, injects the missing Cognito/Aurora vars (COGNITO_USER_POOL_ID, COGNITO_CLIENT_ID, DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD) from GitHub Actions secrets, and runs `pytest infrastructure/src/tests/integration/ -m integration`. Source: phase-6 story 6.7 user follow-up (2026-06-10).
 
 stories:
   - id: 11.1
