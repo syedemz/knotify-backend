@@ -36,18 +36,22 @@ resource "random_password" "edge_secret" {
 # Managed-CachingDisabled: TTL=0 on all objects; CloudFront acts as a pure
 # passthrough. Required for an API backend where every response must be fresh.
 #
-# Managed-AllViewer: forwards all viewer request headers, cookies, and query
-# strings to the origin so the HTTP API receives the full client request.
-# The deprecated `forwarded_values` block (removed in AWS provider 6.x) is
-# not used; these data sources are the modern replacement.
+# Managed-AllViewerExceptHostHeader: forwards all viewer request headers,
+# cookies, and query strings to the origin EXCEPT the Host header. The
+# previously-used Managed-AllViewer policy forwarded the viewer's Host
+# header (the CloudFront domain) to API Gateway, which rejected every
+# request with HTTP 403 ForbiddenException because the regional execute-api
+# endpoint requires Host to match `<api-id>.execute-api.<region>.amazonaws.com`.
+# This policy is AWS's purpose-built choice for API Gateway origins behind
+# CloudFront.
 # ---------------------------------------------------------------------------
 
 data "aws_cloudfront_cache_policy" "managed_caching_disabled" {
   name = "Managed-CachingDisabled"
 }
 
-data "aws_cloudfront_origin_request_policy" "managed_all_viewer" {
-  name = "Managed-AllViewer"
+data "aws_cloudfront_origin_request_policy" "managed_all_viewer_except_host_header" {
+  name = "Managed-AllViewerExceptHostHeader"
 }
 
 # ---------------------------------------------------------------------------
@@ -104,10 +108,11 @@ resource "aws_cloudfront_distribution" "this" {
 
   # Default cache behavior — no-cache passthrough
   #
-  # Managed-CachingDisabled + Managed-AllViewer together make CloudFront a
-  # transparent proxy: nothing is cached and all viewer headers/cookies/QS
-  # are forwarded verbatim. No `forwarded_values` block (deprecated in
-  # AWS provider 6.x; these managed policies are the replacement).
+  # Managed-CachingDisabled + Managed-AllViewerExceptHostHeader together make
+  # CloudFront a transparent proxy: nothing is cached and all viewer
+  # headers/cookies/QS are forwarded verbatim EXCEPT the Host header (which
+  # would otherwise be set to the CloudFront domain and cause API Gateway to
+  # reject every request with 403 ForbiddenException).
   default_cache_behavior {
     target_origin_id       = "api-gateway"
     viewer_protocol_policy = "redirect-to-https"
@@ -116,7 +121,7 @@ resource "aws_cloudfront_distribution" "this" {
     cached_methods  = ["GET", "HEAD"]
 
     cache_policy_id          = data.aws_cloudfront_cache_policy.managed_caching_disabled.id
-    origin_request_policy_id = data.aws_cloudfront_origin_request_policy.managed_all_viewer.id
+    origin_request_policy_id = data.aws_cloudfront_origin_request_policy.managed_all_viewer_except_host_header.id
   }
 
   # Viewer certificate — branches on whether a custom domain is configured
