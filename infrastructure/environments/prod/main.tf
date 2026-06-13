@@ -570,7 +570,7 @@ resource "aws_lambda_permission" "profile_api_gateway" {
   function_name = module.profile.function_name
   qualifier     = "live"
   principal     = "apigateway.amazonaws.com"
-  source_arn    = "${module.api_gateway.default_stage_arn}/*/*/v1/profile*"
+  source_arn    = "${module.api_gateway.api_execution_arn}/*/*/v1/profile*"
 }
 
 # ---------------------------------------------------------------------------
@@ -650,7 +650,7 @@ resource "aws_lambda_permission" "blocks_api_gateway" {
   function_name = module.blocks.function_name
   qualifier     = "live"
   principal     = "apigateway.amazonaws.com"
-  source_arn    = "${module.api_gateway.default_stage_arn}/*/*/v1/blocks*"
+  source_arn    = "${module.api_gateway.api_execution_arn}/*/*/v1/blocks*"
 }
 
 # ---------------------------------------------------------------------------
@@ -762,7 +762,7 @@ resource "aws_lambda_permission" "friends_api_gateway" {
   function_name = module.friends.function_name
   qualifier     = "live"
   principal     = "apigateway.amazonaws.com"
-  source_arn    = "${module.api_gateway.default_stage_arn}/*/*/v1/friend*"
+  source_arn    = "${module.api_gateway.api_execution_arn}/*/*/v1/friend*"
 }
 
 # ---------------------------------------------------------------------------
@@ -841,5 +841,5 @@ resource "aws_lambda_permission" "bookmarks_api_gateway" {
   function_name = module.bookmarks.function_name
   qualifier     = "live"
   principal     = "apigateway.amazonaws.com"
-  source_arn    = "${module.api_gateway.default_stage_arn}/*/*/v1/bookmarks*"
+  source_arn    = "${module.api_gateway.api_execution_arn}/*/*/v1/bookmarks*"
 }

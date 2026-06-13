@@ -23,6 +23,11 @@ output "default_stage_arn" {
   value       = aws_apigatewayv2_stage.default.arn
 }
 
+output "api_execution_arn" {
+  description = "Execute-api ARN of the HTTP API (format: arn:aws:execute-api:<region>:<account>:<api-id>). This is the ARN API Gateway presents to Lambda when invoking an integration, so it must be the base for any aws_lambda_permission.source_arn on a route-attached Lambda. Concatenate with `/<stage>/<method>/<path>` or `/*/*/<path>` for wildcards. The default_stage_arn output above is the apigateway-management ARN — using it as a Lambda permission source_arn fails silently (5xx without a Lambda log entry)."
+  value       = aws_apigatewayv2_api.this.execution_arn
+}
+
 output "access_log_group_name" {
   description = "Name of the CloudWatch log group that receives API Gateway access logs. Useful for wiring CloudWatch Logs Insights queries."
   value       = aws_cloudwatch_log_group.access_logs.name
