@@ -146,6 +146,34 @@ resource "aws_cognito_user_pool" "this" {
       lambda_arn     = var.pre_token_generation_lambda_arn
     }
   }
+
+  # ---------------------------------------------------------------------------
+  # Lifecycle — ignore drift on the four standard-attribute schema blocks
+  #
+  # given_name, family_name, gender, and birthdate are OIDC STANDARD attributes
+  # that Cognito always exposes on a User Pool.  Declaring them in this
+  # resource records them in Terraform state, but the AWS provider's read path
+  # does not always return standard attributes in the schema list — the
+  # consequence is that the diff oscillates on consecutive applies:
+  #
+  #   apply 1: plan shows `+ schema { ... }` (state was missing them)
+  #            → UpdateUserPool API accepts the add (no-op against Cognito)
+  #            → state now has all four blocks recorded
+  #   apply 2: plan shows `- schema { ... }` (provider read returned none)
+  #            → UpdateUserPool API rejects with
+  #              "cannot modify or remove schema items"
+  #            → apply fails
+  #
+  # The schema blocks above are declared for documentation and forward-
+  # compatibility (see brainstorm M2/Md5 resolution) but Cognito owns these
+  # attributes; Terraform must not try to manage them post-create.
+  # ignore_changes = [schema] preserves the documented intent while preventing
+  # the oscillating diff from breaking every other apply.
+  # ---------------------------------------------------------------------------
+
+  lifecycle {
+    ignore_changes = [schema]
+  }
 }
 
 # ---------------------------------------------------------------------------
