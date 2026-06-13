@@ -315,6 +315,14 @@ module "cognito_post_confirmation" {
     # The cognito_trigger IAM role scopes GetSecretValue to
     # arn:...:secret:knotify-<env>-app-user-credential-*
     DB_SECRET_NAME = "knotify-${var.environment}-app-user-credential"
+
+    # Aurora connection endpoint params — the app_user_credential secret
+    # carries only username + password (matching the db_migrator writer
+    # pattern), so the connection host / port / dbname come from these env
+    # vars sourced from the aurora module outputs.
+    AURORA_HOST   = module.aurora.cluster_endpoint
+    AURORA_PORT   = tostring(module.aurora.port)
+    AURORA_DBNAME = module.aurora.database_name
   }
 }
 
@@ -355,6 +363,12 @@ module "cognito_pre_token_generation" {
     # The cognito_trigger IAM role scopes GetSecretValue to
     # arn:...:secret:knotify-<env>-app-user-credential-*
     DB_SECRET_NAME = "knotify-${var.environment}-app-user-credential"
+
+    # Aurora connection endpoint params — see cognito_post_confirmation
+    # above for rationale.
+    AURORA_HOST   = module.aurora.cluster_endpoint
+    AURORA_PORT   = tostring(module.aurora.port)
+    AURORA_DBNAME = module.aurora.database_name
   }
 }
 
@@ -575,6 +589,13 @@ module "profile" {
   environment_variables = {
     DB_SECRET_NAME = "knotify-${var.environment}-app-user-credential"
     EDGE_SECRET    = module.cloudfront.edge_secret
+
+    # Aurora connection endpoint params — secret carries only username +
+    # password (db_migrator writer pattern); host/port/dbname come from
+    # aurora module outputs.
+    AURORA_HOST   = module.aurora.cluster_endpoint
+    AURORA_PORT   = tostring(module.aurora.port)
+    AURORA_DBNAME = module.aurora.database_name
   }
 }
 
@@ -678,6 +699,12 @@ module "blocks" {
     DB_SECRET_NAME   = "knotify-${var.environment}-app-user-credential"
     EDGE_SECRET      = module.cloudfront.edge_secret
     TABLE_CHAT_ROOMS = module.dynamodb.chat_rooms_table_name
+
+    # Aurora connection endpoint params — see profile Lambda above for
+    # rationale.
+    AURORA_HOST   = module.aurora.cluster_endpoint
+    AURORA_PORT   = tostring(module.aurora.port)
+    AURORA_DBNAME = module.aurora.database_name
   }
 }
 
@@ -770,6 +797,12 @@ module "friends" {
   environment_variables = {
     DB_SECRET_NAME = "knotify-${var.environment}-app-user-credential"
     EDGE_SECRET    = module.cloudfront.edge_secret
+
+    # Aurora connection endpoint params — see profile Lambda above for
+    # rationale.
+    AURORA_HOST   = module.aurora.cluster_endpoint
+    AURORA_PORT   = tostring(module.aurora.port)
+    AURORA_DBNAME = module.aurora.database_name
   }
 }
 
@@ -892,6 +925,12 @@ module "bookmarks" {
   environment_variables = {
     DB_SECRET_NAME = "knotify-${var.environment}-app-user-credential"
     EDGE_SECRET    = module.cloudfront.edge_secret
+
+    # Aurora connection endpoint params — see profile Lambda above for
+    # rationale.
+    AURORA_HOST   = module.aurora.cluster_endpoint
+    AURORA_PORT   = tostring(module.aurora.port)
+    AURORA_DBNAME = module.aurora.database_name
   }
 }
 

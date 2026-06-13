@@ -310,6 +310,142 @@ class TestGetConnectionSignature(unittest.TestCase):
         )
 
 
+class TestGetConnectionSecretContract(unittest.TestCase):
+    """
+    Given get_connection called with a string (Secrets Manager secret name),
+    when the secret contains only credentials and AURORA_HOST/PORT/DBNAME
+    env vars are set, then it connects using env-var endpoint params and
+    secret-derived credentials.  When env vars are missing it raises
+    EnvironmentError with a precise message — never KeyError.
+
+    This guards the contract introduced by hotfix/db-secret-connection-env-vars:
+    the app_user_credential secret carries only {username, password}.  Host,
+    port, and dbname live in env vars wired from the aurora Terraform module
+    outputs (matching the db_migrator pattern in dev/main.tf lines 178-180).
+    """
+
+    def _patch_env(self, env):
+        """Return an os.environ patch dict with all three keys removed first."""
+        keys = ("AURORA_HOST", "AURORA_PORT", "AURORA_DBNAME")
+        cleaned = {k: v for k, v in env.items() if k in keys}
+        return cleaned
+
+    def test_secret_name_path_uses_env_vars_for_endpoint(self):
+        from knotify_db import get_connection
+
+        env = {
+            "AURORA_HOST": "test-cluster.cluster-x.eu-central-1.rds.amazonaws.com",
+            "AURORA_PORT": "5432",
+            "AURORA_DBNAME": "knotify",
+        }
+        secret_payload = '{"username":"app_user","password":"supersecret"}'
+
+        fake_boto_client = MagicMock()
+        fake_boto_client.get_secret_value.return_value = {"SecretString": secret_payload}
+
+        with patch.dict("os.environ", env, clear=False), \
+             patch("boto3.client", return_value=fake_boto_client) as mock_boto, \
+             patch("knotify_db._db.psycopg2.connect") as mock_connect:
+
+            get_connection("knotify-dev-app-user-credential")
+
+            mock_boto.assert_called_once_with("secretsmanager")
+            fake_boto_client.get_secret_value.assert_called_once_with(
+                SecretId="knotify-dev-app-user-credential"
+            )
+            mock_connect.assert_called_once_with(
+                host="test-cluster.cluster-x.eu-central-1.rds.amazonaws.com",
+                port=5432,
+                dbname="knotify",
+                user="app_user",
+                password="supersecret",
+            )
+
+    def test_secret_name_path_raises_environment_error_when_aurora_host_missing(self):
+        from knotify_db import get_connection
+
+        env = {"AURORA_PORT": "5432", "AURORA_DBNAME": "knotify"}
+        secret_payload = '{"username":"u","password":"p"}'
+
+        fake_boto_client = MagicMock()
+        fake_boto_client.get_secret_value.return_value = {"SecretString": secret_payload}
+
+        with patch.dict("os.environ", env, clear=True), \
+             patch("boto3.client", return_value=fake_boto_client), \
+             patch("knotify_db._db.psycopg2.connect"):
+
+            with self.assertRaises(EnvironmentError) as ctx:
+                get_connection("knotify-dev-app-user-credential")
+
+            self.assertIn("AURORA_HOST", str(ctx.exception))
+
+    def test_secret_name_path_raises_environment_error_when_aurora_port_missing(self):
+        from knotify_db import get_connection
+
+        env = {"AURORA_HOST": "h", "AURORA_DBNAME": "knotify"}
+        secret_payload = '{"username":"u","password":"p"}'
+
+        fake_boto_client = MagicMock()
+        fake_boto_client.get_secret_value.return_value = {"SecretString": secret_payload}
+
+        with patch.dict("os.environ", env, clear=True), \
+             patch("boto3.client", return_value=fake_boto_client), \
+             patch("knotify_db._db.psycopg2.connect"):
+
+            with self.assertRaises(EnvironmentError) as ctx:
+                get_connection("knotify-dev-app-user-credential")
+
+            self.assertIn("AURORA_PORT", str(ctx.exception))
+
+    def test_secret_name_path_raises_environment_error_when_aurora_dbname_missing(self):
+        from knotify_db import get_connection
+
+        env = {"AURORA_HOST": "h", "AURORA_PORT": "5432"}
+        secret_payload = '{"username":"u","password":"p"}'
+
+        fake_boto_client = MagicMock()
+        fake_boto_client.get_secret_value.return_value = {"SecretString": secret_payload}
+
+        with patch.dict("os.environ", env, clear=True), \
+             patch("boto3.client", return_value=fake_boto_client), \
+             patch("knotify_db._db.psycopg2.connect"):
+
+            with self.assertRaises(EnvironmentError) as ctx:
+                get_connection("knotify-dev-app-user-credential")
+
+            self.assertIn("AURORA_DBNAME", str(ctx.exception))
+
+    def test_dict_path_still_uses_all_five_keys_from_dict(self):
+        """
+        The dict path (local dev / unit-test path) must remain unchanged:
+        all five connection fields come from the dict.  Env vars are
+        ignored on this path so unit tests stay self-contained.
+        """
+        from knotify_db import get_connection
+
+        params = {
+            "host": "localhost",
+            "port": 5432,
+            "dbname": "knotify_test",
+            "username": "test_user",
+            "password": "test_password",
+        }
+
+        # AURORA_* env vars deliberately absent — dict path must not consult them.
+        with patch.dict("os.environ", {}, clear=True), \
+             patch("knotify_db._db.psycopg2.connect") as mock_connect:
+
+            get_connection(params)
+
+            mock_connect.assert_called_once_with(
+                host="localhost",
+                port=5432,
+                dbname="knotify_test",
+                user="test_user",
+                password="test_password",
+            )
+
+
 class TestYoyoImportable(unittest.TestCase):
     """
     Given the db layer,
