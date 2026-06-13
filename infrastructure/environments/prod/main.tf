@@ -471,3 +471,337 @@ resource "local_file" "integration_test_env" {
     "",
   ])
 }
+
+# ---------------------------------------------------------------------------
+# knotify-profile Lambda — story 6.1
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+# Mirrors the dev wiring exactly. Four routes (GET/PATCH /v1/profile/me,
+# GET /v1/profiles, GET /v1/profiles/{userId}) with JWT authorization.
+# ---------------------------------------------------------------------------
+
+module "profile" {
+  source = "../../modules/lambda"
+
+  function_name = "knotify-profile-${var.environment}"
+  handler       = "handler.handler"
+  filename      = "${path.module}/../../../build/profile.zip"
+
+  layers = [
+    module.observability_layer.layer_arn,
+    module.db_layer.layer_arn,
+  ]
+
+  role_arn = module.iam_roles.role_arns["aurora_writer"]
+
+  vpc_config = {
+    subnet_ids         = module.networking.private_subnet_ids
+    security_group_ids = [module.networking.lambda_security_group_id]
+  }
+
+  environment_variables = {
+    DB_SECRET_NAME = "knotify-${var.environment}-app-user-credential"
+    EDGE_SECRET    = module.cloudfront.edge_secret
+  }
+}
+
+resource "aws_apigatewayv2_integration" "profile" {
+  api_id                 = module.api_gateway.api_id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = module.profile.invoke_arn
+  payload_format_version = "2.0"
+}
+
+resource "aws_apigatewayv2_route" "get_profile_me" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "GET /v1/profile/me"
+  target             = "integrations/${aws_apigatewayv2_integration.profile.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+resource "aws_apigatewayv2_route" "patch_profile_me" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "PATCH /v1/profile/me"
+  target             = "integrations/${aws_apigatewayv2_integration.profile.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+resource "aws_apigatewayv2_route" "get_profiles" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "GET /v1/profiles"
+  target             = "integrations/${aws_apigatewayv2_integration.profile.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+resource "aws_apigatewayv2_route" "get_profiles_by_id" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "GET /v1/profiles/{userId}"
+  target             = "integrations/${aws_apigatewayv2_integration.profile.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+resource "aws_lambda_permission" "profile_api_gateway" {
+  statement_id  = "AllowProfileAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = module.profile.function_name
+  qualifier     = "live"
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${module.api_gateway.default_stage_arn}/*/*/v1/profile*"
+}
+
+# ---------------------------------------------------------------------------
+# knotify-blocks Lambda — story 6.4
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+# Mirrors the dev wiring exactly. Three routes (GET/POST /v1/blocks,
+# DELETE /v1/blocks/{userId}) with JWT authorization.
+# ---------------------------------------------------------------------------
+
+module "blocks" {
+  source = "../../modules/lambda"
+
+  function_name = "knotify-blocks-${var.environment}"
+  handler       = "handler.handler"
+  filename      = "${path.module}/../../../build/blocks.zip"
+
+  layers = [
+    module.observability_layer.layer_arn,
+    module.db_layer.layer_arn,
+  ]
+
+  role_arn = module.iam_roles.role_arns["blocks_writer"]
+
+  vpc_config = {
+    subnet_ids         = module.networking.private_subnet_ids
+    security_group_ids = [module.networking.lambda_security_group_id]
+  }
+
+  environment_variables = {
+    DB_SECRET_NAME   = "knotify-${var.environment}-app-user-credential"
+    EDGE_SECRET      = module.cloudfront.edge_secret
+    TABLE_CHAT_ROOMS = module.dynamodb.chat_rooms_table_name
+  }
+}
+
+resource "aws_apigatewayv2_integration" "blocks" {
+  api_id                 = module.api_gateway.api_id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = module.blocks.invoke_arn
+  payload_format_version = "2.0"
+}
+
+resource "aws_apigatewayv2_route" "get_blocks" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "GET /v1/blocks"
+  target             = "integrations/${aws_apigatewayv2_integration.blocks.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+resource "aws_apigatewayv2_route" "post_blocks" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "POST /v1/blocks"
+  target             = "integrations/${aws_apigatewayv2_integration.blocks.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+resource "aws_apigatewayv2_route" "delete_block" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "DELETE /v1/blocks/{userId}"
+  target             = "integrations/${aws_apigatewayv2_integration.blocks.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+resource "aws_lambda_permission" "blocks_api_gateway" {
+  statement_id  = "AllowBlocksAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = module.blocks.function_name
+  qualifier     = "live"
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${module.api_gateway.default_stage_arn}/*/*/v1/blocks*"
+}
+
+# ---------------------------------------------------------------------------
+# knotify-friends Lambda — story 6.2
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+# Mirrors the dev wiring exactly. Seven routes (GET/DELETE /v1/friends,
+# GET/POST /v1/friend-requests, POST accept/decline, DELETE request) with
+# JWT authorization.
+# ---------------------------------------------------------------------------
+
+module "friends" {
+  source = "../../modules/lambda"
+
+  function_name = "knotify-friends-${var.environment}"
+  handler       = "handler.handler"
+  filename      = "${path.module}/../../../build/friends.zip"
+
+  layers = [
+    module.observability_layer.layer_arn,
+    module.db_layer.layer_arn,
+  ]
+
+  role_arn = module.iam_roles.role_arns["aurora_writer"]
+
+  vpc_config = {
+    subnet_ids         = module.networking.private_subnet_ids
+    security_group_ids = [module.networking.lambda_security_group_id]
+  }
+
+  environment_variables = {
+    DB_SECRET_NAME = "knotify-${var.environment}-app-user-credential"
+    EDGE_SECRET    = module.cloudfront.edge_secret
+  }
+}
+
+resource "aws_apigatewayv2_integration" "friends" {
+  api_id                 = module.api_gateway.api_id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = module.friends.invoke_arn
+  payload_format_version = "2.0"
+}
+
+resource "aws_apigatewayv2_route" "get_friends" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "GET /v1/friends"
+  target             = "integrations/${aws_apigatewayv2_integration.friends.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+resource "aws_apigatewayv2_route" "delete_friend" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "DELETE /v1/friends/{userId}"
+  target             = "integrations/${aws_apigatewayv2_integration.friends.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+resource "aws_apigatewayv2_route" "get_friend_requests" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "GET /v1/friend-requests"
+  target             = "integrations/${aws_apigatewayv2_integration.friends.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+resource "aws_apigatewayv2_route" "post_friend_requests" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "POST /v1/friend-requests"
+  target             = "integrations/${aws_apigatewayv2_integration.friends.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+resource "aws_apigatewayv2_route" "post_friend_requests_accept" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "POST /v1/friend-requests/{id}/accept"
+  target             = "integrations/${aws_apigatewayv2_integration.friends.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+resource "aws_apigatewayv2_route" "post_friend_requests_decline" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "POST /v1/friend-requests/{id}/decline"
+  target             = "integrations/${aws_apigatewayv2_integration.friends.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+resource "aws_apigatewayv2_route" "delete_friend_request" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "DELETE /v1/friend-requests/{id}"
+  target             = "integrations/${aws_apigatewayv2_integration.friends.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+resource "aws_lambda_permission" "friends_api_gateway" {
+  statement_id  = "AllowFriendsAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = module.friends.function_name
+  qualifier     = "live"
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${module.api_gateway.default_stage_arn}/*/*/v1/friend*"
+}
+
+# ---------------------------------------------------------------------------
+# knotify-bookmarks Lambda — story 6.3
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+# Mirrors the dev wiring exactly. Three routes (GET/POST /v1/bookmarks,
+# DELETE /v1/bookmarks/{userId}) with JWT authorization.
+# ---------------------------------------------------------------------------
+
+module "bookmarks" {
+  source = "../../modules/lambda"
+
+  function_name = "knotify-bookmarks-${var.environment}"
+  handler       = "handler.handler"
+  filename      = "${path.module}/../../../build/bookmarks.zip"
+
+  layers = [
+    module.observability_layer.layer_arn,
+    module.db_layer.layer_arn,
+  ]
+
+  role_arn = module.iam_roles.role_arns["aurora_writer"]
+
+  vpc_config = {
+    subnet_ids         = module.networking.private_subnet_ids
+    security_group_ids = [module.networking.lambda_security_group_id]
+  }
+
+  environment_variables = {
+    DB_SECRET_NAME = "knotify-${var.environment}-app-user-credential"
+    EDGE_SECRET    = module.cloudfront.edge_secret
+  }
+}
+
+resource "aws_apigatewayv2_integration" "bookmarks" {
+  api_id                 = module.api_gateway.api_id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = module.bookmarks.invoke_arn
+  payload_format_version = "2.0"
+}
+
+resource "aws_apigatewayv2_route" "get_bookmarks" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "GET /v1/bookmarks"
+  target             = "integrations/${aws_apigatewayv2_integration.bookmarks.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+resource "aws_apigatewayv2_route" "post_bookmarks" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "POST /v1/bookmarks"
+  target             = "integrations/${aws_apigatewayv2_integration.bookmarks.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+resource "aws_apigatewayv2_route" "delete_bookmark" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "DELETE /v1/bookmarks/{userId}"
+  target             = "integrations/${aws_apigatewayv2_integration.bookmarks.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+resource "aws_lambda_permission" "bookmarks_api_gateway" {
+  statement_id  = "AllowBookmarksAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = module.bookmarks.function_name
+  qualifier     = "live"
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${module.api_gateway.default_stage_arn}/*/*/v1/bookmarks*"
+}

@@ -188,8 +188,10 @@ resource "aws_iam_role_policy_attachment" "aurora_reader_vpc_access" {
 # ===========================================================================
 # Role: aurora_writer
 #
-# For Lambdas that write to Aurora (phases 6–9).
-# Trust policy + VPC access only; per-action policies ship with the consuming phase.
+# For Lambdas that write to Aurora (phases 6–9): profile, friends, bookmarks.
+# Trust policy + VPC access + app_user credential read.
+# The app_user credential is required so domain Lambdas can open a DB
+# connection as app_user (same pattern as cognito_trigger).
 # ===========================================================================
 
 resource "aws_iam_role" "aurora_writer" {
@@ -200,6 +202,26 @@ resource "aws_iam_role" "aurora_writer" {
 resource "aws_iam_role_policy_attachment" "aurora_writer_vpc_access" {
   role       = aws_iam_role.aurora_writer.name
   policy_arn = local.vpc_access_policy_arn
+}
+
+# Allow reading the app_user credential so domain Lambdas can connect to Aurora.
+data "aws_iam_policy_document" "aurora_writer_app_user_credential" {
+  statement {
+    sid    = "ReadAppUserCredential"
+    effect = "Allow"
+    actions = [
+      "secretsmanager:GetSecretValue",
+    ]
+    resources = [
+      "${local.sm_arn_prefix}:secret:knotify-${var.environment}-app-user-credential-*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "aurora_writer_app_user_credential" {
+  name   = "aurora-writer-app-user-credential"
+  role   = aws_iam_role.aurora_writer.name
+  policy = data.aws_iam_policy_document.aurora_writer_app_user_credential.json
 }
 
 # ===========================================================================
@@ -234,6 +256,66 @@ resource "aws_iam_role" "dynamodb_notifications_writer" {
 resource "aws_iam_role_policy_attachment" "dynamodb_notifications_writer_vpc_access" {
   role       = aws_iam_role.dynamodb_notifications_writer.name
   policy_arn = local.vpc_access_policy_arn
+}
+
+# ===========================================================================
+# Role: blocks_writer
+#
+# For the knotify-blocks Lambda (phase 6 story 6.4).
+# Needs Aurora app-user access (same as aurora_writer) PLUS DynamoDB UpdateItem
+# on the ChatRooms table to deactivate/reactivate chat rooms on block/unblock.
+# The DynamoDB action is scoped to the ChatRooms table only — no other tables.
+# ===========================================================================
+
+resource "aws_iam_role" "blocks_writer" {
+  name               = "knotify-${var.environment}-blocks-writer"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+resource "aws_iam_role_policy_attachment" "blocks_writer_vpc_access" {
+  role       = aws_iam_role.blocks_writer.name
+  policy_arn = local.vpc_access_policy_arn
+}
+
+# Allow reading the app_user credential so the blocks Lambda can connect to Aurora.
+data "aws_iam_policy_document" "blocks_writer_app_user_credential" {
+  statement {
+    sid    = "ReadAppUserCredential"
+    effect = "Allow"
+    actions = [
+      "secretsmanager:GetSecretValue",
+    ]
+    resources = [
+      "${local.sm_arn_prefix}:secret:knotify-${var.environment}-app-user-credential-*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "blocks_writer_app_user_credential" {
+  name   = "blocks-writer-app-user-credential"
+  role   = aws_iam_role.blocks_writer.name
+  policy = data.aws_iam_policy_document.blocks_writer_app_user_credential.json
+}
+
+# Allow DynamoDB UpdateItem on the ChatRooms table ONLY.
+# No other DynamoDB actions and no other tables — least-privilege per codingprinciples.md.
+data "aws_iam_policy_document" "blocks_writer_dynamodb" {
+  statement {
+    sid    = "ChatRoomsUpdateItem"
+    effect = "Allow"
+    actions = [
+      "dynamodb:UpdateItem",
+    ]
+    resources = [
+      "arn:aws:dynamodb:*:*:table/ChatRooms",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "blocks_writer_dynamodb" {
+  name   = "blocks-writer-dynamodb"
+  role   = aws_iam_role.blocks_writer.name
+  policy = data.aws_iam_policy_document.blocks_writer_dynamodb.json
 }
 
 # ===========================================================================

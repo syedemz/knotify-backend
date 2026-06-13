@@ -338,7 +338,7 @@ run "stepfn_task_trust_policy_and_vpc_managed_policy" {
 # map values equal those strings. This also confirms the output map is wired
 # to the correct role resources (not hardcoded strings).
 # ---------------------------------------------------------------------------
-run "role_arns_output_contains_all_seven_roles" {
+run "role_arns_output_contains_all_eight_roles" {
   command = plan
 
   variables {
@@ -374,6 +374,14 @@ run "role_arns_output_contains_all_seven_roles" {
     target = aws_iam_role.aurora_writer
     values = {
       arn = "arn:aws:iam::123456789012:role/knotify-test-aurora-writer"
+    }
+    override_during = plan
+  }
+
+  override_resource {
+    target = aws_iam_role.blocks_writer
+    values = {
+      arn = "arn:aws:iam::123456789012:role/knotify-test-blocks-writer"
     }
     override_during = plan
   }
@@ -423,6 +431,11 @@ run "role_arns_output_contains_all_seven_roles" {
   }
 
   assert {
+    condition     = output.role_arns["blocks_writer"] == "arn:aws:iam::123456789012:role/knotify-test-blocks-writer"
+    error_message = "role_arns[blocks_writer] must be wired to aws_iam_role.blocks_writer.arn"
+  }
+
+  assert {
     condition     = output.role_arns["dynamodb_chat_writer"] == "arn:aws:iam::123456789012:role/knotify-test-dynamodb-chat-writer"
     error_message = "role_arns[dynamodb_chat_writer] must be wired to aws_iam_role.dynamodb_chat_writer.arn"
   }
@@ -435,5 +448,81 @@ run "role_arns_output_contains_all_seven_roles" {
   assert {
     condition     = output.role_arns["stepfn_task"] == "arn:aws:iam::123456789012:role/knotify-test-stepfn-task"
     error_message = "role_arns[stepfn_task] must be wired to aws_iam_role.stepfn_task.arn"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 14: blocks_writer role exists with trust policy and VPC managed policy
+#
+# Satisfies the story 6.4 AC: "New IAM role blocks_writer added to
+# modules/iam_roles" with trust policy lambda.amazonaws.com and
+# AWSLambdaVPCAccessExecutionRole attached.
+# ---------------------------------------------------------------------------
+run "blocks_writer_trust_policy_and_vpc_managed_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = aws_iam_role.blocks_writer.assume_role_policy != ""
+    error_message = "blocks_writer assume_role_policy must not be empty"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy_attachment.blocks_writer_vpc_access.policy_arn == "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+    error_message = "blocks_writer must attach AWSLambdaVPCAccessExecutionRole"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 15: blocks_writer app_user credential inline policy exists
+#
+# Satisfies story 6.4 AC: "Aurora app-user secret GetSecretValue scoped to
+# knotify-${env}-app-user-credential-*".
+# ---------------------------------------------------------------------------
+run "blocks_writer_app_user_credential_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.blocks_writer_app_user_credential.name == "blocks-writer-app-user-credential"
+    error_message = "blocks_writer app_user credential policy must be named blocks-writer-app-user-credential"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.blocks_writer_app_user_credential.role == aws_iam_role.blocks_writer.name
+    error_message = "blocks_writer app_user credential policy must be attached to the blocks_writer role"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 16: blocks_writer DynamoDB inline policy scoped to ChatRooms table
+#
+# Satisfies story 6.4 AC: "inline policy granting dynamodb:UpdateItem ONLY on
+# arn:aws:dynamodb:*:*:table/ChatRooms".
+# ---------------------------------------------------------------------------
+run "blocks_writer_dynamodb_inline_policy_exists_and_scoped" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.blocks_writer_dynamodb.name == "blocks-writer-dynamodb"
+    error_message = "blocks_writer DynamoDB policy must be named blocks-writer-dynamodb"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.blocks_writer_dynamodb.role == aws_iam_role.blocks_writer.name
+    error_message = "blocks_writer DynamoDB policy must be attached to the blocks_writer role"
   }
 }

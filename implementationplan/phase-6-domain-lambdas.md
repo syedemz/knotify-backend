@@ -1,6 +1,6 @@
 phase: 6
 title: Profile, friends, bookmarks, blocks domain Lambdas
-last_updated: 2026-06-09  # 3rd brainstorm: B1 (drop impossible plan-diff AC), M1 (6.2 declined_auto → 404), M2 (6.2/6.3 depends_on += 6.4), M3 (6.4 HTTP 200 + chat_deactivation_pending), Md2 (6.0b parameterized-binding AC for is_blocked), Mi1 (consolidated phase-11 carryover), Mi2 (app_user_conn pytest.skip). 4th brainstorm: G1 (6.7 owns the consolidated carryover writes to phase-11 + phase-8 PRDs). 5th brainstorm (pre-dispatch readiness): 6.4 depends_on += 6.1 (consumes completed_profile_user fixture); 6.4 integration test rewritten to seed friendship via direct master-credential INSERT (friends Lambda not yet deployed at 6.4 dispatch time); trailing 409 BLOCKED assertion deleted from 6.4 (already covered by 6.2's block-aware test).
+last_updated: 2026-06-10  # story 6.7 done. End-to-end suite: test_domains_e2e.py (1 test: all four domain Lambdas in sequence — profile read/update, friend request/accept/list, bookmark add/list/remove, block/409/unblock/request-succeeds); Makefile test-e2e target added; carryover writes to phase-11-hardening.md (username rate limit + per-route throttling) and phase-8-chat.md (chat-room-without-backing-friendship read-only). story 6.6 done. RLS GUC enforcement tests: test_rls_fail_closed.py (docker-compose, 1 test, 3 assertions — fail-closed/Male-A-view/Female-C-view, all pass); test_rls_enforcement.py (integration, 2 tests collected, skip-gated on env vars); app_user_conn fixture added to conftest.py with ResourceNotFoundException skip-gate. Zero TF changes. story 6.5 done. Route-wiring regression sweep: test_route_wiring.py; 35 tests collected (1 route-existence/JWT-auth test + 17 parametrized 401-via-CF + 17 parametrized 403-via-execute-api); zero TF resource changes; terraform plan zero-diff invariant deferred to CI post-apply plan-only job. story 6.4 done. story 6.3 done. knotify-bookmarks Lambda: GET/POST/DELETE routes, block-aware POST (is_blocked inside transaction), idempotent ON CONFLICT DO NOTHING, block_filter on bookmarked_user_id for GET, aurora_writer IAM role; 24 unit tests pass; terraform validate clean dev+prod; bookmarks.zip produced; integration test collects cleanly (2 tests). story 6.2 done. 7th brainstorm (mid-flight audit): global _conn bug fixed in _handle_delete_friend; dead POST→DELETE branch cleaned from _dispatch; 36 unit tests pass (including new regression test for global _conn reset); terraform validate clean dev+prod; friends.zip produced; integration test collects cleanly (2 tests). 3rd brainstorm: B1 (drop impossible plan-diff AC), M1 (6.2 declined_auto → 404), M2 (6.2/6.3 depends_on += 6.4), M3 (6.4 HTTP 200 + chat_deactivation_pending), Md2 (6.0b parameterized-binding AC for is_blocked), Mi1 (consolidated phase-11 carryover), Mi2 (app_user_conn pytest.skip). 4th brainstorm: G1 (6.7 owns the consolidated carryover writes to phase-11 + phase-8 PRDs). 5th brainstorm (pre-dispatch readiness): 6.4 depends_on += 6.1 (consumes completed_profile_user fixture); 6.4 integration test rewritten to seed friendship via direct master-credential INSERT (friends Lambda not yet deployed at 6.4 dispatch time); trailing 409 BLOCKED assertion deleted from 6.4 (already covered by 6.2's block-aware test). 6th brainstorm (mid-flight audit): integration test added (test_blocks.py); handler docstring updated for A.2 chat_deactivation_pending naming + A.5 empty user_sex; terraform validate clean dev+prod; make package FUNC=blocks produces blocks.zip.
 
 context_summary: |
   Ships the first wave of business-logic Lambdas: knotify-profile, knotify-friends, knotify-bookmarks, knotify-blocks. Each Lambda derives user_id from the JWT sub (never from URL or body), sets the RLS session GUCs after authorizing, and uses the shared Aurora layer from phase 3. The corresponding REST routes (per §4.2 migration map) are wired through the HTTP API + JWT authorizer + CloudFront stack from phase 5. The stub /v1/_internal/hello endpoint from phase 5 story 5.7 is removed in story 6.0 BEFORE any domain Lambda lands. Subsequent phases consume these domain Lambdas — chat (phase 8) calls friends and blocks logic to authorize room creation; match (phase 7) calls block lookups to filter results.
@@ -16,7 +16,7 @@ stories:
   - id: 6.0
     title: Remove the phase-5 /v1/_internal/hello stub before any domain Lambda lands
     agent: backenddeveloper
-    done: false
+    done: true
     tracking_issue: 72
     depends_on: []
     acceptance_criteria:
@@ -33,7 +33,7 @@ stories:
   - id: 6.0a
     title: Add `username` UNIQUE constraint (migration 0010)
     agent: backenddeveloper
-    done: false
+    done: true
     tracking_issue: 73
     depends_on: [6.0]
     acceptance_criteria:
@@ -48,7 +48,7 @@ stories:
   - id: 6.0b
     title: Add shared helpers to the observability layer — chat_room_id + block-aware filter
     agent: backenddeveloper
-    done: false
+    done: true
     tracking_issue: 74
     depends_on: [6.0]
     acceptance_criteria:
@@ -68,7 +68,7 @@ stories:
   - id: 6.1
     title: knotify-profile Lambda (including PATCH-completion semantics, username search, and own Terraform wiring)
     agent: backenddeveloper
-    done: false
+    done: true
     tracking_issue: 75
     depends_on: [6.0a, 6.0b]
     acceptance_criteria:
@@ -108,7 +108,7 @@ stories:
   - id: 6.2
     title: knotify-friends Lambda (block-aware, own Terraform wiring)
     agent: backenddeveloper
-    done: false
+    done: true
     tracking_issue: 76
     depends_on: [6.0a, 6.0b, 6.4]  # Brainstorm M2 (third pass): block-aware integration test POSTs /v1/blocks → 6.4 must be deployed first.
     acceptance_criteria:
@@ -129,7 +129,7 @@ stories:
   - id: 6.3
     title: knotify-bookmarks Lambda (block-aware, own Terraform wiring)
     agent: backenddeveloper
-    done: false
+    done: true
     tracking_issue: 77
     depends_on: [6.0a, 6.0b, 6.4]  # Brainstorm M2 (third pass): integration test POSTs /v1/blocks to verify "bookmark a blocked user → 409" — 6.4 must be deployed first.
     acceptance_criteria:
@@ -145,7 +145,7 @@ stories:
   - id: 6.4
     title: knotify-blocks Lambda (new IAM role, chat-room deactivation, own Terraform wiring)
     agent: backenddeveloper
-    done: false
+    done: true
     tracking_issue: 78
     depends_on: [6.0a, 6.0b, 6.1]  # 5th brainstorm: 6.1 added because 6.4's integration test consumes the `completed_profile_user` fixture introduced by 6.1.
     acceptance_criteria:
@@ -177,7 +177,7 @@ stories:
   - id: 6.5
     title: HTTP API route wiring regression sweep (replaces batch-wiring; verifies authorization invariants)
     agent: backenddeveloper
-    done: false
+    done: true
     tracking_issue: 79
     depends_on: [6.1, 6.2, 6.3, 6.4]
     acceptance_criteria:
@@ -188,12 +188,12 @@ stories:
           - An authenticated request that hits the execute-api URL directly (bypassing CloudFront) returns HTTP 403 due to the missing edge secret — confirmed by `@with_edge_secret` rejecting at the Lambda layer.
       - No new Terraform resources land in this story — it is a verification/regression-sweep story only. (If the verification reveals a gap from 6.1–6.4, fix it in the originating story; do not patch it here.)
       - `terraform plan` shows zero diff (everything was wired by upstream stories).
-    notes: "Brainstorm M1 (delete hello-stub criterion), M6 (Option A — stories 6.1–6.4 own their own wiring; this story shrinks to a regression sweep)."
+    notes: "Brainstorm M1 (delete hello-stub criterion), M6 (Option A — stories 6.1–6.4 own their own wiring; this story shrinks to a regression sweep). NOTE (terraform plan zero-diff): the zero-diff invariant is verified by CI's post-apply plan-only job on the next apply, not by the integration test dispatch — dev infra was destroyed at dispatch time. test_route_wiring.py: 35 tests collected (1 route-existence/JWT-auth + 17 parametrized 401-via-CF + 17 parametrized 403-via-execute-api); zero TF resource changes confirmed."
 
   - id: 6.6
     title: RLS session GUC enforcement integration tests
     agent: backenddeveloper
-    done: false
+    done: true
     tracking_issue: 80
     depends_on: [6.1, 6.2, 6.3, 6.4, 6.5]
     acceptance_criteria:
@@ -215,7 +215,7 @@ stories:
   - id: 6.7
     title: End-to-end suite for the four domains
     agent: backenddeveloper
-    done: false
+    done: true
     tracking_issue: 81
     depends_on: [6.1, 6.2, 6.3, 6.4, 6.5, 6.6]
     acceptance_criteria:

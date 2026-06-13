@@ -5,6 +5,7 @@ output "role_arns" {
     cognito_trigger               = aws_iam_role.cognito_trigger.arn
     aurora_reader                 = aws_iam_role.aurora_reader.arn
     aurora_writer                 = aws_iam_role.aurora_writer.arn
+    blocks_writer                 = aws_iam_role.blocks_writer.arn
     dynamodb_chat_writer          = aws_iam_role.dynamodb_chat_writer.arn
     dynamodb_notifications_writer = aws_iam_role.dynamodb_notifications_writer.arn
     stepfn_task                   = aws_iam_role.stepfn_task.arn

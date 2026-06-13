@@ -402,5 +402,137 @@ None. The patch resolves the prior finding without introducing new gaps.
 
 Patch verified. Proceed to Step 1 (tracking-issue creation) and dispatch.
 
+## 2026-06-09 21:28 brainstorm (re-run, mid-flight 6.4 WIP audit)
 
+Scope: phase-6 re-run. Stories 6.0, 6.0a, 6.0b, 6.1 are merged on this branch. Working tree contains substantial uncommitted WIP for story 6.4 (blocks Lambda + blocks_writer IAM role + dev/prod main.tf wiring + Makefile entry). User chose `audit-and-finish`. The PRD has been through 5 prior brainstorm rounds — this pass surfaces only what's relevant to (a) the 6.4 WIP audit and (b) drift since the plan was written that affects 6.2/6.3/6.5/6.6/6.7.
 
+### A. Story 6.4 WIP audit (what the working tree already has)
+
+Audited the uncommitted files against the PRD's acceptance criteria for 6.4.
+
+**Wired correctly:**
+- `infrastructure/src/functions/blocks/handler.py` — GET / POST / DELETE handlers; friendship-guard `409 not_friends` ahead of INSERT; INSERT block + DELETE friendship + DELETE friend_requests inside a single `rls_context()` (which owns BEGIN/COMMIT — verified at `infrastructure/src/layers/db/knotify_db/_db.py:106`, so the "single Aurora transaction" requirement is satisfied without explicit `conn.commit()`).
+- DynamoDB deactivation called AFTER Aurora commit; `ConditionalCheckFailedException` is INFO-level no-op; any other DynamoDB error returns HTTP 200 with `chat_deactivation_pending: true`; Aurora is never rolled back on DynamoDB failure.
+- DELETE/reactivation `ConditionExpression` includes `deactivated_reason = :blocked AND deactivated_by = :unblocker` (matches PRD's NEW-5 safety: only the same user that placed the block can resurrect a block-deactivated room).
+- `chat_room_id` imported from `knotify_obs` (consumes 6.0b helper); `@with_edge_secret` decorates the handler; JWT `sub` is the user identity source (never path/body).
+- `blocks_writer` IAM role (`infrastructure/modules/iam_roles/main.tf:258+`): trust policy `lambda.amazonaws.com`, `AWSLambdaVPCAccessExecutionRole` attached, scoped `secretsmanager:GetSecretValue` on `knotify-${env}-app-user-credential-*`, scoped `dynamodb:UpdateItem` ONLY on `arn:aws:dynamodb:*:*:table/ChatRooms`.
+- `outputs.tf` exposes `role_arns["blocks_writer"]`.
+- `iam_roles.tftest.hcl` adds three new plan-mode tests (14/15/16) covering the role's trust policy + VPC attachment, the app_user credential inline policy, and the ChatRooms-scoped DynamoDB policy. PRD specified two new tests; WIP exceeds that. The output-membership assertion in the existing `role_arns_output_contains_all_seven_roles` test is updated.
+- `dev/main.tf` and `prod/main.tf` add `module "blocks"` + `aws_apigatewayv2_integration.blocks` + three routes (`GET /v1/blocks`, `POST /v1/blocks`, `DELETE /v1/blocks/{userId}`) + `aws_lambda_permission.blocks_api_gateway`. All routes use JWT auth via `module.api_gateway.authorizer_id`. EDGE_SECRET injected, TABLE_CHAT_ROOMS resolved from `module.dynamodb.chat_rooms_table_name`.
+- `Makefile` `package-all` builds the blocks function.
+
+**Audit findings — must be addressed by the subagent before flipping 6.4 done:**
+
+1. **Integration test file is MISSING.** Only `test_handler_unit.py` exists under `infrastructure/src/functions/blocks/tests/`. The PRD requires positive + negative INTEGRATION tests under `infrastructure/src/tests/integration/` (PRD lines 173–174) that exercise the deployed Lambda end-to-end:
+   - Positive: mint A=Male and B=Female via `completed_profile_user`; seed friendship directly via master-credential INSERT into `friendships` using lex-min/max canonical ordering; optionally pre-create a `ChatRooms` row via boto3 PutItem; POST `/v1/blocks` → assert 200, friendship gone, friend_request gone, ChatRooms row deactivated with `deactivated_reason=blocked` and `deactivated_by=A_id`; then DELETE `/v1/blocks/B` and assert reactivation.
+   - Negative: A is NOT friends with B → POST returns 409 NOT_FRIENDS, blocks table count unchanged, ChatRooms row absent.
+   - Subagent MUST create `infrastructure/src/tests/integration/test_blocks.py` to cover both.
+
+2. **`chat_deactivation_pending` naming on the DELETE path.** `_handle_delete_blocks` returns `chat_deactivation_pending: true` when reactivation fails (handler.py:423). The flag semantically describes the POST/deactivation path; on the DELETE/reactivation path, the failure is a reactivation lag, not a deactivation lag. Two options for the subagent:
+   - (a) Keep the same flag name (treats it as a generic chat-room status-update-lagged signal — clients only need one flag to know to re-poll).
+   - (b) Rename to `chat_reactivation_pending` on the DELETE response.
+   The PRD does not specify a name for the DELETE-path flag explicitly. Recommend (a) for client simplicity but the subagent should make this call explicit in the handler doc and note it in the response contract.
+
+3. **Verify `terraform validate` on both dev and prod with the WIP.** The wiring landed in both `dev/main.tf` and `prod/main.tf` but no validation evidence exists in the working tree. Subagent must run terraform validate for both envs and confirm clean.
+
+4. **Verify the blocks Lambda package builds.** `make package FUNC=blocks` should produce `infrastructure/build/blocks.zip` with the handler and requirements. Subagent must run this once before claiming done.
+
+5. **Handler's user_sex fallback.** `_get_user_id_and_sex` falls back to `""` when the `custom:user_sex` claim is missing. If `rls_context` rejects an empty `user_sex`, every block request from a token-missing-sex user would 500. For blocks specifically, RLS isn't gating own-row writes (the policy's `OR user_id = current_setting(...)` clause covers the caller), but the GUC must still be settable. Subagent should verify `rls_context` accepts `""` (or set a non-empty default like `"Unknown"`) so block-without-completed-profile callers don't 500. Edge case — `completed_profile_user` always has a sex.
+
+### B. Story 6.4 dispatch brief — what to include
+
+- Brief MUST tell the subagent: the working tree already has substantial WIP for this story. Audit it against the PRD before adding or rewriting anything. Specifically:
+   - Verify handler.py covers the GET/POST/DELETE contracts (audit findings A.1–A.5 above).
+   - Verify the IAM role and dev/prod wiring are present and complete.
+   - Add the missing integration test (PRD lines 173–174) under `infrastructure/src/tests/integration/test_blocks.py`.
+   - Run terraform validate on dev and prod; run blocks unit tests; run `make package FUNC=blocks` to confirm the package builds.
+   - Resolve the `chat_deactivation_pending` naming question (recommendation: option (a) — keep one flag name on both paths) and document the decision in the handler docstring.
+- Brief must NOT tell the subagent to start from scratch — discarding the WIP wastes substantial work that conforms to the PRD.
+- Brief must include the standard reminder set: branch already exists (`feat/phase-6-domain-lambdas`); story `done: true` + `last_updated` lives in the PRD; close issue #78 on completion; follow contextmanagement.md.
+
+### C. Drift since PRD was written (affects 6.2/6.3/6.5/6.6/6.7)
+
+- Dev infra is currently DESTROYED (workflow run 27188014855, recorded 2026-06-09 in context.md). Stories 6.4/6.2/6.3 require an apply against dev before their integration tests run. The first 6.4 apply will be a full bring-up (no incremental diff). 6.5/6.6/6.7 also need dev up. Subagents must apply before running integration tests, OR the user must trigger the deploy workflow manually between stories. Recommendation: each story-dispatch brief states "apply against dev before running integration tests; do not assume infra is up". 6.6's `app_user_conn` fixture already has the `pytest.skip` escape hatch for this (Mi2 from the 3rd-pass brainstorm) — no change required there.
+- PR #82 is already open against `development` from `feat/phase-6-domain-lambdas`. No new branch creation needed for any remaining story — all commits land on this branch.
+
+### D. New issues in 6.2/6.3/6.5/6.6/6.7
+
+None beyond what the prior 5 brainstorm rounds captured. Structural decisions hold:
+- 6.2 / 6.3 depend on 6.4 (block-aware integration tests need `/v1/blocks` deployed first).
+- 6.5 is a regression sweep, no new Terraform resources.
+- 6.6 ships docker-compose unit test for fail-closed RLS + integration test with the `app_user_conn` fixture skip-gate.
+- 6.7 owns the consolidated carryover writes to phase-11 and phase-8 PRDs (G1, 4th-pass).
+
+### E. Recommendation
+
+No PRD edits required. Proceed to dispatch: 6.4 with the audit-and-finish brief; on success, 6.2 → 6.3 → 6.5 → 6.6 → 6.7.
+
+## 2026-06-10 09:00 brainstorm (re-run, 7th pass — mid-flight 6.2 WIP audit)
+
+Scope: phase-6 re-run after 6.4 landed (commit `ec59af2`). Stories 6.0, 6.0a, 6.0b, 6.1, 6.4 are merged on `feat/phase-6-domain-lambdas`. Working tree contains substantial uncommitted WIP for story 6.2 (friends Lambda + dev/prod main.tf wiring + Makefile entry + unit tests + integration test). User chose `/implement-phase 6` again — this is the same audit-and-finish pattern that worked for 6.4 on its 6th-pass brainstorm. This pass surfaces (a) the 6.2 WIP audit and (b) any drift since the prior brainstorm rounds that affects 6.3/6.5/6.6/6.7.
+
+### A. Story 6.2 WIP audit (what the working tree already has)
+
+Audited the uncommitted files against the PRD's acceptance criteria for 6.2.
+
+**Wired correctly:**
+- `infrastructure/src/functions/friends/handler.py` (605 lines) — all 7 routes implemented (GET /v1/friends, DELETE /v1/friends/{userId}, GET/POST /v1/friend-requests, POST .../accept, POST .../decline, DELETE /v1/friend-requests/{id}).
+- JWT `sub` is the identity source (never path/body) — `_get_user_id_and_sex` reads from `requestContext.authorizer.jwt.claims`.
+- `@with_edge_secret` decorates the `handler` entrypoint.
+- Block-aware behavior matches PRD: `_handle_post_friend_requests` calls `is_blocked(conn, requester, target)` INSIDE the `rls_context()` transaction BEFORE the INSERT; on True → 409 `{"error":"blocked"}`. `UniqueViolation` → 409 `{"error":"already_pending"}`.
+- GET /v1/friends and GET /v1/friend-requests apply `block_filter()` against both user_a/user_b and requester_id/receiver_id respectively, embedded via the whitelisted column references from `_blocks.py`.
+- accept uses `SELECT FOR UPDATE` → 404 when stale (third-pass M1) → UPDATE status + INSERT friendships with `_canonical_pair()` (lex-min/max, same contract as `chat_room_id`).
+- decline + DELETE /v1/friend-requests/{id} both return 404 on `rowcount == 0` (stale or already-blocked).
+- `module "friends"` uses the `aurora_writer` role (PRD says "existing role; no DynamoDB needed" ✓) with observability + db layers, private VPC, DB_SECRET_NAME + EDGE_SECRET env vars.
+- 7 JWT-authorized routes wired in both `dev/main.tf` and `prod/main.tf`; single `aws_lambda_permission` scoped to `/v1/friend*` (covers both `/v1/friends*` and `/v1/friend-requests*` — broad within the friends function boundary, JWT authorizer gates everything upstream).
+- `Makefile` `package-all` builds the friends function.
+- `infrastructure/src/functions/friends/tests/test_handler_unit.py` covers areas A–H per its docstring (block-filtered list, request POST guard, accept/decline 404 paths, edge-secret gate).
+- `infrastructure/src/tests/integration/test_friends.py` (597 lines) covers both AC-HAPPY (mint A=Male + B=Female, A→request→B accept→both GET show each other, A DELETE friend) and AC-BLOCK (block-then-request returns 409; B creates request, A blocks B which DELETEs the pending request, B's accept on stale request_id returns 404). Marked `pytest.mark.integration` and gracefully skips when env vars are missing (so safe on the destroyed-dev state).
+
+**Audit findings — subagent must address before flipping 6.2 done:**
+
+1. **Real bug: `_handle_delete_friend` is missing `global _conn` declaration** (`handler.py:287–290`):
+   ```python
+   except Exception:
+       conn.close()
+       _conn = None   # <-- creates a LOCAL variable; module-level _conn cache is NOT cleared
+       raise
+   ```
+   Every other sub-handler (`_handle_get_friends:257`, `_handle_get_friend_requests:325`, `_handle_post_friend_requests:393`, `_handle_accept_friend_request:436`, `_handle_decline_friend_request:460`, `_handle_delete_friend_request:485`) correctly declares `global _conn` before the assignment. After a DB error on DELETE /v1/friends/{userId}, the broken connection would stay cached and every subsequent invocation against the warm container would re-use it. Add `global _conn` on line 288. Add a unit test covering the path.
+
+2. **Dispatcher has a dead branch.** `_dispatch` lines 541–553 enters the POST branch and matches `_REQUESTS_DELETE_RE` with a `pass`; the real DELETE handling is in lines 555–558. The `pass` is harmless (control falls through to the DELETE branch below since `method == "DELETE"` then matches) but it's confusing dead code. Subagent should delete lines 550–553. Functional — not blocking — but worth cleaning before commit.
+
+3. **No `terraform validate` evidence in the working tree.** Subagent must run validate on both `infrastructure/environments/dev/` and `infrastructure/environments/prod/` and confirm clean. Same standard as 6.4 audit.
+
+4. **No `make package FUNC=friends` build verification.** Subagent must build `friends.zip` once before claiming done.
+
+5. **Verify unit tests pass in docker-compose suite.** Subagent must run `pytest infrastructure/src/functions/friends/tests/ -v` and confirm green.
+
+6. **Verify the integration test imports/syntax cleanly.** Subagent should run `pytest --collect-only infrastructure/src/tests/integration/test_friends.py` to confirm no import errors (the file is committed even though dev is destroyed; the `pytest.skip` env-var gate prevents AWS calls).
+
+### B. Story 6.2 dispatch brief — what to include
+
+- Brief MUST tell the subagent: the working tree already has substantial WIP for this story. Audit it against the PRD before adding or rewriting anything. Specifically:
+  - Fix the `global _conn` bug at `handler.py:287–290`.
+  - Clean the dead POST→DELETE-request branch in `_dispatch` (lines 550–553).
+  - Run `terraform validate` on dev and prod; run friends unit tests; run `make package FUNC=friends`.
+  - Confirm the integration test collects cleanly (it'll skip on env vars).
+- Brief must NOT tell the subagent to start from scratch — discarding the WIP wastes substantial work that conforms to the PRD.
+- Brief must include the standard reminder set: branch already exists (`feat/phase-6-domain-lambdas`); story `done: true` + `last_updated` lives in the PRD; close issue #76 on completion with the commit SHA; follow `contextmanagement.md`.
+
+### C. Drift since prior brainstorm rounds (affects 6.3/6.5/6.6/6.7)
+
+- Dev infra remains DESTROYED. 6.3/6.5/6.6/6.7 each need a `terraform apply` against dev before their integration tests run. Each story-dispatch brief must state "do not assume infra is up; integration tests will skip via the env-var gates and CI will exercise them on PR merge."
+- PR #82 stays open against `development`. All remaining commits land on `feat/phase-6-domain-lambdas`.
+- 6.4's PRD declared two new IAM module tests; the WIP delivered three. The subagent for 6.5 (regression sweep) should not flag this as a discrepancy — over-delivery on test coverage is fine.
+
+### D. New issues in 6.3/6.5/6.6/6.7
+
+None beyond what prior brainstorm rounds captured. Topological order with the new 6.2-done state is:
+`6.2 → 6.3 → 6.5 → 6.6 → 6.7`
+
+(6.2 and 6.3 are parallel-eligible per the DAG — `depends_on: [6.0a, 6.0b, 6.4]` both — but the engineering rule forbids parallel execution; dispatch serially.)
+
+### E. Recommendation
+
+No PRD edits required. Proceed to dispatch: 6.2 with the audit-and-finish brief; on success, 6.3 → 6.5 → 6.6 → 6.7.

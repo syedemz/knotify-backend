@@ -1,0 +1,7 @@
+# knotify-friends Lambda runtime dependencies
+#
+# knotify_obs and knotify_db are supplied by Lambda layers and are
+# deliberately excluded from this file (build_package.py strips them).
+# psycopg2-binary is provided by the knotify-db layer.
+# boto3/botocore are provided by the Lambda runtime.
+# No additional dependencies beyond the shared layers and runtime are needed.

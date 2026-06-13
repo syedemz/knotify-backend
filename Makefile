@@ -10,7 +10,7 @@
 # All path variables are relative to the Makefile's location (the repo root).
 # Targets are PHONY so Make never mistakes an output file for an up-to-date target.
 
-.PHONY: package package-all package-test db-up test
+.PHONY: package package-all package-test db-up test test-e2e
 
 # ---------------------------------------------------------------------------
 # Internal path constants
@@ -107,8 +107,14 @@ package-all:
 	$(MAKE) package FUNC=cognito_pre_token_generation
 	@echo "[package-all] Building db_migrator function ..."
 	$(MAKE) package FUNC=db_migrator
-	@echo "[package-all] Building hello function ..."
-	$(MAKE) package FUNC=hello
+	@echo "[package-all] Building profile function ..."
+	$(MAKE) package FUNC=profile
+	@echo "[package-all] Building blocks function ..."
+	$(MAKE) package FUNC=blocks
+	@echo "[package-all] Building friends function ..."
+	$(MAKE) package FUNC=friends
+	@echo "[package-all] Building bookmarks function ..."
+	$(MAKE) package FUNC=bookmarks
 	@echo "[package-all] Done — all artifacts in $(BUILD_DIR)/"
 
 # ---------------------------------------------------------------------------
@@ -165,3 +171,27 @@ db-up:
 
 test:
 	pytest "$(SRC_ROOT)/"
+
+# ---------------------------------------------------------------------------
+# make test-e2e
+#
+# Runs the end-to-end integration test suite that exercises all four domain
+# Lambdas (profile, friends, bookmarks, blocks) in a single test flow.
+#
+# Prerequisites: the required env vars must be set.  The canonical source is
+# the .env.test file written by `terraform apply` (story 5.6):
+#
+#   infrastructure/src/tests/integration/.env.test
+#
+# To run, either export the vars manually or source the file:
+#
+#   set -a && source infrastructure/src/tests/integration/.env.test && set +a
+#   make test-e2e
+#
+# On CI the vars are injected automatically by the apply job.
+# ---------------------------------------------------------------------------
+
+E2E_ENV_FILE := $(SRC_ROOT)/tests/integration/.env.test
+
+test-e2e:
+	pytest "$(SRC_ROOT)/tests/integration/test_domains_e2e.py" -v -m integration

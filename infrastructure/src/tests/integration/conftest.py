@@ -330,3 +330,281 @@ def _teardown_user(
                 aurora_conn.close()
             except Exception:
                 pass
+
+
+# ---------------------------------------------------------------------------
+# completed_profile_user fixture — story 6.1
+#
+# Parametrized factory built on top of signed_in_user. Performs a full
+# profile-completion PATCH via the dev API, then mints a FRESH Cognito token
+# pair (because PreTokenGeneration only fires at login/refresh, not at PATCH).
+#
+# Three-step protocol (Brainstorm NEW-6):
+#   Step 1 — consume signed_in_user for the initial token pair
+#             (custom:profile_complete = "false" at this point)
+#   Step 2 — PATCH /v1/profile/me with the completion payload using the
+#             initial access_token; assert HTTP 200 and verify via master
+#             Aurora connection that profile_complete_verified flipped.
+#   Step 3 — call admin_initiate_auth AGAIN to mint a fresh token pair;
+#             assert custom:profile_complete = "true" on both id_token and
+#             access_token. Yield the fresh pair, NOT the initial tokens.
+#
+# The teardown chain is fully delegated to signed_in_user — the fixture is
+# "layered on top" and adds no new teardown state.
+#
+# Additional required env vars beyond what signed_in_user needs:
+#   DISTRIBUTION_DOMAIN_NAME — CloudFront FQDN for the dev API
+#   EDGE_SECRET              — value of the x-knotify-edge-secret header
+#
+# Both are written by the Terraform local_file resource in story 5.6.
+#
+# Consumed by:
+#   - infrastructure/src/tests/integration/test_profile.py (story 6.1)
+#   - infrastructure/src/tests/integration/test_blocks.py  (story 6.4)
+#   - ... subsequent phase-6 domain Lambda tests
+# ---------------------------------------------------------------------------
+
+
+def _decode_jwt_claims(token: str) -> dict:
+    """
+    Decode the claims from a JWT's payload section WITHOUT signature verification.
+
+    Only for integration test assertion purposes — the token was just minted by
+    Cognito and delivered over HTTPS; we do not need to re-verify the signature
+    inside the test runner.
+    """
+    import base64
+    payload_b64 = token.split(".")[1]
+    # Add padding if needed
+    padding = 4 - len(payload_b64) % 4
+    if padding != 4:
+        payload_b64 += "=" * padding
+    return json.loads(base64.urlsafe_b64decode(payload_b64))
+
+
+@pytest.fixture(scope="function")
+def completed_profile_user(request, signed_in_user):
+    """
+    Yield a dict with credentials for a fully-profiled test user.
+
+    Usage (parametrize via indirect):
+        @pytest.mark.parametrize("completed_profile_user", ["Male"], indirect=True)
+        def test_something(completed_profile_user): ...
+
+    Or call the fixture factory with the sex parameter via
+    pytest.fixture(params=["Male", "Female"]).
+
+    The fixture accepts a sex parameter via request.param (default "Male").
+    Callers that need a specific sex must parametrize or pass via indirect.
+
+    Yields a dict with ALL keys from signed_in_user PLUS:
+        first_name        — "Test"
+        last_name         — "User"
+        sex               — the requested sex ("Male" or "Female")
+        birthday          — "2000-01-01"
+        username          — f"test_{uuid4().hex[:12]}"
+        religion          — "Other"
+        id_token          — FRESH post-PATCH Cognito ID token
+        access_token      — FRESH post-PATCH Cognito access token
+        refresh_token     — FRESH post-PATCH Cognito refresh token
+
+    The initial tokens from signed_in_user are discarded (Cognito tokens are
+    immutable; PreTokenGeneration fires only at login/refresh, not at PATCH).
+    """
+    # The sex parameter is supplied via request.param when the fixture is
+    # invoked indirectly; default to "Male" for non-parametrized usage.
+    sex: str = getattr(request, "param", "Male")
+
+    try:
+        import boto3
+        import requests as http_requests
+    except ImportError:
+        pytest.skip("boto3 or requests not installed — live AWS environment required")
+
+    distribution_domain = _require_env("DISTRIBUTION_DOMAIN_NAME")
+    edge_secret = _require_env("EDGE_SECRET")
+    user_pool_id = _require_env("COGNITO_USER_POOL_ID")
+    integration_client_id = _require_env("COGNITO_INTEGRATION_TEST_CLIENT_ID")
+    region = _require_env("AWS_REGION")
+
+    cognito_client = boto3.client("cognito-idp", region_name=region)
+    aurora_conn = signed_in_user["_aurora_conn"]
+
+    # ------------------------------------------------------------------
+    # Step 1: initial token pair already in signed_in_user
+    # (custom:profile_complete = "false" at this point)
+    # ------------------------------------------------------------------
+    initial_access_token = signed_in_user["access_token"]
+    user_id = signed_in_user["sub"]
+    username = f"test_{uuid.uuid4().hex[:12]}"
+
+    # ------------------------------------------------------------------
+    # Step 2: PATCH /v1/profile/me with the completion payload
+    # ------------------------------------------------------------------
+    patch_url = f"https://{distribution_domain}/v1/profile/me"
+    completion_payload = {
+        "first_name": "Test",
+        "last_name": "User",
+        "sex": sex,
+        "birthday": "2000-01-01",
+        "username": username,
+        "religion": "Other",
+    }
+    headers = {
+        "Authorization": f"Bearer {initial_access_token}",
+        "x-knotify-edge-secret": edge_secret,
+        "Content-Type": "application/json",
+    }
+
+    patch_response = http_requests.patch(patch_url, json=completion_payload, headers=headers)
+    assert patch_response.status_code == 200, (
+        f"completed_profile_user PATCH failed: HTTP {patch_response.status_code} "
+        f"body={patch_response.text!r}"
+    )
+
+    # Verify profile_complete_verified flipped to true via master Aurora connection
+    with aurora_conn.cursor() as cur:
+        cur.execute(
+            "SELECT profile_complete_verified FROM users WHERE user_id = %s::uuid",
+            (user_id,),
+        )
+        row = cur.fetchone()
+    assert row is not None, f"users row not found for sub={user_id!r}"
+    assert row[0] is True, (
+        f"profile_complete_verified is {row[0]!r}, expected True "
+        f"after PATCH /v1/profile/me for user_id={user_id!r}"
+    )
+
+    # ------------------------------------------------------------------
+    # Step 3: mint fresh tokens (PreTokenGeneration runs at this login)
+    # ------------------------------------------------------------------
+    auth_response = cognito_client.admin_initiate_auth(
+        UserPoolId=user_pool_id,
+        ClientId=integration_client_id,
+        AuthFlow="ADMIN_USER_PASSWORD_AUTH",
+        AuthParameters={
+            "USERNAME": signed_in_user["email"],
+            "PASSWORD": signed_in_user["password"],
+        },
+    )
+    fresh_auth = auth_response["AuthenticationResult"]
+
+    # Assert both tokens carry custom:profile_complete = "true"
+    id_claims = _decode_jwt_claims(fresh_auth["IdToken"])
+    access_claims = _decode_jwt_claims(fresh_auth["AccessToken"])
+    assert id_claims.get("custom:profile_complete") == "true", (
+        f"id_token custom:profile_complete is {id_claims.get('custom:profile_complete')!r}, "
+        "expected 'true' after profile completion"
+    )
+    assert access_claims.get("custom:profile_complete") == "true", (
+        f"access_token custom:profile_complete is {access_claims.get('custom:profile_complete')!r}, "
+        "expected 'true' after profile completion"
+    )
+
+    # Yield the complete dict — teardown is handled by signed_in_user
+    yield {
+        **signed_in_user,
+        # Profile fields
+        "first_name": "Test",
+        "last_name": "User",
+        "sex": sex,
+        "birthday": "2000-01-01",
+        "username": username,
+        "religion": "Other",
+        # Fresh post-PATCH tokens (initial tokens discarded — Cognito tokens are immutable)
+        "id_token": fresh_auth["IdToken"],
+        "access_token": fresh_auth["AccessToken"],
+        "refresh_token": fresh_auth["RefreshToken"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# app_user_conn fixture — story 6.6 (Brainstorm N4 + Mi2)
+#
+# Opens a psycopg2 connection to Aurora as the `app_user` role (NOT master).
+# RLS only fires against non-superuser, non-BYPASSRLS roles under FORCE ROW
+# LEVEL SECURITY; any direct-DB test that needs the policy to apply must use
+# this fixture rather than the master connection exposed by signed_in_user.
+#
+# Skip-gate (Brainstorm Mi2):
+#   If `secretsmanager.GetSecretValue` raises ResourceNotFoundException, the
+#   fixture calls pytest.skip(...) so the test is a no-op on a freshly-
+#   destroyed dev environment (the secret is created by the db_migrator Lambda
+#   on the first phase-6 apply — see migration 0007 header). Once the secret
+#   materialises the fixture connects normally.
+#
+# Credential source:
+#   Secret name: knotify-${env}-app-user-credential (env defaults to "dev").
+#   Secret payload: {"username": "app_user", "password": "<random>"}
+#
+# Required env vars:
+#   AURORA_HOST, AURORA_PORT, AURORA_DBNAME, AWS_REGION
+#   APP_USER_SECRET_NAME (optional override; default: knotify-dev-app-user-credential)
+#
+# Yields a psycopg2 connection object. Teardown closes it.
+#
+# Note: the live tests in test_rls_enforcement.py drive the deployed HTTP API
+# and therefore exercise RLS via the Lambda's internal connection. They do NOT
+# use app_user_conn directly. The fixture exists here for future RLS unit
+# tests that need a direct DB connection under the app_user role.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="function")
+def app_user_conn():
+    """
+    Yield a psycopg2 connection to Aurora as app_user (RLS-enforced role).
+
+    Skips the test if the app_user credential secret does not exist yet
+    (ResourceNotFoundException means the db_migrator Lambda has not run).
+    """
+    try:
+        import boto3
+    except ImportError:
+        pytest.skip("boto3 is not installed — live AWS environment required")
+
+    try:
+        import psycopg2 as _psycopg2
+    except ImportError:
+        pytest.skip("psycopg2 is not installed — live Aurora environment required")
+
+    aurora_host = _require_env("AURORA_HOST")
+    aurora_port = int(_require_env("AURORA_PORT"))
+    aurora_dbname = _require_env("AURORA_DBNAME")
+    region = _require_env("AWS_REGION")
+
+    env = os.environ.get("KNOTIFY_ENV", "dev")
+    secret_name = os.environ.get(
+        "APP_USER_SECRET_NAME",
+        f"knotify-{env}-app-user-credential",
+    )
+
+    sm_client = boto3.client("secretsmanager", region_name=region)
+
+    try:
+        response = sm_client.get_secret_value(SecretId=secret_name)
+    except sm_client.exceptions.ResourceNotFoundException:
+        pytest.skip(
+            f"app_user credential not yet materialized — "
+            f"first phase-6 apply has not run db_migrator "
+            f"(secret {secret_name!r} does not exist)"
+        )
+
+    creds = json.loads(response["SecretString"])
+    app_user_password = creds["password"]
+
+    conn = _psycopg2.connect(
+        host=aurora_host,
+        port=aurora_port,
+        dbname=aurora_dbname,
+        user="app_user",
+        password=app_user_password,
+    )
+
+    try:
+        yield conn
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
