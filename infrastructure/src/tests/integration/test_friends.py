@@ -109,8 +109,8 @@ def _friend_request_exists(aurora_conn, id_a: str, id_b: str) -> bool:
         cur.execute(
             """
             SELECT 1 FROM friend_requests
-            WHERE (requester_id = %s::uuid AND receiver_id = %s::uuid)
-               OR (requester_id = %s::uuid AND receiver_id = %s::uuid)
+            WHERE (from_user_id = %s::uuid AND to_user_id = %s::uuid)
+               OR (from_user_id = %s::uuid AND to_user_id = %s::uuid)
             LIMIT 1
             """,
             (id_a, id_b, id_b, id_a),
@@ -263,8 +263,8 @@ def test_given_two_users_when_a_sends_request_and_b_accepts_then_friendship_esta
             f"POST /v1/friend-requests returned HTTP {post_resp.status_code}: {post_resp.text!r}"
         )
         resp_body = post_resp.json()
-        request_id = resp_body.get("id")
-        assert request_id, f"Expected 'id' in response body, got {resp_body!r}"
+        request_id = resp_body.get("request_id")
+        assert request_id, f"Expected 'request_id' in response body, got {resp_body!r}"
 
         # ------------------------------------------------------------------
         # Step 3: B accepts the request
@@ -359,8 +359,8 @@ def test_given_two_users_when_a_sends_request_and_b_accepts_then_friendship_esta
                 with aurora_conn.cursor() as cur:
                     cur.execute(
                         "DELETE FROM friend_requests WHERE "
-                        "(requester_id = %s::uuid AND receiver_id = %s::uuid) "
-                        "OR (requester_id = %s::uuid AND receiver_id = %s::uuid)",
+                        "(from_user_id = %s::uuid AND to_user_id = %s::uuid) "
+                        "OR (from_user_id = %s::uuid AND to_user_id = %s::uuid)",
                         (a_id, b_id_td, b_id_td, a_id),
                     )
             except Exception as exc:
@@ -493,8 +493,8 @@ def test_given_block_when_post_friend_request_returns_409_and_stale_accept_retur
             f"C's POST /v1/friend-requests returned HTTP {fr_c_resp.status_code}: "
             f"{fr_c_resp.text!r}"
         )
-        c_request_id = fr_c_resp.json().get("id")
-        assert c_request_id, f"Expected 'id' in response, got {fr_c_resp.json()!r}"
+        c_request_id = fr_c_resp.json().get("request_id")
+        assert c_request_id, f"Expected 'request_id' in response, got {fr_c_resp.json()!r}"
 
         # Seed friendship C↔D so D can block C
         c_user_a, c_user_b = _canonical_pair(c_id, d_id)
@@ -561,8 +561,8 @@ def test_given_block_when_post_friend_request_returns_409_and_stale_accept_retur
                 with aurora_conn.cursor() as cur:
                     cur.execute(
                         "DELETE FROM friend_requests WHERE "
-                        "(requester_id = %s::uuid AND receiver_id = %s::uuid) "
-                        "OR (requester_id = %s::uuid AND receiver_id = %s::uuid)",
+                        "(from_user_id = %s::uuid AND to_user_id = %s::uuid) "
+                        "OR (from_user_id = %s::uuid AND to_user_id = %s::uuid)",
                         (c_id_td, d_id_td, d_id_td, c_id_td),
                     )
             except Exception as exc:

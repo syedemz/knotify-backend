@@ -407,7 +407,7 @@ class TestGetFriendRequests:
         req_id = str(uuid.uuid4())
         cur.fetchall.return_value = [(req_id, _USER_A, _USER_B, "pending", "2026-01-01T00:00:00")]
         cur.description = [
-            ("id",), ("requester_id",), ("receiver_id",), ("status",), ("created_at",),
+            ("request_id",), ("from_user_id",), ("to_user_id",), ("status",), ("created_at",),
         ]
 
         event = _make_event("GET", "/v1/friend-requests", user_sub=_USER_A)
@@ -422,12 +422,12 @@ class TestGetFriendRequests:
         assert response["statusCode"] == 200
         body = json.loads(response["body"])
         assert len(body["friend_requests"]) == 1
-        assert body["friend_requests"][0]["id"] == req_id
+        assert body["friend_requests"][0]["request_id"] == req_id
 
     def test_given_get_friend_requests_then_block_filter_applied_to_query(self):
         """
         GET /v1/friend-requests must apply block_filter against both
-        requester_id and receiver_id dimensions.
+        from_user_id and to_user_id dimensions.
         """
         mod = _import_handler()
         conn, cur = _make_conn(fetchall_return=[])
@@ -561,7 +561,7 @@ class TestPostFriendRequests:
         new_req_id = str(uuid.uuid4())
         cur.fetchone.return_value = (new_req_id, _USER_A, _USER_B, "pending", "2026-01-01")
         cur.description = [
-            ("id",), ("requester_id",), ("receiver_id",), ("status",), ("created_at",),
+            ("request_id",), ("from_user_id",), ("to_user_id",), ("status",), ("created_at",),
         ]
 
         event = _make_event(
@@ -629,7 +629,7 @@ class TestPostFriendRequests:
         new_req_id = str(uuid.uuid4())
         cur.fetchone.return_value = (new_req_id, _USER_A, _USER_B, "pending", "2026-01-01")
         cur.description = [
-            ("id",), ("requester_id",), ("receiver_id",), ("status",), ("created_at",),
+            ("request_id",), ("from_user_id",), ("to_user_id",), ("status",), ("created_at",),
         ]
 
         event = _make_event(
@@ -647,7 +647,7 @@ class TestPostFriendRequests:
 
         assert response["statusCode"] in (200, 201)
         body = json.loads(response["body"])
-        assert body.get("id") == new_req_id or body.get("request", {}).get("id") == new_req_id
+        assert body.get("request_id") == new_req_id or body.get("request", {}).get("request_id") == new_req_id
 
 
 # ---------------------------------------------------------------------------
@@ -697,7 +697,7 @@ class TestAcceptFriendRequest:
         # fetchone returns the request row on SELECT FOR UPDATE
         cur.fetchone.return_value = (req_id, _USER_A, _USER_B, "pending", "2026-01-01")
         cur.description = [
-            ("id",), ("requester_id",), ("receiver_id",), ("status",), ("created_at",),
+            ("request_id",), ("from_user_id",), ("to_user_id",), ("status",), ("created_at",),
         ]
 
         event = _make_event(
@@ -727,7 +727,7 @@ class TestAcceptFriendRequest:
         req_id = str(uuid.uuid4())
         cur.fetchone.return_value = (req_id, _USER_A, _USER_B, "pending", "2026-01-01")
         cur.description = [
-            ("id",), ("requester_id",), ("receiver_id",), ("status",), ("created_at",),
+            ("request_id",), ("from_user_id",), ("to_user_id",), ("status",), ("created_at",),
         ]
 
         event = _make_event(
@@ -760,7 +760,7 @@ class TestAcceptFriendRequest:
         req_id = str(uuid.uuid4())
         cur.fetchone.return_value = (req_id, _USER_A, _USER_B, "pending", "2026-01-01")
         cur.description = [
-            ("id",), ("requester_id",), ("receiver_id",), ("status",), ("created_at",),
+            ("request_id",), ("from_user_id",), ("to_user_id",), ("status",), ("created_at",),
         ]
 
         event = _make_event(
@@ -802,7 +802,7 @@ class TestAcceptFriendRequest:
         # requester is USER_A, receiver is USER_B
         cur.fetchone.return_value = (req_id, _USER_A, _USER_B, "pending", "2026-01-01")
         cur.description = [
-            ("id",), ("requester_id",), ("receiver_id",), ("status",), ("created_at",),
+            ("request_id",), ("from_user_id",), ("to_user_id",), ("status",), ("created_at",),
         ]
 
         event = _make_event(
@@ -1110,7 +1110,7 @@ class TestRouteDispatch:
         new_req_id = str(uuid.uuid4())
         cur.fetchone.return_value = (new_req_id, _USER_A, _USER_B, "pending", "2026-01-01")
         cur.description = [
-            ("id",), ("requester_id",), ("receiver_id",), ("status",), ("created_at",),
+            ("request_id",), ("from_user_id",), ("to_user_id",), ("status",), ("created_at",),
         ]
 
         event = _make_event(

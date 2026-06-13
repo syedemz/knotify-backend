@@ -166,7 +166,7 @@ class TestGetBookmarks:
 
     def test_given_get_bookmarks_then_block_filter_applied_to_query(self):
         """
-        GET /v1/bookmarks must embed block_filter("bookmarks.bookmarked_user_id")
+        GET /v1/bookmarks must embed block_filter("bk.bookmarked_user_id")
         in its SQL so bookmarked users who later blocked the requester (or vice versa)
         are silently excluded.
         """
