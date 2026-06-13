@@ -6,7 +6,7 @@ Creates the CloudFront distribution that sits in front of the HTTP API Gateway, 
 
 - Creates one `aws_cloudfront_distribution` with the HTTP API execute-api endpoint as the origin.
 - Injects `x-knotify-edge-secret` as a custom origin header so Lambda handlers can verify traffic arrived via CloudFront (not directly via the execute-api URL). The secret is a 64-character alphanumeric `random_password`.
-- Uses AWS-managed `Managed-CachingDisabled` + `Managed-AllViewer` policies so CloudFront behaves as a transparent proxy with no caching.
+- Uses AWS-managed `Managed-CachingDisabled` + `Managed-AllViewerExceptHostHeader` policies so CloudFront behaves as a transparent proxy with no caching. The Host header is deliberately NOT forwarded: API Gateway's regional execute-api endpoint rejects any request whose Host header doesn't match its own DNS name with `HTTP 403 ForbiddenException`, so forwarding the viewer Host (the CloudFront domain) would break every request.
 - Branches on `var.domain_name`:
   - **dev path** (`domain_name = ""`): uses the free `cloudfront_default_certificate` and sets no aliases.
   - **prod path** (`domain_name != ""`): attaches the provided ACM certificate (us-east-1, from the ACM module), uses SNI-only and TLSv1.2_2021, and sets `aliases = [var.domain_name]`.

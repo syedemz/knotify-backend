@@ -15,7 +15,7 @@
 #   Test  4 — allowed_methods covers the full 7-method set (AC 2)
 #   Test  5 — cached_methods is ["GET","HEAD"] (AC 2)
 #   Test  6 — cache policy data source wired from Managed-CachingDisabled (AC 2)
-#   Test  7 — origin-request policy data source wired from Managed-AllViewer (AC 2)
+#   Test  7 — origin-request policy data source wired from Managed-AllViewerExceptHostHeader (AC 2)
 #   Test  8 — origin custom_header contains x-knotify-edge-secret (AC 3)
 #   Test  9 — random_password length=64, special=false, upper=true, lower=true, numeric=true (AC 3)
 #   Test 10 — dev path: cloudfront_default_certificate=true and aliases=[] (AC 4)
@@ -143,22 +143,25 @@ run "cache_policy_wired_from_managed_caching_disabled" {
 }
 
 # ---------------------------------------------------------------------------
-# Test 7: origin-request policy wired from Managed-AllViewer
+# Test 7: origin-request policy wired from Managed-AllViewerExceptHostHeader
 #
 # Satisfies AC 2: the default_cache_behavior references the data source that
-# looks up Managed-AllViewer by name.
+# looks up Managed-AllViewerExceptHostHeader by name. The Host header MUST
+# NOT be forwarded — API Gateway's regional execute-api endpoint rejects
+# requests whose Host doesn't match its own DNS name with 403 ForbiddenException,
+# which is what caused the entire edge path to break with Managed-AllViewer.
 # ---------------------------------------------------------------------------
-run "origin_request_policy_wired_from_managed_all_viewer" {
+run "origin_request_policy_wired_from_managed_all_viewer_except_host_header" {
   command = plan
 
   assert {
-    condition     = data.aws_cloudfront_origin_request_policy.managed_all_viewer.name == "Managed-AllViewer"
-    error_message = "data.aws_cloudfront_origin_request_policy.managed_all_viewer.name must be \"Managed-AllViewer\""
+    condition     = data.aws_cloudfront_origin_request_policy.managed_all_viewer_except_host_header.name == "Managed-AllViewerExceptHostHeader"
+    error_message = "data.aws_cloudfront_origin_request_policy.managed_all_viewer_except_host_header.name must be \"Managed-AllViewerExceptHostHeader\""
   }
 
   assert {
-    condition     = aws_cloudfront_distribution.this.default_cache_behavior[0].origin_request_policy_id == data.aws_cloudfront_origin_request_policy.managed_all_viewer.id
-    error_message = "default_cache_behavior.origin_request_policy_id must be wired to data.aws_cloudfront_origin_request_policy.managed_all_viewer.id"
+    condition     = aws_cloudfront_distribution.this.default_cache_behavior[0].origin_request_policy_id == data.aws_cloudfront_origin_request_policy.managed_all_viewer_except_host_header.id
+    error_message = "default_cache_behavior.origin_request_policy_id must be wired to data.aws_cloudfront_origin_request_policy.managed_all_viewer_except_host_header.id"
   }
 }
 
