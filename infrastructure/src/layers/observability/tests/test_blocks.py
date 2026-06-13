@@ -37,53 +37,53 @@ class TestBlockFilterWhitelistAccepted(unittest.TestCase):
     def test_given_friendships_user_a_when_block_filter_then_returns_sql_fragment(self):
         from knotify_obs import block_filter
 
-        result = block_filter("friendships.user_a")
+        result = block_filter("f.user_a")
 
         self.assertIsInstance(result, str)
         self.assertIn("NOT EXISTS", result)
         self.assertIn("blocks", result)
-        self.assertIn("friendships.user_a", result)
+        self.assertIn("f.user_a", result)
 
     def test_given_friendships_user_b_when_block_filter_then_returns_sql_fragment(self):
         from knotify_obs import block_filter
 
-        result = block_filter("friendships.user_b")
+        result = block_filter("f.user_b")
 
         self.assertIsInstance(result, str)
         self.assertIn("NOT EXISTS", result)
-        self.assertIn("friendships.user_b", result)
+        self.assertIn("f.user_b", result)
 
-    def test_given_friend_requests_requester_id_when_block_filter_then_returns_sql_fragment(self):
+    def test_given_friend_requests_from_user_id_when_block_filter_then_returns_sql_fragment(self):
         from knotify_obs import block_filter
 
-        result = block_filter("friend_requests.requester_id")
+        result = block_filter("fr.from_user_id")
 
         self.assertIn("NOT EXISTS", result)
-        self.assertIn("friend_requests.requester_id", result)
+        self.assertIn("fr.from_user_id", result)
 
-    def test_given_friend_requests_receiver_id_when_block_filter_then_returns_sql_fragment(self):
+    def test_given_friend_requests_to_user_id_when_block_filter_then_returns_sql_fragment(self):
         from knotify_obs import block_filter
 
-        result = block_filter("friend_requests.receiver_id")
+        result = block_filter("fr.to_user_id")
 
         self.assertIn("NOT EXISTS", result)
-        self.assertIn("friend_requests.receiver_id", result)
+        self.assertIn("fr.to_user_id", result)
 
     def test_given_bookmarks_bookmarked_user_id_when_block_filter_then_returns_sql_fragment(self):
         from knotify_obs import block_filter
 
-        result = block_filter("bookmarks.bookmarked_user_id")
+        result = block_filter("bk.bookmarked_user_id")
 
         self.assertIn("NOT EXISTS", result)
-        self.assertIn("bookmarks.bookmarked_user_id", result)
+        self.assertIn("bk.bookmarked_user_id", result)
 
     def test_given_users_user_id_when_block_filter_then_returns_sql_fragment(self):
         from knotify_obs import block_filter
 
-        result = block_filter("users.user_id")
+        result = block_filter("u.user_id")
 
         self.assertIn("NOT EXISTS", result)
-        self.assertIn("users.user_id", result)
+        self.assertIn("u.user_id", result)
 
 
 class TestBlockFilterWhitelistRejected(unittest.TestCase):
@@ -114,16 +114,34 @@ class TestBlockFilterWhitelistRejected(unittest.TestCase):
     def test_given_partial_whitelist_match_when_block_filter_then_raises_value_error(self):
         from knotify_obs import block_filter
 
-        # "friendships" alone (without ".user_a") must not be accepted
+        # "f" alone (without ".user_a") must not be accepted
         with self.assertRaises(ValueError):
-            block_filter("friendships")
+            block_filter("f")
 
     def test_given_whitelist_value_with_extra_suffix_when_block_filter_then_raises_value_error(self):
         from knotify_obs import block_filter
 
         # Prefix-match of whitelist entry is NOT sufficient
         with self.assertRaises(ValueError):
-            block_filter("friendships.user_a; DROP TABLE users--")
+            block_filter("f.user_a; DROP TABLE users--")
+
+    def test_given_pre_alias_table_qualified_when_block_filter_then_raises_value_error(self):
+        from knotify_obs import block_filter
+
+        # The old whitelist used bare table names (e.g., "friendships.user_a"),
+        # but those broke correlated subqueries against aliased outer FROM
+        # clauses. Reject the old form explicitly so a regression is caught
+        # at unit-test time, not at runtime in Aurora.
+        for legacy in (
+            "friendships.user_a",
+            "friendships.user_b",
+            "friend_requests.requester_id",
+            "friend_requests.receiver_id",
+            "bookmarks.bookmarked_user_id",
+            "users.user_id",
+        ):
+            with self.assertRaises(ValueError, msg=f"legacy form {legacy!r} must be rejected"):
+                block_filter(legacy)
 
 
 class TestBlockFilterSqlShape(unittest.TestCase):
@@ -140,7 +158,7 @@ class TestBlockFilterSqlShape(unittest.TestCase):
     def test_given_friendships_user_b_when_block_filter_then_fragment_has_correct_structure(self):
         from knotify_obs import block_filter
 
-        col = "friendships.user_b"
+        col = "f.user_b"
         fragment = block_filter(col)
 
         # Both directions of the block check must appear
@@ -154,7 +172,7 @@ class TestBlockFilterSqlShape(unittest.TestCase):
     def test_given_users_user_id_when_block_filter_then_fragment_has_correct_structure(self):
         from knotify_obs import block_filter
 
-        col = "users.user_id"
+        col = "u.user_id"
         fragment = block_filter(col)
 
         self.assertIn(f"b.blocker_id = {col}", fragment)
@@ -165,7 +183,7 @@ class TestBlockFilterSqlShape(unittest.TestCase):
 
 class TestBlockFilterEmbeddedInSelect(unittest.TestCase):
     """
-    Given the SQL fragment from block_filter("friendships.user_b"),
+    Given the SQL fragment from block_filter("f.user_b"),
     when embedded into a representative SELECT against friendships and
     executed against a real Postgres database with test data,
     then blocked pairs are filtered out in both directions.
@@ -178,7 +196,7 @@ class TestBlockFilterEmbeddedInSelect(unittest.TestCase):
         """
         Seed a friendships row between user_a and user_b.
         Insert a blocks row for the pair (user_a blocks user_b).
-        Execute SELECT ... WHERE <block_filter("friendships.user_b")>
+        Execute SELECT ... WHERE <block_filter("f.user_b")>
         Assert the friendship row does NOT appear (blocker_id = user_a → blocked_id = user_b → filter fires).
         Also assert a friendship between user_c and user_d (no block) DOES appear.
         Repeat with the reverse block direction (user_b blocks user_a).
@@ -206,13 +224,21 @@ class TestBlockFilterEmbeddedInSelect(unittest.TestCase):
 
         conn.autocommit = True
 
+        # Generate UUIDs with deterministic lex ordering so the requesting
+        # user (user_a) always lands in the user_a column of friendships. The
+        # test below queries `WHERE f.user_a = %s` and binds user_a — without
+        # this, a 50/50 UUID coin flip puts user_a on the f.user_b side and
+        # the assertion would oscillate per run.
         user_a = uuid.uuid4()
         user_b = uuid.uuid4()
+        if str(user_a) > str(user_b):
+            user_a, user_b = user_b, user_a
         user_c = uuid.uuid4()
         user_d = uuid.uuid4()
-        # user_a is lex-min vs user_b
-        pair_ab = (min(str(user_a), str(user_b)), max(str(user_a), str(user_b)))
-        pair_cd = (min(str(user_c), str(user_d)), max(str(user_c), str(user_d)))
+        if str(user_c) > str(user_d):
+            user_c, user_d = user_d, user_c
+        pair_ab = (str(user_a), str(user_b))
+        pair_cd = (str(user_c), str(user_d))
 
         try:
             with conn.cursor() as cur:
@@ -245,7 +271,7 @@ class TestBlockFilterEmbeddedInSelect(unittest.TestCase):
 
             from knotify_obs import block_filter
 
-            fragment = block_filter("friendships.user_b")
+            fragment = block_filter("f.user_b")
 
             # Query from the perspective of user_a (requesting user = user_a)
             # The friendships row with user_b in the user_b column should be filtered.

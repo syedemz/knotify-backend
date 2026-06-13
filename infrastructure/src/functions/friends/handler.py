@@ -27,8 +27,8 @@ Design notes:
       GET /v1/friends: block_filter() fragments embedded in the SELECT cover both
         the user_a and user_b columns so any pair with a block in either direction
         is filtered out.
-      GET /v1/friend-requests: block_filter() applied against both requester_id
-        and receiver_id.
+      GET /v1/friend-requests: block_filter() applied against both from_user_id
+        and to_user_id.
   - accept: BEGIN → SELECT FOR UPDATE → if not found → 404. Else UPDATE status +
     INSERT INTO friendships using lex-min/max canonical ordering (same contract as
     knotify_obs.chat_room_id). COMMIT.
@@ -131,37 +131,43 @@ WHERE (user_a = %s::uuid AND user_b = %s::uuid)
    OR (user_a = %s::uuid AND user_b = %s::uuid)
 """
 
-# GET /v1/friend-requests — block-filter applied to both requester and receiver
+# GET /v1/friend-requests — block-filter applied to both from_user_id and to_user_id.
+# Column names match migration 0005_create_friend_requests.sql:
+#   request_id, from_user_id, to_user_id, status, created_at, responded_at.
+# Table is aliased `fr` so block_filter() can reference fr.from_user_id /
+# fr.to_user_id (correlated subqueries must use the outer alias, not the bare
+# table name).
 _SELECT_FRIEND_REQUESTS_SQL = (
-    "SELECT id, requester_id, receiver_id, status, created_at "
-    "FROM friend_requests "
-    "WHERE (requester_id = %s::uuid OR receiver_id = %s::uuid) "
-    "  AND status = 'pending' "
-    "  AND {bf_requester} "
-    "  AND {bf_receiver}"
+    "SELECT fr.request_id, fr.from_user_id, fr.to_user_id, fr.status, fr.created_at "
+    "FROM friend_requests fr "
+    "WHERE (fr.from_user_id = %s::uuid OR fr.to_user_id = %s::uuid) "
+    "  AND fr.status = 'pending' "
+    "  AND {bf_from} "
+    "  AND {bf_to}"
 )
 
 # POST /v1/friend-requests — INSERT with RETURNING
 _INSERT_FRIEND_REQUEST_SQL = """
-INSERT INTO friend_requests (requester_id, receiver_id, status, created_at)
+INSERT INTO friend_requests (from_user_id, to_user_id, status, created_at)
 VALUES (%s::uuid, %s::uuid, 'pending', NOW())
-RETURNING id, requester_id, receiver_id, status, created_at
+RETURNING request_id, from_user_id, to_user_id, status, created_at
 """
 
 # POST /v1/friend-requests/{id}/accept — SELECT FOR UPDATE
 _SELECT_REQUEST_FOR_UPDATE_SQL = """
-SELECT id, requester_id, receiver_id, status, created_at
+SELECT request_id, from_user_id, to_user_id, status, created_at
 FROM friend_requests
-WHERE id = %s::uuid
+WHERE request_id = %s::uuid
   AND status = 'pending'
 FOR UPDATE
 """
 
-# Accept: UPDATE status
+# Accept: UPDATE status. responded_at is the lifecycle audit column per
+# migration 0005 (set when status transitions out of 'pending').
 _UPDATE_REQUEST_ACCEPTED_SQL = """
 UPDATE friend_requests
-SET status = 'accepted', updated_at = NOW()
-WHERE id = %s::uuid
+SET status = 'accepted', responded_at = NOW()
+WHERE request_id = %s::uuid
 """
 
 # Accept: INSERT friendship using lex-min/max canonical ordering
@@ -174,16 +180,16 @@ ON CONFLICT (user_a, user_b) DO NOTHING
 # POST /v1/friend-requests/{id}/decline
 _UPDATE_REQUEST_DECLINED_SQL = """
 UPDATE friend_requests
-SET status = 'declined', updated_at = NOW()
-WHERE id = %s::uuid
+SET status = 'declined', responded_at = NOW()
+WHERE request_id = %s::uuid
   AND status = 'pending'
 """
 
-# DELETE /v1/friend-requests/{id}
+# DELETE /v1/friend-requests/{id} — only the sender (from_user_id) can cancel.
 _DELETE_REQUEST_SQL = """
 DELETE FROM friend_requests
-WHERE id = %s::uuid
-  AND requester_id = %s::uuid
+WHERE request_id = %s::uuid
+  AND from_user_id = %s::uuid
 """
 
 # ---------------------------------------------------------------------------
@@ -236,8 +242,8 @@ def _handle_get_friends(event: dict, user_id: str, user_sex: str) -> dict:
     block_filter() whitelist column references remain literal (no dynamic column
     name generation outside the whitelist).
     """
-    bf_user_a = block_filter("friendships.user_a")
-    bf_user_b = block_filter("friendships.user_b")
+    bf_user_a = block_filter("f.user_a")
+    bf_user_b = block_filter("f.user_b")
 
     sql = _SELECT_FRIENDS_SQL.format(bf_user_a=bf_user_a, bf_user_b=bf_user_b)
 
@@ -297,21 +303,19 @@ def _handle_get_friend_requests(event: dict, user_id: str, user_sex: str) -> dic
     """
     GET /v1/friend-requests — return block-filtered pending requests for the caller.
 
-    Shows both incoming (receiver_id = me) and outgoing (requester_id = me) requests.
-    Block filter applied against both requester_id and receiver_id.
+    Shows both incoming (to_user_id = me) and outgoing (from_user_id = me) requests.
+    Block filter applied against both from_user_id and to_user_id.
     """
-    bf_requester = block_filter("friend_requests.requester_id")
-    bf_receiver = block_filter("friend_requests.receiver_id")
+    bf_from = block_filter("fr.from_user_id")
+    bf_to = block_filter("fr.to_user_id")
 
-    sql = _SELECT_FRIEND_REQUESTS_SQL.format(
-        bf_requester=bf_requester, bf_receiver=bf_receiver
-    )
+    sql = _SELECT_FRIEND_REQUESTS_SQL.format(bf_from=bf_from, bf_to=bf_to)
 
     # Parameters:
-    #   %s::uuid (requester_id = me)
-    #   %s::uuid (receiver_id = me)
-    #   %s, %s for bf_requester (other_user = requester_id; bind me twice)
-    #   %s, %s for bf_receiver  (other_user = receiver_id; bind me twice)
+    #   %s::uuid (from_user_id = me)
+    #   %s::uuid (to_user_id   = me)
+    #   %s, %s for bf_from (other_user = fr.from_user_id; bind me twice)
+    #   %s, %s for bf_to   (other_user = fr.to_user_id;   bind me twice)
     params = (user_id, user_id, user_id, user_id, user_id, user_id)
 
     conn = _get_conn()
@@ -424,9 +428,9 @@ def _handle_accept_friend_request(
                 description = cur.description
 
             request = _row_to_dict(row, description)
-            requester_id = str(request["requester_id"])
-            receiver_id = str(request["receiver_id"])
-            user_a, user_b = _canonical_pair(requester_id, receiver_id)
+            from_user_id = str(request["from_user_id"])
+            to_user_id = str(request["to_user_id"])
+            user_a, user_b = _canonical_pair(from_user_id, to_user_id)
 
             with conn.cursor() as cur:
                 cur.execute(_UPDATE_REQUEST_ACCEPTED_SQL, (request_id,))
@@ -471,7 +475,7 @@ def _handle_delete_friend_request(
     """
     DELETE /v1/friend-requests/{id} — cancel an outgoing request.
 
-    Only the requester can cancel their own outgoing request (requester_id = me).
+    Only the sender can cancel their own outgoing request (from_user_id = me).
     Returns 404 when no matching row exists.
     """
     conn = _get_conn()

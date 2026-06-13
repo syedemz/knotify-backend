@@ -27,15 +27,26 @@ from typing import Any
 # Only these values may be passed as other_user_col to block_filter.
 # Any value not in this set raises ValueError immediately so the column name
 # can never be used as a SQL injection vector.
+#
+# Entries are ALIAS-qualified, not table-qualified. PostgreSQL requires
+# correlated subqueries (which block_filter generates) to reference outer
+# tables by their visible alias once an alias is present in the FROM clause.
+# Using bare table names against an aliased outer query raises
+# "invalid reference to FROM-clause entry for table ...". Callers MUST alias
+# their FROM clauses to match the prefix used here:
+#   friendships     → f
+#   friend_requests → fr
+#   bookmarks       → bk
+#   users           → u   (also used directly by the deck-view JOIN)
 # ---------------------------------------------------------------------------
 _ALLOWED_COLUMNS = frozenset(
     {
-        "friendships.user_a",
-        "friendships.user_b",
-        "friend_requests.requester_id",
-        "friend_requests.receiver_id",
-        "bookmarks.bookmarked_user_id",
-        "users.user_id",
+        "f.user_a",
+        "f.user_b",
+        "fr.from_user_id",
+        "fr.to_user_id",
+        "bk.bookmarked_user_id",
+        "u.user_id",
     }
 )
 

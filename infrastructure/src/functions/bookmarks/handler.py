@@ -83,7 +83,9 @@ _DECK_VIEW_COLS = (
 # ---------------------------------------------------------------------------
 
 # GET /v1/bookmarks — join bookmarks → users with block filter on bookmarked_user_id.
-# block_filter("bookmarks.bookmarked_user_id") is in the _blocks.py whitelist.
+# block_filter("bk.bookmarked_user_id") is in the _blocks.py whitelist; the alias
+# prefix is mandatory because Postgres correlated subqueries must reference the
+# outer FROM alias, not the bare table name.
 _SELECT_BOOKMARKS_SQL = (
     "SELECT {cols} "
     "FROM bookmarks bk "
@@ -148,7 +150,7 @@ def _handle_get_bookmarks(event: dict, user_id: str, user_sex: str) -> dict:
     any bookmarked user who has since blocked the requester (or vice versa) is
     silently excluded from the response.
     """
-    bf_bookmarked = block_filter("bookmarks.bookmarked_user_id")
+    bf_bookmarked = block_filter("bk.bookmarked_user_id")
     sql = _SELECT_BOOKMARKS_SQL.format(bf_bookmarked=bf_bookmarked)
 
     # Parameters: user_id (WHERE bk.user_id = %s), then user_id twice for
