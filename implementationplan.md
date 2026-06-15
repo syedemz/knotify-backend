@@ -1,5 +1,5 @@
 project: knotify-backend
-last_updated: 2026-06-10 # phase-6 all 10 stories done; PR #82 open against development
+last_updated: 2026-06-15 # phase-6 complete; 4 post-merge hotfixes (#84, #85, #86, #87) all merged + verified in dev
 
 phases:
 
