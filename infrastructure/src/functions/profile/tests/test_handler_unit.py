@@ -21,6 +21,7 @@ Test coverage by area:
   D. Route dispatch — handler routes requests to the correct sub-handler
   E. Cognito write after commit — admin_update_user_attributes called when flag flips (story 7.0b)
   F. Cognito write best-effort — transient failure returns 200 (story 7.0b)
+  G. Preference vector write — PATCH with preferences sets preference_vector in same UPDATE (story 7.3)
 """
 
 from __future__ import annotations
@@ -761,4 +762,174 @@ class TestCognitoAttributeWriteAfterCommit:
 
         assert response["statusCode"] == 200, (
             f"Expected 200 even on Cognito failure, got {response['statusCode']}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Area G: Preference vector write (story 7.3)
+# ---------------------------------------------------------------------------
+
+class TestPreferenceVectorWrite:
+    """
+    When PATCH /v1/profile/me includes "preferences" in the body, the handler
+    must compute preference_vector = encode_prefs(preferences) and include it
+    in the same UPDATE statement using the SQL cast `preference_vector = %s::vector`.
+    """
+
+    def _make_fake_conn_for_patch(self, user_id: str = "user-sub-1234", sex: str = "Male"):
+        """
+        Build a fake connection suitable for a simple PATCH that does NOT flip
+        profile_complete_verified. Returns (fake_conn, fake_cur, desc).
+        """
+        tup, desc = _complete_profile_tuple_and_description(user_id=user_id, sex=sex)
+        # profile_complete_verified is already True so no flip happens
+        pvc_idx = [c[0] for c in desc].index("profile_complete_verified")
+        tup_list = list(tup)
+        tup_list[pvc_idx] = True
+        tup_complete = tuple(tup_list)
+
+        fake_conn = MagicMock()
+        fake_cur = MagicMock()
+        fake_cur.__enter__ = MagicMock(return_value=fake_cur)
+        fake_cur.__exit__ = MagicMock(return_value=False)
+        # First fetchone = current row; second = RETURNING * row
+        fake_cur.fetchone.side_effect = [tup_complete, tup_complete]
+        fake_cur.description = desc
+        fake_conn.cursor.return_value = fake_cur
+        return fake_conn, fake_cur, desc
+
+    def test_given_preferences_in_patch_body_when_update_executed_then_sql_contains_preference_vector_cast(self):
+        """
+        When "preferences" is in the PATCH body, the UPDATE SQL must contain
+        'preference_vector = %s::vector' — the explicit cast required for psycopg2
+        vector binding without pgvector's register_vector() adapter.
+        """
+        mod = _import_handler()
+        fake_conn, fake_cur, _ = self._make_fake_conn_for_patch()
+
+        preferences_payload = {"highlyeducated": True, "athletic": True}
+        event = _make_event(
+            "PATCH",
+            "/v1/profile/me",
+            body={"preferences": preferences_payload},
+            user_sub="user-sub-1234",
+            user_sex="Male",
+        )
+
+        with (
+            patch.object(mod, "_get_conn", return_value=fake_conn),
+            patch.dict(os.environ, {
+                "EDGE_SECRET": _EDGE_SECRET,
+                "DB_SECRET_NAME": "test",
+                "USER_POOL_ID": "eu-central-1_TESTPOOL",
+            }),
+        ):
+            response = mod.handler(event, None)
+
+        assert response["statusCode"] == 200, (
+            f"Expected 200, got {response['statusCode']}: {response.get('body')}"
+        )
+
+        # Find the UPDATE call in cur.execute calls
+        update_calls = [
+            call_args
+            for call_args in fake_cur.execute.call_args_list
+            if "UPDATE users" in str(call_args)
+        ]
+        assert len(update_calls) == 1, (
+            f"Expected exactly one UPDATE users call, got {len(update_calls)}"
+        )
+
+        update_sql = str(update_calls[0].args[0])
+        assert "preference_vector = %s::vector" in update_sql, (
+            f"Expected 'preference_vector = %s::vector' in UPDATE SQL but got:\n{update_sql}"
+        )
+
+    def test_given_preferences_in_patch_body_when_update_executed_then_preference_vector_value_is_list(self):
+        """
+        The value bound for preference_vector must be a list of 20 floats
+        (psycopg2 will bind it via its default list adapter, and the ::vector
+        cast in SQL coerces it to the pgvector column type).
+        """
+        mod = _import_handler()
+        fake_conn, fake_cur, _ = self._make_fake_conn_for_patch()
+
+        preferences_payload = {"highlyeducated": True}
+        event = _make_event(
+            "PATCH",
+            "/v1/profile/me",
+            body={"preferences": preferences_payload},
+            user_sub="user-sub-1234",
+            user_sex="Male",
+        )
+
+        with (
+            patch.object(mod, "_get_conn", return_value=fake_conn),
+            patch.dict(os.environ, {
+                "EDGE_SECRET": _EDGE_SECRET,
+                "DB_SECRET_NAME": "test",
+                "USER_POOL_ID": "eu-central-1_TESTPOOL",
+            }),
+        ):
+            mod.handler(event, None)
+
+        # Find the UPDATE call and extract its parameter list
+        update_calls = [
+            call_args
+            for call_args in fake_cur.execute.call_args_list
+            if "UPDATE users" in str(call_args)
+        ]
+        assert len(update_calls) == 1
+
+        params = update_calls[0].args[1]  # second arg to execute()
+        # params is a list: [<preferences_jsonb>, <preference_vector_list>, <user_id>]
+        # Find the preference_vector value — it's a list of 20 floats
+        vector_values = [p for p in params if isinstance(p, list) and len(p) == 20]
+        assert len(vector_values) == 1, (
+            f"Expected exactly one 20-element list in UPDATE params, got params={params}"
+        )
+        vec = vector_values[0]
+        assert vec[0] == 1.0, f"highlyeducated is at index 0, expected 1.0, got {vec[0]}"
+        assert all(v == 0.0 for v in vec[1:]), (
+            f"All positions except index 0 must be 0.0, got {vec[1:]}"
+        )
+
+    def test_given_no_preferences_in_patch_body_when_update_executed_then_no_preference_vector_in_sql(self):
+        """
+        When "preferences" is NOT in the PATCH body, the UPDATE SQL must NOT
+        include preference_vector — the handler only writes it alongside preferences.
+        """
+        mod = _import_handler()
+        fake_conn, fake_cur, _ = self._make_fake_conn_for_patch()
+
+        event = _make_event(
+            "PATCH",
+            "/v1/profile/me",
+            body={"job_title": "New Title"},
+            user_sub="user-sub-1234",
+            user_sex="Male",
+        )
+
+        with (
+            patch.object(mod, "_get_conn", return_value=fake_conn),
+            patch.dict(os.environ, {
+                "EDGE_SECRET": _EDGE_SECRET,
+                "DB_SECRET_NAME": "test",
+                "USER_POOL_ID": "eu-central-1_TESTPOOL",
+            }),
+        ):
+            response = mod.handler(event, None)
+
+        assert response["statusCode"] == 200
+
+        update_calls = [
+            call_args
+            for call_args in fake_cur.execute.call_args_list
+            if "UPDATE users" in str(call_args)
+        ]
+        assert len(update_calls) == 1
+        update_sql = str(update_calls[0].args[0])
+        assert "preference_vector" not in update_sql, (
+            f"preference_vector must not appear in SQL when preferences not in patch body. "
+            f"SQL was:\n{update_sql}"
         )

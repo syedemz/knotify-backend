@@ -471,5 +471,155 @@ class TestYoyoImportable(unittest.TestCase):
         self.assertIsNotNone(get_backend)
 
 
+class TestEncodePrefs(unittest.TestCase):
+    """
+    Tests for knotify_db.encode_prefs and PREFERENCE_KEYS (story 7.3).
+
+    encode_prefs(prefs: dict) -> list[float] maps the 20-key boolean preference
+    dict to a 20-dimensional float vector using the key ordering in PREFERENCE_KEYS
+    (§5.5 of architecture.md). PREFERENCE_KEYS is a module-level constant and the
+    single source of truth — it is NOT redefined per call.
+    """
+
+    def test_given_empty_dict_when_encode_prefs_then_returns_20_zeros(self):
+        """encode_prefs({}) must return a list of exactly 20 zeros."""
+        from knotify_db import encode_prefs
+
+        result = encode_prefs({})
+
+        self.assertEqual(len(result), 20, f"Expected 20 floats, got {len(result)}")
+        self.assertEqual(
+            result,
+            [0.0] * 20,
+            f"Expected all zeros, got {result}",
+        )
+
+    def test_given_highlyeducated_true_when_encode_prefs_then_first_element_is_one(self):
+        """
+        'highlyeducated' is the first key in PREFERENCE_KEYS (§5.5).
+        encode_prefs({'highlyeducated': True}) must return [1.0, 0.0, 0.0, ..., 0.0].
+        """
+        from knotify_db import encode_prefs
+
+        result = encode_prefs({"highlyeducated": True})
+
+        self.assertEqual(result[0], 1.0, f"Expected result[0]=1.0, got {result[0]}")
+        self.assertEqual(
+            result[1:],
+            [0.0] * 19,
+            f"Expected positions 1-19 to be 0.0, got {result[1:]}",
+        )
+
+    def test_given_athletic_true_when_encode_prefs_then_correct_index_is_one(self):
+        """
+        'athletic' is at index 14 in PREFERENCE_KEYS (§5.5).
+        Only that position must be 1.0; all others 0.0.
+        """
+        from knotify_db import PREFERENCE_KEYS, encode_prefs
+
+        result = encode_prefs({"athletic": True})
+
+        athletic_idx = PREFERENCE_KEYS.index("athletic")
+        self.assertEqual(
+            result[athletic_idx],
+            1.0,
+            f"Expected result[{athletic_idx}]=1.0 for 'athletic', got {result[athletic_idx]}",
+        )
+        for i, v in enumerate(result):
+            if i != athletic_idx:
+                self.assertEqual(v, 0.0, f"Expected result[{i}]=0.0, got {v}")
+
+    def test_given_multiple_prefs_true_when_encode_prefs_then_corresponding_positions_are_one(self):
+        """
+        Multiple True preferences set their respective positions to 1.0.
+        """
+        from knotify_db import PREFERENCE_KEYS, encode_prefs
+
+        prefs = {"highlyeducated": True, "athletic": True}
+        result = encode_prefs(prefs)
+
+        for key in prefs:
+            idx = PREFERENCE_KEYS.index(key)
+            self.assertEqual(result[idx], 1.0, f"Expected result[{idx}]=1.0 for '{key}'")
+
+        for key in PREFERENCE_KEYS:
+            if key not in prefs:
+                idx = PREFERENCE_KEYS.index(key)
+                self.assertEqual(result[idx], 0.0, f"Expected result[{idx}]=0.0 for '{key}'")
+
+    def test_preference_keys_has_exactly_20_elements(self):
+        """PREFERENCE_KEYS must have exactly 20 keys (§5.5 says 20-D vector)."""
+        from knotify_db import PREFERENCE_KEYS
+
+        self.assertEqual(
+            len(PREFERENCE_KEYS),
+            20,
+            f"Expected 20 PREFERENCE_KEYS, got {len(PREFERENCE_KEYS)}: {PREFERENCE_KEYS}",
+        )
+
+    def test_preference_keys_exact_order_matches_architecture_section_5_5(self):
+        """
+        PREFERENCE_KEYS must exactly match §5.5 in order — this is the single
+        source of truth for the 20-D encoding and must not drift from the spec.
+        """
+        from knotify_db import PREFERENCE_KEYS
+
+        expected = [
+            "highlyeducated", "moderateeducated", "basiceducated",
+            "familyoriented", "homeoriented", "workoriented", "religionoriented",
+            "talkative", "reserved", "cheerful", "serious", "listener",
+            "intelligent", "welldressed", "athletic",
+            "travel", "cooking", "reading", "movies", "nature",
+        ]
+        self.assertEqual(
+            list(PREFERENCE_KEYS),
+            expected,
+            "PREFERENCE_KEYS does not match §5.5 of architecture.md verbatim",
+        )
+
+    def test_preference_keys_same_object_when_imported_twice(self):
+        """
+        PREFERENCE_KEYS imported in two separate import statements must be the
+        same list object — not a copy. This verifies it is a module-level
+        constant, not reconstructed per call.
+        """
+        import importlib
+        import sys
+
+        # Clear any cached import of knotify_db.prefs to force fresh import
+        for mod_name in list(sys.modules.keys()):
+            if "knotify_db" in mod_name:
+                del sys.modules[mod_name]
+
+        import knotify_db as kdb1
+        keys1 = kdb1.PREFERENCE_KEYS
+
+        import knotify_db as kdb2
+        keys2 = kdb2.PREFERENCE_KEYS
+
+        self.assertIs(
+            keys1,
+            keys2,
+            "PREFERENCE_KEYS must be the same list object across imports (module-level constant)",
+        )
+
+    def test_given_false_preference_when_encode_prefs_then_position_is_zero(self):
+        """Explicitly False preferences must map to 0.0."""
+        from knotify_db import encode_prefs
+
+        result = encode_prefs({"highlyeducated": False, "athletic": False})
+
+        self.assertEqual(result, [0.0] * 20)
+
+    def test_given_unknown_key_when_encode_prefs_then_ignored(self):
+        """Keys not in PREFERENCE_KEYS must be silently ignored (no error, no extra position)."""
+        from knotify_db import encode_prefs
+
+        result = encode_prefs({"unknown_key_xyz": True, "highlyeducated": True})
+
+        self.assertEqual(len(result), 20)
+        self.assertEqual(result[0], 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()

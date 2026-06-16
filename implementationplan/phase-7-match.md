@@ -1,6 +1,6 @@
 phase: 7
 title: Match and deck
-last_updated: 2026-06-16 (story 7.0b complete)
+last_updated: 2026-06-16 (story 7.3 complete)
 
 context_summary: |
   Implements the matching and swipe-deck endpoints backed by pgvector ranking
@@ -395,7 +395,7 @@ stories:
   - id: 7.3
     title: Preference vector encoder shared utility + profile PATCH integration
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: []
     tracking_issue: 94
     acceptance_criteria:

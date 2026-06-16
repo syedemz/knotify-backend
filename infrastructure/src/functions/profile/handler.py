@@ -51,6 +51,7 @@ from typing import Any
 
 import boto3
 import knotify_db
+from knotify_db import encode_prefs
 from knotify_obs import init_logger, with_edge_secret
 
 # ---------------------------------------------------------------------------
@@ -477,6 +478,15 @@ def _handle_patch_profile_me(event: dict, user_id: str, user_sex: str) -> dict:
             # Step 4: execute the UPDATE
             set_clauses = [f"{col} = %s" for col in patch_data]
             set_values = list(patch_data.values())
+
+            # Story 7.3: when preferences is in the patch body, also write
+            # preference_vector in the same UPDATE using an explicit ::vector cast.
+            # psycopg2's default list adapter handles the Python list; the ::vector
+            # cast coerces it to the pgvector column type — no register_vector() needed.
+            if "preferences" in patch_data:
+                pref_vector = encode_prefs(patch_data["preferences"])
+                set_clauses.append("preference_vector = %s::vector")
+                set_values.append(pref_vector)
 
             # Step 5: flip profile_complete_verified if qualifying
             was_incomplete = not current.get("profile_complete_verified")

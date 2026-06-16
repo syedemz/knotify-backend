@@ -329,6 +329,115 @@ class TestProfileRoutes:
         )
 
 
+class TestProfilePreferenceVector:
+    """
+    Integration tests for preference_vector write-path (story 7.3).
+
+    When PATCH /v1/profile/me includes a "preferences" key, the handler must
+    also compute and persist preference_vector in the same UPDATE.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _load_env(self):
+        self.domain = _require_env("DISTRIBUTION_DOMAIN_NAME")
+        self.edge_secret = _require_env("EDGE_SECRET")
+
+    def test_given_preferences_patch_when_re_queried_then_preference_vector_non_null_at_correct_indices(
+        self, completed_profile_user
+    ):
+        """
+        Story 7.3 AC — Integration:
+        PATCH /v1/profile/me with {"preferences": {"highlyeducated": true, "athletic": true}};
+        re-query the users row; preference_vector is non-NULL and has 1.0 at the
+        highlyeducated (index 0) and athletic (index 14) positions, 0.0 elsewhere.
+
+        Requires:
+          - AURORA_HOST, AURORA_PORT, AURORA_DBNAME, AURORA_MASTER_SECRET_ARN env vars
+            (direct Aurora access to inspect preference_vector via psycopg2)
+          - DISTRIBUTION_DOMAIN_NAME, EDGE_SECRET env vars
+        """
+        try:
+            import requests
+            import psycopg2
+            import psycopg2.extras
+            import boto3 as _boto3
+            import json as _json
+        except ImportError:
+            pytest.skip("requests, psycopg2, or boto3 not installed")
+
+        # Skip if direct Aurora access is not available
+        aurora_host = os.environ.get("AURORA_HOST")
+        aurora_port = os.environ.get("AURORA_PORT")
+        aurora_dbname = os.environ.get("AURORA_DBNAME")
+        aurora_secret_arn = os.environ.get("AURORA_MASTER_SECRET_ARN")
+        if not all([aurora_host, aurora_port, aurora_dbname, aurora_secret_arn]):
+            pytest.skip(
+                "Direct Aurora access env vars not set (AURORA_HOST, AURORA_PORT, "
+                "AURORA_DBNAME, AURORA_MASTER_SECRET_ARN) — skipping preference_vector assertion"
+            )
+
+        user = completed_profile_user
+
+        # PATCH with highlyeducated=true and athletic=true
+        preferences_payload = {"highlyeducated": True, "athletic": True}
+        response = requests.patch(
+            _api_url(self.domain, "/v1/profile/me"),
+            json={"preferences": preferences_payload},
+            headers=_authed_headers(user["access_token"], self.edge_secret),
+        )
+        assert response.status_code == 200, (
+            f"PATCH /v1/profile/me with preferences returned "
+            f"{response.status_code}: {response.text}"
+        )
+
+        # Fetch the master secret to get DB credentials for direct Aurora access
+        sm_client = _boto3.client("secretsmanager", region_name=os.environ.get("AWS_REGION", "eu-central-1"))
+        secret_val = sm_client.get_secret_value(SecretId=aurora_secret_arn)
+        creds = _json.loads(secret_val["SecretString"])
+
+        # Direct Aurora query to inspect preference_vector
+        conn = psycopg2.connect(
+            host=aurora_host,
+            port=int(aurora_port),
+            dbname=aurora_dbname,
+            user=creds["username"],
+            password=creds["password"],
+        )
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT preference_vector::text FROM users WHERE user_id = %s::uuid",
+                    (user["sub"],),
+                )
+                row = cur.fetchone()
+        finally:
+            conn.close()
+
+        assert row is not None, f"No user row found for user_id={user['sub']}"
+        pv_text = row[0]
+        assert pv_text is not None, (
+            f"preference_vector is NULL after PATCH with preferences — "
+            "handler must write preference_vector alongside preferences"
+        )
+
+        # Parse the vector from Postgres text representation "[1.0,0.0,...]"
+        pv_values = [float(x) for x in pv_text.strip("[]").split(",")]
+        assert len(pv_values) == 20, f"Expected 20-dimensional vector, got {len(pv_values)}"
+
+        # PREFERENCE_KEYS order: highlyeducated=0, athletic=14
+        assert pv_values[0] == 1.0, (
+            f"Expected pv_values[0]=1.0 (highlyeducated), got {pv_values[0]}"
+        )
+        assert pv_values[14] == 1.0, (
+            f"Expected pv_values[14]=1.0 (athletic), got {pv_values[14]}"
+        )
+        other_positions = [i for i in range(20) if i not in (0, 14)]
+        for i in other_positions:
+            assert pv_values[i] == 0.0, (
+                f"Expected pv_values[{i}]=0.0 but got {pv_values[i]}"
+            )
+
+
 class TestProfileCrossSexRLS:
     """
     Cross-sex RLS enforcement tests that require two concurrent user instances.
