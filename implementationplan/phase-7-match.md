@@ -1,6 +1,6 @@
 phase: 7
 title: Match and deck
-last_updated: 2026-06-16
+last_updated: 2026-06-16 (story 7.0 complete)
 
 context_summary: |
   Implements the matching and swipe-deck endpoints backed by pgvector ranking
@@ -131,8 +131,9 @@ stories:
   - id: 7.0
     title: knotify-match Lambda scaffold and Terraform module
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: []
+    tracking_issue: 89
     acceptance_criteria:
       - infrastructure/src/functions/match/ created with handler.py (empty
         dispatcher returning 404 for unknown routes), __init__.py,
@@ -157,6 +158,7 @@ stories:
     agent: backenddeveloper
     done: false
     depends_on: []
+    tracking_issue: 90
     acceptance_criteria:
       - New migration 0011_deck_view_extended.sql DROPs deck_view and
         recreates it with the original 14 columns PLUS preference_vector
@@ -179,6 +181,7 @@ stories:
     agent: backenddeveloper
     done: false
     depends_on: []
+    tracking_issue: 91
     acceptance_criteria:
       - Migration 0012_profile_complete_widen_check.sql replaces the
         profile_complete_requires_required_fields CHECK constraint with the
@@ -306,6 +309,7 @@ stories:
     agent: backenddeveloper
     done: false
     depends_on: [7.0]
+    tracking_issue: 92
     acceptance_criteria:
       - Handler for POST /v1/match/search accepts a JSON body with
         {countries (list of CHAR(2) codes against resident_country_code),
@@ -350,6 +354,7 @@ stories:
     agent: backenddeveloper
     done: false
     depends_on: [7.0, 7.0a]
+    tracking_issue: 93
     acceptance_criteria:
       - Handler for GET /v1/match/deck reads from deck_view (aliased as
         `dv` in the SQL: `FROM deck_view dv`) and enforces opposite-sex
@@ -392,6 +397,7 @@ stories:
     agent: backenddeveloper
     done: false
     depends_on: []
+    tracking_issue: 94
     acceptance_criteria:
       - New module infrastructure/src/layers/db/knotify_db/prefs.py (lives
         in the existing knotify_db layer) exposes encode_prefs(prefs:
@@ -433,6 +439,7 @@ stories:
     agent: backenddeveloper
     done: false
     depends_on: [7.0a]
+    tracking_issue: 95
     acceptance_criteria:
       - Migration 0013_aurora_refresh_role.sql creates a new Postgres role
         aurora_refresh (LOGIN, NOSUPERUSER, NOBYPASSRLS) and GRANTs
@@ -509,6 +516,7 @@ stories:
     agent: backenddeveloper
     done: false
     depends_on: [7.0, 7.0b, 7.1, 7.2]
+    tracking_issue: 96
     acceptance_criteria:
       - POST /v1/match/search and GET /v1/match/deck are registered as
         aws_apigatewayv2_route resources with authorizer_id pointing at
@@ -531,6 +539,7 @@ stories:
     agent: backenddeveloper
     done: false
     depends_on: [7.0, 7.0a, 7.0b, 7.1, 7.2, 7.3, 7.4, 7.5]
+    tracking_issue: 97
     acceptance_criteria:
       - New fixture seeded_match_candidates(requester_id, n=10) in
         tests/integration/conftest.py that creates n candidate users with

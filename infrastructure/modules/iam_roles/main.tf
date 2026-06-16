@@ -337,3 +337,44 @@ resource "aws_iam_role_policy_attachment" "stepfn_task_vpc_access" {
   role       = aws_iam_role.stepfn_task.name
   policy_arn = local.vpc_access_policy_arn
 }
+
+# ===========================================================================
+# Role: aurora_reader_match
+#
+# For the knotify-match Lambda (phase 7).
+# Reads from Aurora via the app_user credential (same app_user connection
+# pattern as aurora_writer — app_user has SELECT on users and deck_view).
+# No DynamoDB, no write access.
+# ===========================================================================
+
+resource "aws_iam_role" "aurora_reader_match" {
+  name               = "knotify-${var.environment}-aurora-reader-match"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+resource "aws_iam_role_policy_attachment" "aurora_reader_match_vpc_access" {
+  role       = aws_iam_role.aurora_reader_match.name
+  policy_arn = local.vpc_access_policy_arn
+}
+
+# Allow reading the app_user credential so the match Lambda can connect to Aurora.
+# Scoped to the knotify-<env>-app-user-credential wildcard (matches the
+# Secrets Manager secret name pattern used by the db_migrator on first run).
+data "aws_iam_policy_document" "aurora_reader_match_app_user_credential" {
+  statement {
+    sid    = "ReadAppUserCredential"
+    effect = "Allow"
+    actions = [
+      "secretsmanager:GetSecretValue",
+    ]
+    resources = [
+      "${local.sm_arn_prefix}:secret:knotify-${var.environment}-app-user-credential-*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "aurora_reader_match_app_user_credential" {
+  name   = "aurora-reader-match-app-user-credential"
+  role   = aws_iam_role.aurora_reader_match.name
+  policy = data.aws_iam_policy_document.aurora_reader_match_app_user_credential.json
+}

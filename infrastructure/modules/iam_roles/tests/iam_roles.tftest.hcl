@@ -338,7 +338,7 @@ run "stepfn_task_trust_policy_and_vpc_managed_policy" {
 # map values equal those strings. This also confirms the output map is wired
 # to the correct role resources (not hardcoded strings).
 # ---------------------------------------------------------------------------
-run "role_arns_output_contains_all_eight_roles" {
+run "role_arns_output_contains_all_nine_roles" {
   command = plan
 
   variables {
@@ -410,6 +410,14 @@ run "role_arns_output_contains_all_eight_roles" {
     override_during = plan
   }
 
+  override_resource {
+    target = aws_iam_role.aurora_reader_match
+    values = {
+      arn = "arn:aws:iam::123456789012:role/knotify-test-aurora-reader-match"
+    }
+    override_during = plan
+  }
+
   assert {
     condition     = output.role_arns["db_migrator"] == "arn:aws:iam::123456789012:role/knotify-test-db-migrator"
     error_message = "role_arns[db_migrator] must be wired to aws_iam_role.db_migrator.arn"
@@ -448,6 +456,11 @@ run "role_arns_output_contains_all_eight_roles" {
   assert {
     condition     = output.role_arns["stepfn_task"] == "arn:aws:iam::123456789012:role/knotify-test-stepfn-task"
     error_message = "role_arns[stepfn_task] must be wired to aws_iam_role.stepfn_task.arn"
+  }
+
+  assert {
+    condition     = output.role_arns["aurora_reader_match"] == "arn:aws:iam::123456789012:role/knotify-test-aurora-reader-match"
+    error_message = "role_arns[aurora_reader_match] must be wired to aws_iam_role.aurora_reader_match.arn"
   }
 }
 
@@ -524,5 +537,56 @@ run "blocks_writer_dynamodb_inline_policy_exists_and_scoped" {
   assert {
     condition     = aws_iam_role_policy.blocks_writer_dynamodb.role == aws_iam_role.blocks_writer.name
     error_message = "blocks_writer DynamoDB policy must be attached to the blocks_writer role"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 17: aurora_reader_match role exists with trust policy and VPC managed policy
+#
+# Satisfies story 7.0 AC: "New IAM role aurora_reader_match (VPC execution,
+# scoped secretsmanager:GetSecretValue on knotify-<env>-app-user-credential)".
+# ---------------------------------------------------------------------------
+run "aurora_reader_match_trust_policy_and_vpc_managed_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = aws_iam_role.aurora_reader_match.assume_role_policy != ""
+    error_message = "aurora_reader_match assume_role_policy must not be empty"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy_attachment.aurora_reader_match_vpc_access.policy_arn == "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+    error_message = "aurora_reader_match must attach AWSLambdaVPCAccessExecutionRole"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 18: aurora_reader_match app_user credential inline policy exists and
+#          is correctly wired to the role
+#
+# Satisfies story 7.0 AC: "scoped secretsmanager:GetSecretValue on
+# knotify-<env>-app-user-credential".
+# ---------------------------------------------------------------------------
+run "aurora_reader_match_app_user_credential_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.aurora_reader_match_app_user_credential.name == "aurora-reader-match-app-user-credential"
+    error_message = "aurora_reader_match inline policy must be named aurora-reader-match-app-user-credential"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.aurora_reader_match_app_user_credential.role == aws_iam_role.aurora_reader_match.name
+    error_message = "aurora_reader_match inline policy must be attached to the aurora_reader_match role"
   }
 }

@@ -843,3 +843,51 @@ resource "aws_lambda_permission" "bookmarks_api_gateway" {
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${module.api_gateway.api_execution_arn}/*/*/v1/bookmarks*"
 }
+
+# ---------------------------------------------------------------------------
+# knotify-match Lambda — story 7.0 scaffold
+#
+# Empty dispatcher (returns 404 for all routes until 7.5 wires them).
+# Handles two routes registered in story 7.5:
+#   POST /v1/match/search   — candidate search with preference-vector ranking
+#   GET  /v1/match/deck     — swipe-deck with cursor pagination
+#
+# Uses the aurora_reader_match IAM role (Aurora read-only via app_user
+# credential; no write access, no DynamoDB). EDGE_SECRET is injected so the
+# @with_edge_secret decorator validates all traffic arrived via CloudFront.
+# Routes are wired in story 7.5 (depends on 7.0b, 7.1, 7.2).
+#
+# PROD NOTE: apply is gated per docs/PROD_CUTOVER.md. Authored + planned only.
+# ---------------------------------------------------------------------------
+
+module "match" {
+  source = "../../modules/lambda"
+
+  function_name = "knotify-match-${var.environment}"
+  handler       = "handler.handler"
+  filename      = "${path.module}/../../../build/match.zip"
+
+  layers = [
+    module.observability_layer.layer_arn,
+    module.db_layer.layer_arn,
+  ]
+
+  role_arn = module.iam_roles.role_arns["aurora_reader_match"]
+
+  vpc_config = {
+    subnet_ids         = module.networking.private_subnet_ids
+    security_group_ids = [module.networking.lambda_security_group_id]
+  }
+
+  environment_variables = {
+    DB_SECRET_NAME = "knotify-${var.environment}-app-user-credential"
+    EDGE_SECRET    = module.cloudfront.edge_secret
+
+    # Aurora connection endpoint params — secret carries only username +
+    # password (db_migrator writer pattern); host/port/dbname come from
+    # aurora module outputs.
+    AURORA_HOST   = module.aurora.cluster_endpoint
+    AURORA_PORT   = tostring(module.aurora.port)
+    AURORA_DBNAME = module.aurora.database_name
+  }
+}
