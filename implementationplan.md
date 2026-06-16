@@ -48,7 +48,7 @@ phases:
 - phase: 7
   title: Match and deck
   file: implementationplan/phase-7-match.md
-  ready: false
+  ready: true
   done: false
 
 - phase: 8
