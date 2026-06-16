@@ -121,6 +121,10 @@ module "iam_roles" {
 
   environment                   = var.environment
   aurora_master_user_secret_arn = module.aurora.master_user_secret_arn
+
+  # Scopes aurora_writer's cognito-idp:AdminUpdateUserAttributes to this pool
+  # only. Sourced from the cognito module output (story 7.0b).
+  cognito_user_pool_arn = module.cognito.user_pool_arn
 }
 
 # ---------------------------------------------------------------------------
@@ -596,6 +600,10 @@ module "profile" {
     AURORA_HOST   = module.aurora.cluster_endpoint
     AURORA_PORT   = tostring(module.aurora.port)
     AURORA_DBNAME = module.aurora.database_name
+
+    # Cognito User Pool ID — needed by the profile PATCH handler to call
+    # admin_update_user_attributes after a profile-completion flip (story 7.0b).
+    USER_POOL_ID = module.cognito.user_pool_id
   }
 }
 

@@ -23,8 +23,14 @@ Design notes:
          This fires BEFORE the DB trigger trg_users_immutable, giving the client a
          clean, structured error instead of a 500 from the DB RAISE.
       3. Apply the UPDATE for non-violating fields.
-      4. If all of {first_name, last_name, sex, birthday, username} are non-NULL
-         after the update, set profile_complete_verified = true in the same txn.
+      4. If all 34 required fields are non-NULL after the update AND
+         profile_complete_verified was false before, set profile_complete_verified = true
+         in the same transaction.
+      5. AFTER the with conn: block commits (outside the transaction), when the flag
+         flipped false→true in step 4, call cognito-idp:AdminUpdateUserAttributes to
+         set custom:profile_complete = "true" on the Cognito user. Best-effort: on any
+         transient failure, log a structured warning and return 200 to the client.
+         (See story 7.0b eventual-consistency footnote.)
   - deck_view fields (for GET /v1/profiles): user_id, age, chosen_profile_avatar,
     current_residence_city, current_residence_country, first_name, job_title,
     last_name, photo_url, profile_complete_verified, resident_country_code, sex,
@@ -33,6 +39,7 @@ Design notes:
 Dependencies (Lambda layers):
   - knotify_obs: init_logger, with_edge_secret
   - knotify_db:  get_connection, rls_context
+  - boto3: cognito-idp client (used only on profile-completion flip)
 """
 
 from __future__ import annotations
@@ -42,6 +49,7 @@ import os
 import re
 from typing import Any
 
+import boto3
 import knotify_db
 from knotify_obs import init_logger, with_edge_secret
 
@@ -52,6 +60,7 @@ from knotify_obs import init_logger, with_edge_secret
 logger = init_logger("knotify_profile")
 
 _DB_SECRET_NAME: str = os.environ.get("DB_SECRET_NAME", "")
+_USER_POOL_ID: str = os.environ.get("USER_POOL_ID", "")
 
 # Module-level connection (reused across warm invocations)
 _conn = None
@@ -78,8 +87,53 @@ def _get_conn():
 # Immutable-after-set fields per architecture §5.7
 _IMMUTABLE_FIELDS = frozenset({"first_name", "last_name", "sex", "birthday", "religion", "subsect"})
 
-# Fields required for profile_complete_verified = true
-_REQUIRED_FOR_COMPLETION = frozenset({"first_name", "last_name", "sex", "birthday", "username"})
+# Fields required for profile_complete_verified = true (story 7.0b — widened to 34).
+# Must match the CHECK constraint in migration 0012 exactly (flat IS NOT NULL, no
+# conditional predicates). marriage_time is NOT required; it gets DEFAULT 'Not Provided'
+# via migration 0012 so it is never NULL.
+_REQUIRED_FOR_COMPLETION = frozenset({
+    # Identity (carried forward from original 5-field check)
+    "first_name",
+    "last_name",
+    "sex",
+    "birthday",
+    "username",
+    # Religion (matching-critical)
+    "religion",
+    "subsect",
+    "religious_level",
+    # Residence
+    "current_residence_city",
+    "current_residence_country",
+    "resident_country_code",
+    "district",
+    # Education
+    "education_level",
+    "highest_degree",
+    "high_school",
+    "higher_secondary",
+    "college_name",
+    # Profession
+    "job_title",
+    "employer_name",
+    "employment_type",
+    "office_address",
+    "professional_category",
+    "salary_range",
+    # Family
+    "fathers_name",
+    "fathers_job",
+    "father_retired",
+    "mothers_name",
+    "mothers_job",
+    "mother_retired",
+    "family_residence_address",
+    # Personal status
+    "marital_status",
+    "has_children",
+    "move_abroad",
+    "relation",
+})
 
 # Mutable fields accepted by PATCH (excludes identity, system, immutable, and
 # read-only computed columns like age)
@@ -244,10 +298,7 @@ def _check_immutable_fields(
     Returns:
         List of field names that are violations. Empty list = no violations.
     """
-    # Normalise to dict if needed
     if not isinstance(current_row, dict):
-        # current_row is a tuple; caller must pass description alongside.
-        # In practice the handler always converts to dict before calling this.
         raise TypeError("current_row must be a dict; convert via _row_to_dict() first")
 
     violations: list[str] = []
@@ -256,10 +307,8 @@ def _check_immutable_fields(
             continue
         current_val = current_row.get(field)
         if current_val is None:
-            # NULL in DB → first-set, always allowed
             continue
         new_val = patch_data[field]
-        # Re-PATCHing the EXACT same value is a no-op, not a violation
         if str(new_val) == str(current_val):
             continue
         violations.append(field)
@@ -269,10 +318,12 @@ def _check_immutable_fields(
 
 def _should_set_profile_complete(proposed_row: dict[str, Any]) -> bool:
     """
-    Return True iff all required-for-completion fields are non-None in
+    Return True iff all 34 required-for-completion fields are non-None in
     proposed_row (the row as it will look after the UPDATE is applied).
 
-    Required fields: first_name, last_name, sex, birthday, username.
+    The required set is _REQUIRED_FOR_COMPLETION (34 flat column names).
+    No conditional predicates — the frozenset membership check matches the
+    DB CHECK constraint in migration 0012 1:1.
     """
     return all(
         proposed_row.get(field) is not None
@@ -281,9 +332,7 @@ def _should_set_profile_complete(proposed_row: dict[str, Any]) -> bool:
 
 
 def _row_to_dict(row: tuple, description) -> dict:
-    """
-    Convert a psycopg2 row tuple to a dict using the cursor's description.
-    """
+    """Convert a psycopg2 row tuple to a dict using the cursor's description."""
     return {col[0]: val for col, val in zip(description, row)}
 
 
@@ -299,6 +348,42 @@ def _json_response(status_code: int, body: Any) -> dict:
         "headers": {"Content-Type": "application/json"},
         "body": json.dumps(body, default=str),
     }
+
+
+def _write_cognito_profile_complete(user_id: str) -> None:
+    """
+    Best-effort call to set custom:profile_complete = "true" on the Cognito user.
+
+    Called AFTER the with conn: block has committed the Aurora UPDATE.
+    On any failure, logs a structured warning and returns — does NOT raise.
+    The caller always returns HTTP 200 regardless of whether this call succeeds.
+
+    Eventual-consistency footnote: a successful PATCH may briefly have
+    Aurora=true and Cognito=false until this call lands.  The client must
+    refresh the session to pick up the new claim anyway.  A failed call
+    means the user stays gated until the next PATCH or a phase-11 backfill
+    job sweeps users with Aurora=true / Cognito=false mismatches.
+    """
+    try:
+        client = boto3.client("cognito-idp")
+        client.admin_update_user_attributes(
+            UserPoolId=_USER_POOL_ID,
+            Username=user_id,
+            UserAttributes=[{"Name": "custom:profile_complete", "Value": "true"}],
+        )
+        logger.info(
+            "cognito_profile_complete_attribute_set",
+            extra={"user_id": user_id},
+        )
+    except Exception as exc:
+        logger.warning(
+            "cognito_profile_complete_attribute_write_failed",
+            extra={
+                "user_id": user_id,
+                "error": str(exc),
+                "note": "Aurora commit succeeded; Cognito attribute will be set on next PATCH or backfill",
+            },
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -340,9 +425,12 @@ def _handle_patch_profile_me(event: dict, user_id: str, user_sex: str) -> dict:
     3. Check immutable fields — return 400 BEFORE any UPDATE if violations found.
        This fires BEFORE the DB trigger trg_users_immutable.
     4. Build and execute the UPDATE for all valid fields.
-    5. If all required-for-completion fields are non-NULL post-update, also set
-       profile_complete_verified = true in the same transaction.
-    6. Return the updated full profile (200).
+    5. If all 34 required-for-completion fields are non-NULL post-update AND
+       profile_complete_verified was false, also set profile_complete_verified = true
+       in the same transaction.
+    6. AFTER the with conn: block commits: if the flag flipped false→true,
+       call _write_cognito_profile_complete (best-effort; see its docstring).
+    7. Return the updated full profile (200).
     """
     body_raw = event.get("body")
     if not body_raw:
@@ -363,6 +451,8 @@ def _handle_patch_profile_me(event: dict, user_id: str, user_sex: str) -> dict:
         return _json_response(400, {"error": "no_valid_fields"})
 
     conn = _get_conn()
+    flag_flipped = False  # tracks whether this PATCH flipped false→true
+
     try:
         with knotify_db.rls_context(conn, user_id, user_sex):
             with conn.cursor() as cur:
@@ -389,8 +479,10 @@ def _handle_patch_profile_me(event: dict, user_id: str, user_sex: str) -> dict:
             set_values = list(patch_data.values())
 
             # Step 5: flip profile_complete_verified if qualifying
-            if _should_set_profile_complete(proposed) and not current.get("profile_complete_verified"):
+            was_incomplete = not current.get("profile_complete_verified")
+            if _should_set_profile_complete(proposed) and was_incomplete:
                 set_clauses.append("profile_complete_verified = true")
+                flag_flipped = True
 
             update_sql = (
                 f"UPDATE users SET {', '.join(set_clauses)}, updated_at = NOW() "
@@ -408,6 +500,11 @@ def _handle_patch_profile_me(event: dict, user_id: str, user_sex: str) -> dict:
         global _conn
         _conn = None
         raise
+    # with conn: block has committed here (rls_context commits on exit)
+
+    # Step 6: best-effort Cognito attribute write AFTER Aurora commit
+    if flag_flipped:
+        _write_cognito_profile_complete(user_id)
 
     return _json_response(200, updated)
 

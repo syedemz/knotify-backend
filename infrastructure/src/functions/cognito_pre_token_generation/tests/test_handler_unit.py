@@ -1,23 +1,27 @@
 """
 Unit tests for cognito_pre_token_generation handler.
 
-All tests use unittest.mock — no real DB or AWS credentials needed.
+Story 7.0b — the handler no longer connects to Aurora. Instead it reads
+custom:profile_complete from the user's Cognito attributes (delivered in
+event["request"]["userAttributes"]["custom:profile_complete"]) and copies
+that value into both the ID token and access token claims.
+
+All tests use no real DB or AWS credentials.
 
 Behavior under test:
-  - V2 TokenGeneration_Authentication event → profile_complete_verified=True
-    → both idTokenGeneration and accessTokenGeneration claims set to "true"
-  - V2 TokenGeneration_Authentication event → profile_complete_verified=False
-    → both claims set to "false"
-  - V2 TokenGeneration_RefreshTokens event is handled identically (same V2 shape)
-  - Missing users row → claims set to "false" on both tokens, warning logged,
-    handler does NOT raise (failing PreTokenGeneration blocks login — Md2)
-  - DB exception → claims set to "false" on both tokens, error logged,
-    handler does NOT raise
-  - Handler always returns the mutated event (never raises)
+  - custom:profile_complete = "true"  in userAttributes → both token claims "true"
+  - custom:profile_complete = "false" in userAttributes → both token claims "false"
+  - custom:profile_complete absent from userAttributes  → both token claims "false"
+    (fail-closed default: attribute not yet set means profile is incomplete)
+  - Handler always returns the mutated event dict (never raises)
+  - No DB connection is opened at any point (no _get_conn call)
 """
 
 from __future__ import annotations
 
+import importlib
+import os
+import sys
 import uuid
 from unittest.mock import MagicMock, patch
 
@@ -25,19 +29,46 @@ import pytest
 
 
 # ---------------------------------------------------------------------------
-# Helpers — build minimal V2 PreTokenGeneration events
+# Import helper
 # ---------------------------------------------------------------------------
 
-def _make_v2_event(
-    sub: str,
-    trigger_source: str = "TokenGeneration_Authentication",
-) -> dict:
-    """
-    Minimal V2 PreTokenGeneration event.
+_HANDLER_DIR = os.path.normpath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+)
 
-    The V2 shape requires `response` to be a plain dict — Cognito reads the
-    handler's return value and merges claimsAndScopeOverrideDetails from it.
+
+def _import_handler():
+    """Import the handler module fresh each call to avoid import-level side effects."""
+    spec = importlib.util.spec_from_file_location(
+        "cognito_pre_token_generation_" + str(id(object())),
+        os.path.join(_HANDLER_DIR, "handler.py"),
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# ---------------------------------------------------------------------------
+# Event builder
+# ---------------------------------------------------------------------------
+
+def _make_v2_event(sub: str, trigger_source: str = "TokenGeneration_Authentication",
+                   profile_complete_attr: str | None = None) -> dict:
     """
+    Build a minimal V2 PreTokenGeneration event.
+
+    profile_complete_attr — if given, sets custom:profile_complete in
+    userAttributes; if None, the attribute is absent (simulates a user
+    whose profile_complete attribute has never been set).
+    """
+    user_attributes = {
+        "sub": sub,
+        "email": f"{sub}@example.com",
+        "email_verified": "true",
+    }
+    if profile_complete_attr is not None:
+        user_attributes["custom:profile_complete"] = profile_complete_attr
+
     return {
         "version": "2",
         "triggerSource": trigger_source,
@@ -49,228 +80,145 @@ def _make_v2_event(
             "clientId": "test-client-id",
         },
         "request": {
-            "userAttributes": {
-                "sub": sub,
-                "email": f"{sub}@example.com",
-                "email_verified": "true",
-            },
+            "userAttributes": user_attributes,
             "scopes": [],
         },
         "response": {},
     }
 
 
-def _invoke(event: dict, conn_mock: MagicMock) -> dict:
-    """
-    Invoke the handler with a patched _get_conn.
-
-    conn_mock should already be configured with the desired cursor behavior.
-    """
-    import handler as h
-    with patch.object(h, "_get_conn", return_value=conn_mock):
-        return h.handler(event, {})
-
-
-def _make_cursor_returning(row):
-    """Return a mock cursor whose fetchone() returns the given row."""
-    cursor = MagicMock()
-    cursor.__enter__ = lambda s: s
-    cursor.__exit__ = MagicMock(return_value=False)
-    cursor.fetchone.return_value = row
-    return cursor
-
-
-def _make_conn(fetchone_row):
-    """Build a minimal psycopg2 connection mock that returns fetchone_row."""
-    conn = MagicMock()
-    cursor = _make_cursor_returning(fetchone_row)
-    conn.cursor.return_value = cursor
-    return conn
-
-
 # ---------------------------------------------------------------------------
-# Test 1: profile_complete_verified=True → both token claims = "true"
+# Test 1: attribute = "true" → both claims "true"
 # ---------------------------------------------------------------------------
 
-def test_given_profile_complete_true_when_authentication_event_then_both_claims_are_true():
+def test_given_attribute_true_when_authentication_event_then_both_claims_are_true():
     """
-    Given users row has profile_complete_verified=True,
-    when a TokenGeneration_Authentication event arrives,
+    Given custom:profile_complete = "true" in Cognito userAttributes,
+    when TokenGeneration_Authentication fires,
     then both idTokenGeneration and accessTokenGeneration claims are "true".
     """
+    mod = _import_handler()
     sub = str(uuid.uuid4())
-    event = _make_v2_event(sub, "TokenGeneration_Authentication")
-    conn = _make_conn(fetchone_row=(True,))
+    event = _make_v2_event(sub, "TokenGeneration_Authentication", profile_complete_attr="true")
 
-    result = _invoke(event, conn)
+    with patch.dict(os.environ, {"DB_SECRET_NAME": "ignored"}):
+        result = mod.handler(event, {})
 
-    claims_override = result["response"]["claimsAndScopeOverrideDetails"]
-    id_claims = claims_override["idTokenGeneration"]["claimsToAddOrOverride"]
-    access_claims = claims_override["accessTokenGeneration"]["claimsToAddOrOverride"]
-
-    assert id_claims["custom:profile_complete"] == "true", (
-        "idTokenGeneration custom:profile_complete must be 'true' when DB row is True"
-    )
-    assert access_claims["custom:profile_complete"] == "true", (
-        "accessTokenGeneration custom:profile_complete must be 'true' when DB row is True"
-    )
+    override = result["response"]["claimsAndScopeOverrideDetails"]
+    assert override["idTokenGeneration"]["claimsToAddOrOverride"]["custom:profile_complete"] == "true"
+    assert override["accessTokenGeneration"]["claimsToAddOrOverride"]["custom:profile_complete"] == "true"
 
 
 # ---------------------------------------------------------------------------
-# Test 2: profile_complete_verified=False → both token claims = "false"
+# Test 2: attribute = "false" → both claims "false"
 # ---------------------------------------------------------------------------
 
-def test_given_profile_complete_false_when_authentication_event_then_both_claims_are_false():
+def test_given_attribute_false_when_authentication_event_then_both_claims_are_false():
     """
-    Given users row has profile_complete_verified=False,
-    when a TokenGeneration_Authentication event arrives,
-    then both idTokenGeneration and accessTokenGeneration claims are "false".
+    Given custom:profile_complete = "false" in Cognito userAttributes,
+    when TokenGeneration_Authentication fires,
+    then both token claims are "false".
     """
+    mod = _import_handler()
     sub = str(uuid.uuid4())
-    event = _make_v2_event(sub, "TokenGeneration_Authentication")
-    conn = _make_conn(fetchone_row=(False,))
+    event = _make_v2_event(sub, "TokenGeneration_Authentication", profile_complete_attr="false")
 
-    result = _invoke(event, conn)
+    with patch.dict(os.environ, {"DB_SECRET_NAME": "ignored"}):
+        result = mod.handler(event, {})
 
-    claims_override = result["response"]["claimsAndScopeOverrideDetails"]
-    id_claims = claims_override["idTokenGeneration"]["claimsToAddOrOverride"]
-    access_claims = claims_override["accessTokenGeneration"]["claimsToAddOrOverride"]
-
-    assert id_claims["custom:profile_complete"] == "false", (
-        "idTokenGeneration custom:profile_complete must be 'false' when DB row is False"
-    )
-    assert access_claims["custom:profile_complete"] == "false", (
-        "accessTokenGeneration custom:profile_complete must be 'false' when DB row is False"
-    )
+    override = result["response"]["claimsAndScopeOverrideDetails"]
+    assert override["idTokenGeneration"]["claimsToAddOrOverride"]["custom:profile_complete"] == "false"
+    assert override["accessTokenGeneration"]["claimsToAddOrOverride"]["custom:profile_complete"] == "false"
 
 
 # ---------------------------------------------------------------------------
-# Test 3: RefreshTokens trigger source handled identically to Authentication
+# Test 3: attribute absent → both claims "false" (fail-closed)
 # ---------------------------------------------------------------------------
 
-def test_given_profile_complete_true_when_refresh_tokens_event_then_both_claims_are_true():
+def test_given_attribute_absent_when_handler_invoked_then_both_claims_default_to_false():
     """
-    V2 TokenGeneration_RefreshTokens events share the same shape as
-    TokenGeneration_Authentication. The handler must set claims on both tokens.
+    Given custom:profile_complete is absent from Cognito userAttributes,
+    when the handler fires,
+    then both token claims default to "false" (fail-closed).
+
+    This is the state for users who signed up before story 7.0b shipped
+    and whose profile_complete attribute has never been set.
     """
+    mod = _import_handler()
     sub = str(uuid.uuid4())
-    event = _make_v2_event(sub, "TokenGeneration_RefreshTokens")
-    conn = _make_conn(fetchone_row=(True,))
+    event = _make_v2_event(sub, "TokenGeneration_Authentication", profile_complete_attr=None)
 
-    result = _invoke(event, conn)
+    with patch.dict(os.environ, {"DB_SECRET_NAME": "ignored"}):
+        result = mod.handler(event, {})
 
-    claims_override = result["response"]["claimsAndScopeOverrideDetails"]
-    assert claims_override["idTokenGeneration"]["claimsToAddOrOverride"]["custom:profile_complete"] == "true"
-    assert claims_override["accessTokenGeneration"]["claimsToAddOrOverride"]["custom:profile_complete"] == "true"
+    override = result["response"]["claimsAndScopeOverrideDetails"]
+    assert override["idTokenGeneration"]["claimsToAddOrOverride"]["custom:profile_complete"] == "false"
+    assert override["accessTokenGeneration"]["claimsToAddOrOverride"]["custom:profile_complete"] == "false"
 
 
 # ---------------------------------------------------------------------------
-# Test 4: Missing users row → claims "false" on both tokens, no raise (Md2)
+# Test 4: RefreshTokens trigger handled identically
 # ---------------------------------------------------------------------------
 
-def test_given_missing_users_row_when_handler_invoked_then_claims_false_and_no_exception():
+def test_given_attribute_true_when_refresh_tokens_event_then_both_claims_are_true():
     """
-    Brainstorm Md2: if the users row is missing (fetchone returns None),
-    the handler returns custom:profile_complete="false" on BOTH tokens and
-    does NOT raise — raising PreTokenGeneration blocks login.
+    V2 TokenGeneration_RefreshTokens shares the same event shape and handler path.
     """
+    mod = _import_handler()
     sub = str(uuid.uuid4())
-    event = _make_v2_event(sub, "TokenGeneration_Authentication")
-    conn = _make_conn(fetchone_row=None)  # row missing
+    event = _make_v2_event(sub, "TokenGeneration_RefreshTokens", profile_complete_attr="true")
 
-    result = _invoke(event, conn)  # must not raise
+    with patch.dict(os.environ, {"DB_SECRET_NAME": "ignored"}):
+        result = mod.handler(event, {})
 
-    claims_override = result["response"]["claimsAndScopeOverrideDetails"]
-    id_claims = claims_override["idTokenGeneration"]["claimsToAddOrOverride"]
-    access_claims = claims_override["accessTokenGeneration"]["claimsToAddOrOverride"]
-
-    assert id_claims["custom:profile_complete"] == "false", (
-        "idTokenGeneration must be 'false' when users row is missing"
-    )
-    assert access_claims["custom:profile_complete"] == "false", (
-        "accessTokenGeneration must be 'false' when users row is missing"
-    )
+    override = result["response"]["claimsAndScopeOverrideDetails"]
+    assert override["idTokenGeneration"]["claimsToAddOrOverride"]["custom:profile_complete"] == "true"
+    assert override["accessTokenGeneration"]["claimsToAddOrOverride"]["custom:profile_complete"] == "true"
 
 
 # ---------------------------------------------------------------------------
-# Test 5: DB exception → claims "false", no raise
+# Test 5: No DB connection is ever opened (Aurora-free path)
 # ---------------------------------------------------------------------------
 
-def test_given_db_exception_when_handler_invoked_then_claims_false_and_no_exception():
+def test_given_any_event_when_handler_invoked_then_no_db_connection_opened():
     """
-    DB exceptions must be caught and logged — not re-raised.
-    Both token claims must still be set to "false" so the login is not blocked.
+    Story 7.0b: the pre-token-gen handler must NOT connect to Aurora.
+    It reads the Cognito attribute directly from the event — no DB roundtrip.
+
+    Verified by asserting that knotify_db.get_connection is never called.
     """
+    mod = _import_handler()
     sub = str(uuid.uuid4())
-    event = _make_v2_event(sub, "TokenGeneration_Authentication")
+    event = _make_v2_event(sub, "TokenGeneration_Authentication", profile_complete_attr="true")
 
-    conn = MagicMock()
-    conn.cursor.side_effect = Exception("simulated DB connection failure")
+    mock_get_connection = MagicMock(side_effect=Exception("should not be called"))
 
-    result = _invoke(event, conn)  # must not raise
+    with (
+        patch.dict(os.environ, {"DB_SECRET_NAME": "ignored"}),
+        patch.object(mod, "_get_conn", mock_get_connection),
+    ):
+        result = mod.handler(event, {})
 
-    claims_override = result["response"]["claimsAndScopeOverrideDetails"]
-    assert claims_override["idTokenGeneration"]["claimsToAddOrOverride"]["custom:profile_complete"] == "false"
-    assert claims_override["accessTokenGeneration"]["claimsToAddOrOverride"]["custom:profile_complete"] == "false"
+    mock_get_connection.assert_not_called()
+    # Handler must still succeed
+    override = result["response"]["claimsAndScopeOverrideDetails"]
+    assert override["accessTokenGeneration"]["claimsToAddOrOverride"]["custom:profile_complete"] == "true"
 
 
 # ---------------------------------------------------------------------------
-# Test 6: Handler always returns the event object (mutated, not a new object)
+# Test 6: Handler always returns the original event dict (identity)
 # ---------------------------------------------------------------------------
 
 def test_given_any_event_handler_returns_the_event_dict():
     """
-    Cognito requires the PreTokenGeneration handler to return the (mutated)
-    event dict. Returning a different object would break Cognito's claim
-    injection. Verify the returned object is the same dict (identity check).
+    Cognito requires the PreTokenGeneration handler to return the mutated
+    event dict. Verify the returned object is the SAME dict (identity).
     """
+    mod = _import_handler()
     sub = str(uuid.uuid4())
-    event = _make_v2_event(sub, "TokenGeneration_Authentication")
-    conn = _make_conn(fetchone_row=(True,))
+    event = _make_v2_event(sub, "TokenGeneration_Authentication", profile_complete_attr="false")
 
-    result = _invoke(event, conn)
+    with patch.dict(os.environ, {"DB_SECRET_NAME": "ignored"}):
+        result = mod.handler(event, {})
 
     assert result is event, "Handler must return the same event dict it received"
-
-
-# ---------------------------------------------------------------------------
-# Test 7: Connection is closed after successful DB read
-# ---------------------------------------------------------------------------
-
-def test_given_successful_db_read_when_handler_invoked_then_connection_closed():
-    """
-    Lambda functions open one connection per invocation. The connection must
-    be closed before the handler returns to avoid ENI/file-descriptor leaks.
-    """
-    sub = str(uuid.uuid4())
-    event = _make_v2_event(sub, "TokenGeneration_Authentication")
-    conn = _make_conn(fetchone_row=(True,))
-
-    _invoke(event, conn)
-
-    conn.close.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
-# Test 8: Connection is closed even when DB raises (finally block coverage)
-# ---------------------------------------------------------------------------
-
-def test_given_db_exception_when_handler_invoked_then_connection_closed():
-    """
-    The connection must be closed in a finally block so it is always released,
-    even when the DB query raises an exception.
-    """
-    sub = str(uuid.uuid4())
-    event = _make_v2_event(sub, "TokenGeneration_Authentication")
-
-    # cursor context manager works, but execute raises
-    conn = MagicMock()
-    cursor = MagicMock()
-    cursor.__enter__ = lambda s: s
-    cursor.__exit__ = MagicMock(return_value=False)
-    cursor.execute.side_effect = Exception("query failed")
-    conn.cursor.return_value = cursor
-
-    _invoke(event, conn)  # must not raise
-
-    conn.close.assert_called_once()

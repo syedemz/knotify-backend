@@ -2,41 +2,39 @@
 cognito_pre_token_generation — Lambda handler for Cognito PreTokenGeneration V2 trigger.
 
 Triggered on every token issuance (sign-in and refresh). Reads the
-profile_complete_verified flag from the users table and embeds it as a custom
-claim on both the ID token and the access token.
+custom:profile_complete Cognito user attribute from the V2 event's
+userAttributes dict and copies it into both the ID token and the access token
+as the custom:profile_complete claim.
 
-Design decisions (from brainstorm resolutions):
+Story 7.0b design (Finding 6 / re-brainstorm resolution):
+  - The handler does NOT connect to Aurora.  The custom:profile_complete Cognito
+    attribute is maintained by the profile PATCH handler via
+    cognito-idp:AdminUpdateUserAttributes after a successful profile-completion
+    flip in Aurora.  Reading the attribute here (from event.request.userAttributes)
+    costs zero DB roundtrips on the auth path.
+  - Default when the attribute is absent: "false" (fail-closed).  Users who
+    signed up before story 7.0b shipped have no custom:profile_complete attribute
+    yet.  They remain gated until their next successful PATCH /v1/profile/me
+    call that completes the profile.
+
+Story 4.4 design decisions (unchanged):
   - B1: claim embedded on BOTH idTokenGeneration and accessTokenGeneration so
     all API surfaces (REST, AppSync) can gate on profile completion without
     decoding the ID token.
   - B2: V2 trigger shape (pre_token_generation_config lambda_version = "V2_0")
-    used throughout. The V1 pre_token_generation field is explicitly prohibited.
-    V2 requires AUDIT or ENFORCED Advanced Security Mode on the User Pool.
-  - M1: DB_SECRET_NAME env var holds the friendly secret name
-    `knotify-${var.environment}-app-user-credential`. boto3 resolves by name.
-  - Md1: one DB hit per token issue. Cold-start 200ms–1s ENI penalty is
-    acceptable for pre-launch volumes; provisioned concurrency deferred to
-    phase 11 if observed.
-  - Md2: if the users row is missing, return custom:profile_complete="false" on
-    both tokens and log a structured warning. Do NOT raise — a raised
-    PreTokenGeneration handler blocks login entirely.
-
-Supported trigger sources (V2):
-  - TokenGeneration_Authentication   (sign-in)
-  - TokenGeneration_RefreshTokens    (refresh)
-
-Both share the same V2 event shape and require the same response structure.
+    used throughout.  V2 requires AUDIT or ENFORCED Advanced Security Mode.
+  - Handler never raises — an unhandled exception blocks Cognito login entirely.
 
 Dependencies:
   - knotify_obs layer: init_logger
-  - knotify_db layer: get_connection (resolves by friendly name via boto3)
+  (knotify_db is no longer needed; DB_SECRET_NAME env var is kept so Terraform
+   modules do not require a simultaneous IaC change, but it is not used.)
 """
 
 from __future__ import annotations
 
 import os
 
-import knotify_db
 from knotify_obs import init_logger
 
 # ---------------------------------------------------------------------------
@@ -45,18 +43,13 @@ from knotify_obs import init_logger
 
 logger = init_logger("cognito_pre_token_generation")
 
-# The friendly Secrets Manager secret name for the app_user credential.
-# boto3 GetSecretValue resolves by name; ARN wildcard strings are not accepted.
-# The IAM policy in story 3.4 scopes GetSecretValue to the
-# knotify-<env>-app-user-credential-* pattern, which covers this name.
+# Kept for Terraform compatibility; not used by this handler.
 _DB_SECRET_NAME: str = os.environ.get("DB_SECRET_NAME", "")
 
-# SQL query — single indexed lookup by primary key (user_id).
-_SELECT_SQL = (
-    "SELECT profile_complete_verified FROM users WHERE user_id = %s"
-)
+# Name of the Cognito custom attribute that carries the profile-completion flag.
+_ATTR_NAME = "custom:profile_complete"
 
-# Claim name written to both ID token and access token (B1 resolution).
+# Claim name written to both ID token and access token.
 _CLAIM_NAME = "custom:profile_complete"
 
 
@@ -66,41 +59,38 @@ _CLAIM_NAME = "custom:profile_complete"
 
 def _get_conn():
     """
-    Return a psycopg2 connection using the module-level secret name.
+    Stub retained so unit tests can assert it is never called.
 
-    Extracted so integration tests can patch it at the handler module level
-    without monkeypatching knotify_db directly.
+    Story 7.0b: the handler no longer connects to Aurora.  If a future story
+    needs Aurora on the token-gen path, restore this function and re-add
+    knotify_db to the import list.
     """
+    import knotify_db  # noqa: F401 — only imported if this path is called
     return knotify_db.get_connection(_DB_SECRET_NAME)
 
 
-def _query_profile_complete(conn, user_id: str) -> bool:
+def _read_profile_complete(event: dict) -> bool:
     """
-    Query profile_complete_verified for the given user_id.
+    Return the profile-completion state from the V2 event's userAttributes.
 
-    Returns False when the row is absent (Md2 resolution) and logs a
-    structured warning — callers must not raise on the missing-row path.
+    Reads custom:profile_complete from event["request"]["userAttributes"].
+    Returns True only when the attribute value is exactly the string "true".
+    Returns False (fail-closed) when the attribute is absent or any other value.
 
-    Args:
-        conn:    An open psycopg2 connection.
-        user_id: Cognito sub UUID string.
-
-    Returns:
-        True if profile_complete_verified is True in the DB; False otherwise
-        (including when the row is missing).
+    No external calls are made.
     """
-    with conn.cursor() as cur:
-        cur.execute(_SELECT_SQL, (user_id,))
-        row = cur.fetchone()
+    user_attributes: dict = (
+        event.get("request", {}).get("userAttributes", {})
+    )
+    attr_value = user_attributes.get(_ATTR_NAME)
 
-    if row is None:
-        logger.warning(
-            "users_row_missing_for_pre_token_generation",
-            extra={"user_id": user_id},
+    if attr_value is None:
+        logger.info(
+            "profile_complete_attribute_absent",
+            extra={"defaulting_to": "false"},
         )
-        return False
 
-    return bool(row[0])
+    return attr_value == "true"
 
 
 def _build_claims_override(profile_complete: bool) -> dict:
@@ -108,7 +98,7 @@ def _build_claims_override(profile_complete: bool) -> dict:
     Build the V2 claimsAndScopeOverrideDetails response dict.
 
     Sets custom:profile_complete on BOTH idTokenGeneration and
-    accessTokenGeneration (B1 resolution). The claim value is a string
+    accessTokenGeneration (B1 resolution).  The claim value is a string
     "true" or "false" — Cognito custom claims are always strings.
     """
     claim_value = "true" if profile_complete else "false"
@@ -136,11 +126,11 @@ def handler(event: dict, context: object) -> dict:
     """
     Cognito PreTokenGeneration V2 Lambda entrypoint.
 
-    Reads profile_complete_verified from Aurora and embeds it as
-    custom:profile_complete on both the ID token and the access token.
+    Copies custom:profile_complete from the user's Cognito attributes into
+    both the ID token and the access token as a custom JWT claim.
 
     Always returns the mutated event — Cognito requires the trigger to return
-    the event object (possibly with a modified response block). Never raises:
+    the event object (possibly with a modified response block).  Never raises:
     an unhandled exception in PreTokenGeneration blocks the user's login.
 
     Args:
@@ -150,26 +140,19 @@ def handler(event: dict, context: object) -> dict:
     Returns:
         The input event mutated with response.claimsAndScopeOverrideDetails set.
     """
-    user_id: str = event.get("request", {}).get("userAttributes", {}).get("sub", "")
-
-    profile_complete = False  # safe default — fail-closed on any error
-
-    conn = None
     try:
-        conn = _get_conn()
-        try:
-            profile_complete = _query_profile_complete(conn, user_id)
-        finally:
-            conn.close()
+        profile_complete = _read_profile_complete(event)
     except Exception as exc:
+        # Defensive catch: _read_profile_complete has no I/O today, but
+        # future changes must not accidentally break login.
         logger.error(
-            "pre_token_generation_db_error",
+            "pre_token_generation_attribute_read_error",
             extra={
-                "user_id": user_id,
                 "error": str(exc),
                 "trigger_source": event.get("triggerSource"),
             },
         )
+        profile_complete = False  # safe default — fail-closed
 
     event["response"].update(_build_claims_override(profile_complete))
     return event

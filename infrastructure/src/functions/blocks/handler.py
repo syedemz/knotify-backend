@@ -56,7 +56,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import knotify_db
-from knotify_obs import chat_room_id, init_logger, with_edge_secret
+from knotify_obs import chat_room_id, init_logger, require_profile_complete, with_edge_secret
 
 # ---------------------------------------------------------------------------
 # Module-level singletons (cold-start optimization)
@@ -478,11 +478,13 @@ def _dispatch(event: dict, user_id: str, user_sex: str) -> dict:
 
 
 @with_edge_secret
+@require_profile_complete
 def handler(event: dict, context: object) -> dict:
     """
     knotify-blocks Lambda entrypoint.
 
-    Validates the edge secret (via @with_edge_secret), extracts user identity
+    Validates the edge secret (via @with_edge_secret), checks that the caller's
+    profile is complete (via @require_profile_complete), extracts user identity
     from JWT claims, and dispatches to the appropriate sub-handler.
 
     Args:

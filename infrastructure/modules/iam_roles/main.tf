@@ -224,6 +224,30 @@ resource "aws_iam_role_policy" "aurora_writer_app_user_credential" {
   policy = data.aws_iam_policy_document.aurora_writer_app_user_credential.json
 }
 
+# Allow the profile Lambda (aurora_writer role) to set the custom:profile_complete
+# Cognito attribute after a successful profile-completion flip (story 7.0b).
+# Scoped to the specific user pool ARN — not "*" — per least-privilege principle.
+# The default "" value is used in the IAM unit tests (which mock the cognito module);
+# the real ARN is plumbed from module.cognito.user_pool_arn in each env root module.
+data "aws_iam_policy_document" "aurora_writer_cognito_profile_complete" {
+  statement {
+    sid    = "CognitoSetProfileCompleteAttribute"
+    effect = "Allow"
+    actions = [
+      "cognito-idp:AdminUpdateUserAttributes",
+    ]
+    resources = [
+      var.cognito_user_pool_arn != "" ? var.cognito_user_pool_arn : "arn:aws:cognito-idp:*:*:userpool/*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "aurora_writer_cognito_profile_complete" {
+  name   = "aurora-writer-cognito-profile-complete"
+  role   = aws_iam_role.aurora_writer.name
+  policy = data.aws_iam_policy_document.aurora_writer_cognito_profile_complete.json
+}
+
 # ===========================================================================
 # Role: dynamodb_chat_writer
 #

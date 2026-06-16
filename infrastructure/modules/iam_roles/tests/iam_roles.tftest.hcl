@@ -541,6 +541,34 @@ run "blocks_writer_dynamodb_inline_policy_exists_and_scoped" {
 }
 
 # ---------------------------------------------------------------------------
+# Test 19: aurora_writer gains cognito-idp inline policy (story 7.0b)
+#
+# Satisfies story 7.0b AC: "aurora_writer IAM role policy gains a statement
+# granting cognito-idp:AdminUpdateUserAttributes scoped to
+# var.cognito_user_pool_arn".  Unit test asserts the policy resource name and
+# that it is attached to the aurora_writer role.
+# ---------------------------------------------------------------------------
+run "aurora_writer_cognito_profile_complete_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    cognito_user_pool_arn         = "arn:aws:cognito-idp:eu-central-1:123456789012:userpool/eu-central-1_TESTPOOL"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.aurora_writer_cognito_profile_complete.name == "aurora-writer-cognito-profile-complete"
+    error_message = "aurora_writer cognito policy must be named aurora-writer-cognito-profile-complete"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.aurora_writer_cognito_profile_complete.role == aws_iam_role.aurora_writer.name
+    error_message = "aurora_writer cognito policy must be attached to the aurora_writer role"
+  }
+}
+
+# ---------------------------------------------------------------------------
 # Test 17: aurora_reader_match role exists with trust policy and VPC managed policy
 #
 # Satisfies story 7.0 AC: "New IAM role aurora_reader_match (VPC execution,

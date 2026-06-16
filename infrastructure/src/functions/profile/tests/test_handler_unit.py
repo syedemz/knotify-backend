@@ -3,7 +3,7 @@ Unit tests for the knotify-profile Lambda handler.
 
 These tests are fully isolated — they do NOT require a running database,
 AWS credentials, or a deployed Lambda. All external collaborators (DB
-connection, RLS context) are replaced with in-memory stubs.
+connection, RLS context, boto3 Cognito client) are replaced with in-memory stubs.
 
 Run:
     pytest infrastructure/src/functions/profile/tests/test_handler_unit.py -v
@@ -16,16 +16,18 @@ Conventions:
 
 Test coverage by area:
   A. _check_immutable_fields — immutable field detection logic
-  B. _build_update_clause — SQL UPDATE builder (field filtering + parameter binding)
-  C. _should_set_profile_complete — profile-completion eligibility check
-  D. _get_user_id_and_sex — JWT claim extraction helper
-  E. Route dispatch — handler routes requests to the correct sub-handler
+  B. _should_set_profile_complete — widened 34-field profile-completion check (story 7.0b)
+  C. _get_user_id_and_sex — JWT claim extraction helper
+  D. Route dispatch — handler routes requests to the correct sub-handler
+  E. Cognito write after commit — admin_update_user_attributes called when flag flips (story 7.0b)
+  F. Cognito write best-effort — transient failure returns 200 (story 7.0b)
 """
 
 from __future__ import annotations
 
 import importlib
 import json
+import os
 import sys
 import uuid
 from types import ModuleType
@@ -40,8 +42,6 @@ import pytest
 # We import it directly via importlib so the test can run from the repo root
 # without a package installation step.
 # ---------------------------------------------------------------------------
-
-import os
 
 _HANDLER_DIR = os.path.normpath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
@@ -112,21 +112,105 @@ def _make_event(
 
 
 # ---------------------------------------------------------------------------
-# Area A: _check_immutable_fields
+# Shared fixture — a "complete" profile row with all 34 required fields
 #
-# Given a patch payload and the current row from the DB, _check_immutable_fields
-# returns a list of field names whose values differ from the current (non-NULL)
-# DB value — these are the "tried to change an already-set immutable field" cases.
+# Story 7.0b: _REQUIRED_FOR_COMPLETION expanded to 34 fields. Tests that
+# exercise the profile-completion flip path must supply all 34 required fields.
+# ---------------------------------------------------------------------------
+
+def _complete_profile_row(user_id: str = "user-sub-1234", sex: str = "Male") -> dict:
+    """
+    Return a dict representing a post-update row with all 34 required fields
+    non-None.  This mirrors what Aurora returns after RETURNING * on the UPDATE.
+    """
+    return {
+        "user_id": user_id,
+        "email": "test@example.com",
+        "phone_number": None,
+        "first_name": "Test",
+        "last_name": "User",
+        "sex": sex,
+        "birthday": "2000-01-01",
+        "religion": "Islam",
+        "subsect": "Sunni",
+        "username": "testuser123",
+        "profile_complete_verified": False,
+        "job_title": "Engineer",
+        "photo_url": None,
+        "chosen_profile_avatar": None,
+        "current_residence_city": "London",
+        "current_residence_country": "United Kingdom",
+        "resident_country_code": "GB",
+        "district": "East London",
+        "education_level": "Bachelors",
+        "employer_name": "Acme Corp",
+        "employment_type": "Full-time",
+        "family_residence_address": "123 Main St, London",
+        "father_retired": "No",
+        "fathers_job": "Engineer",
+        "fathers_name": "Father Test",
+        "graduation_year": None,
+        "has_children": False,
+        "higher_secondary": "A-Levels",
+        "higher_secondary_passing_year": None,
+        "highest_degree": "BSc Computer Science",
+        "high_school": "Some High School",
+        "high_school_passing_year": None,
+        "marital_status": "Single",
+        "marriage_time": "Not Provided",
+        "mother_retired": "No",
+        "mothers_job": "Teacher",
+        "mothers_name": "Mother Test",
+        "move_abroad": False,
+        "office_address": "456 Work St, London",
+        "partners_religious_level": None,
+        "college_name": "Some University",
+        "professional_category": "Technology",
+        "relation": "Self",
+        "religious_level": "Moderate",
+        "salary_range": "50000-70000",
+        "preferences": {},
+        "preference_vector": None,
+        "age": 24,
+    }
+
+
+def _complete_profile_tuple_and_description(user_id: str = "user-sub-1234", sex: str = "Male"):
+    """
+    Return (tuple, description_list) in the order matching _SELECT_FOR_UPDATE_SQL.
+
+    Column order must match the SELECT column list in handler.py.
+    """
+    row = _complete_profile_row(user_id=user_id, sex=sex)
+    columns = [
+        "user_id", "first_name", "last_name", "sex", "birthday",
+        "religion", "subsect", "username", "profile_complete_verified",
+        "job_title", "photo_url", "chosen_profile_avatar",
+        "current_residence_city", "current_residence_country",
+        "resident_country_code", "district", "education_level",
+        "employer_name", "employment_type", "family_residence_address",
+        "father_retired", "fathers_job", "fathers_name",
+        "graduation_year", "has_children", "higher_secondary",
+        "higher_secondary_passing_year", "highest_degree", "high_school",
+        "high_school_passing_year", "marital_status", "marriage_time",
+        "mother_retired", "mothers_job", "mothers_name", "move_abroad",
+        "office_address", "partners_religious_level", "college_name",
+        "professional_category", "relation", "religious_level",
+        "salary_range", "preferences", "age", "email", "phone_number",
+    ]
+    tup = tuple(row.get(c) for c in columns)
+    description = [(c,) for c in columns]
+    return tup, description
+
+
+# ---------------------------------------------------------------------------
+# Area A: _check_immutable_fields
 # ---------------------------------------------------------------------------
 
 class TestCheckImmutableFields:
     """Tests for _check_immutable_fields(patch_data, current_row)."""
 
     def test_given_null_db_value_when_setting_first_time_then_no_violation(self):
-        """
-        Fields that are NULL in the DB (never set) may be given any value
-        in a PATCH — this is the first-set case and is always allowed.
-        """
         mod = _import_handler()
         current_row = {
             "first_name": None,
@@ -148,10 +232,6 @@ class TestCheckImmutableFields:
         assert violations == [], f"Expected no violations but got {violations}"
 
     def test_given_set_db_value_when_changing_then_violation_reported(self):
-        """
-        Attempting to change an immutable field that is already non-NULL in
-        the DB must be reported as a violation.
-        """
         mod = _import_handler()
         current_row = {
             "first_name": "Alice",
@@ -169,10 +249,6 @@ class TestCheckImmutableFields:
         assert set(violations) == {"first_name", "sex"}
 
     def test_given_set_db_value_when_resending_exact_same_value_then_no_violation(self):
-        """
-        Re-PATCHing with the EXACT SAME value as the current column value is a
-        no-op and must NOT be reported as a violation (idempotent re-PATCH rule).
-        """
         mod = _import_handler()
         current_row = {
             "first_name": "Alice",
@@ -183,18 +259,14 @@ class TestCheckImmutableFields:
             "subsect": "Sunni",
         }
         patch_data = {
-            "first_name": "Alice",    # same — no violation
-            "last_name": "Smith",     # same — no violation
-            "sex": "Female",          # same — no violation
+            "first_name": "Alice",
+            "last_name": "Smith",
+            "sex": "Female",
         }
         violations = mod._check_immutable_fields(patch_data, current_row)
         assert violations == [], f"Expected no violations but got {violations}"
 
     def test_given_mix_of_same_and_changed_when_patch_then_only_changed_reported(self):
-        """
-        When a PATCH contains both unchanged and changed immutable fields, only
-        the changed ones are in the violations list.
-        """
         mod = _import_handler()
         current_row = {
             "first_name": "Alice",
@@ -212,10 +284,6 @@ class TestCheckImmutableFields:
         assert violations == ["sex"]
 
     def test_given_patch_with_only_mutable_fields_then_no_violation(self):
-        """
-        Mutable fields (job_title, username, photo_url, etc.) patched against
-        a row with all immutable fields already set must produce no violation.
-        """
         mod = _import_handler()
         current_row = {
             "first_name": "Alice",
@@ -234,65 +302,73 @@ class TestCheckImmutableFields:
 
 
 # ---------------------------------------------------------------------------
-# Area B: _should_set_profile_complete
-#
-# Returns True iff all of {first_name, last_name, sex, birthday, username}
-# are non-None in the combined row after the proposed update.
+# Area B: _should_set_profile_complete — widened 34-field check (story 7.0b)
 # ---------------------------------------------------------------------------
 
 class TestShouldSetProfileComplete:
-    """Tests for _should_set_profile_complete(proposed_row)."""
+    """Tests for _should_set_profile_complete(proposed_row) with 34-field frozenset."""
 
-    def test_given_all_required_fields_present_then_returns_true(self):
+    def test_given_all_34_required_fields_present_then_returns_true(self):
+        """All 34 required fields non-None → True."""
         mod = _import_handler()
-        proposed = {
-            "first_name": "Test",
-            "last_name": "User",
-            "sex": "Male",
-            "birthday": "2000-01-01",
-            "username": "test_abc123",
-        }
+        proposed = _complete_profile_row()
         assert mod._should_set_profile_complete(proposed) is True
 
     def test_given_missing_username_then_returns_false(self):
         mod = _import_handler()
-        proposed = {
-            "first_name": "Test",
-            "last_name": "User",
-            "sex": "Male",
-            "birthday": "2000-01-01",
-            "username": None,
-        }
+        proposed = _complete_profile_row()
+        proposed["username"] = None
         assert mod._should_set_profile_complete(proposed) is False
 
-    def test_given_missing_sex_then_returns_false(self):
+    def test_given_missing_religion_then_returns_false(self):
         mod = _import_handler()
-        proposed = {
-            "first_name": "Test",
-            "last_name": "User",
-            "sex": None,
-            "birthday": "2000-01-01",
-            "username": "test_abc",
-        }
+        proposed = _complete_profile_row()
+        proposed["religion"] = None
         assert mod._should_set_profile_complete(proposed) is False
+
+    def test_given_missing_job_title_then_returns_false(self):
+        mod = _import_handler()
+        proposed = _complete_profile_row()
+        proposed["job_title"] = None
+        assert mod._should_set_profile_complete(proposed) is False
+
+    def test_given_missing_fathers_name_then_returns_false(self):
+        mod = _import_handler()
+        proposed = _complete_profile_row()
+        proposed["fathers_name"] = None
+        assert mod._should_set_profile_complete(proposed) is False
+
+    def test_given_missing_marital_status_then_returns_false(self):
+        mod = _import_handler()
+        proposed = _complete_profile_row()
+        proposed["marital_status"] = None
+        assert mod._should_set_profile_complete(proposed) is False
+
+    def test_given_missing_relation_then_returns_false(self):
+        mod = _import_handler()
+        proposed = _complete_profile_row()
+        proposed["relation"] = None
+        assert mod._should_set_profile_complete(proposed) is False
+
+    def test_given_marriage_time_none_then_still_returns_true(self):
+        """
+        marriage_time is NOT in _REQUIRED_FOR_COMPLETION (story 7.0b resolution B2).
+        A row with marriage_time=None but all other 34 fields set must still return True.
+        """
+        mod = _import_handler()
+        proposed = _complete_profile_row()
+        proposed["marriage_time"] = None
+        # marriage_time is not required — should still complete
+        assert mod._should_set_profile_complete(proposed) is True
 
     def test_given_all_required_absent_then_returns_false(self):
         mod = _import_handler()
-        proposed = {
-            "first_name": None,
-            "last_name": None,
-            "sex": None,
-            "birthday": None,
-            "username": None,
-        }
+        proposed = {k: None for k in _complete_profile_row().keys()}
         assert mod._should_set_profile_complete(proposed) is False
 
 
 # ---------------------------------------------------------------------------
 # Area C: _get_user_id_and_sex
-#
-# Extracts the Cognito sub and custom:user_sex from the HTTP API event's
-# requestContext.authorizer.jwt.claims block.
 # ---------------------------------------------------------------------------
 
 class TestGetUserIdAndSex:
@@ -313,7 +389,6 @@ class TestGetUserIdAndSex:
                     "jwt": {
                         "claims": {
                             "custom:user_sex": "Male",
-                            # no "sub"
                         }
                     }
                 }
@@ -325,102 +400,31 @@ class TestGetUserIdAndSex:
 
 # ---------------------------------------------------------------------------
 # Area D: PATCH /v1/profile/me — immutable-field 400 path
-#
-# The handler must call _check_immutable_fields and return a 400 BEFORE
-# any DB write is attempted when violations are found.
 # ---------------------------------------------------------------------------
 
 class TestPatchProfileMeImmutableField400:
-    """
-    When PATCH /v1/profile/me tries to change an already-set immutable field,
-    the handler must return HTTP 400 with {"error": "immutable_field", "fields": [...]}.
-    """
+    """PATCH attempts to change an already-set immutable field → 400."""
 
-    def _fake_conn(self, current_row: dict):
-        """
-        Build a minimal psycopg2 connection stub that returns current_row on
-        the first SELECT (fetch current values) and records any UPDATE calls.
-        """
-        conn = MagicMock()
-        cur = MagicMock()
-        conn.cursor.return_value.__enter__ = MagicMock(return_value=cur)
-        conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
-        # Simulate fetchone returning the current profile row as a dict-like tuple
-        cur.fetchone.return_value = current_row
-        cur.description = [
-            (col,) for col in [
-                "user_id", "first_name", "last_name", "sex", "birthday",
-                "religion", "subsect", "username", "profile_complete_verified",
-                "job_title", "photo_url", "chosen_profile_avatar",
-                "current_residence_city", "current_residence_country",
-                "resident_country_code", "district", "education_level",
-                "employer_name", "employment_type", "family_residence_address",
-                "father_retired", "fathers_job", "fathers_name",
-                "graduation_year", "has_children", "higher_secondary",
-                "higher_secondary_passing_year", "highest_degree", "high_school",
-                "high_school_passing_year", "marital_status", "marriage_time",
-                "mother_retired", "mothers_job", "mothers_name", "move_abroad",
-                "office_address", "partners_religious_level", "college_name",
-                "professional_category", "relation", "religious_level",
-                "salary_range", "preferences", "age", "email", "phone_number",
-            ]
-        ]
-        return conn, cur
-
-    def test_given_immutable_field_already_set_when_changed_in_patch_then_returns_400(self):
-        """
-        PATCH body attempts to change 'sex' which is already non-NULL in DB.
-        Handler must return 400 with error=immutable_field and fields=["sex"].
-        The DB cursor's execute must NOT be called with an UPDATE statement.
-        """
-        mod = _import_handler()
-
-        # DB returns a row where sex = "Male" (already set)
-        current_row_tuple = (
-            "user-sub-1234",  # user_id
-            "Test",           # first_name
-            "User",           # last_name
-            "Male",           # sex — already set
-            "2000-01-01",     # birthday
-            "Other",          # religion
-            None,             # subsect
-            "testuser",       # username
-            True,             # profile_complete_verified
-            None, None, None, None, None, None, None, None,
-            None, None, None, None, None, None, None, None,
-            None, None, None, None, None, None, None, None,
-            None, None, None, None, None, None, None, None,
-            None, None, None, None, None, 25, "test@example.com", None,
-        )
-
+    def _make_fake_conn(self, current_row_tuple, description):
         fake_conn = MagicMock()
         fake_cur = MagicMock()
         fake_cur.__enter__ = MagicMock(return_value=fake_cur)
         fake_cur.__exit__ = MagicMock(return_value=False)
         fake_cur.fetchone.return_value = current_row_tuple
-        # description list of (name, ...) tuples — handler zips these with row values
-        fake_cur.description = [
-            ("user_id",), ("first_name",), ("last_name",), ("sex",), ("birthday",),
-            ("religion",), ("subsect",), ("username",), ("profile_complete_verified",),
-            ("job_title",), ("photo_url",), ("chosen_profile_avatar",),
-            ("current_residence_city",), ("current_residence_country",),
-            ("resident_country_code",), ("district",), ("education_level",),
-            ("employer_name",), ("employment_type",), ("family_residence_address",),
-            ("father_retired",), ("fathers_job",), ("fathers_name",),
-            ("graduation_year",), ("has_children",), ("higher_secondary",),
-            ("higher_secondary_passing_year",), ("highest_degree",), ("high_school",),
-            ("high_school_passing_year",), ("marital_status",), ("marriage_time",),
-            ("mother_retired",), ("mothers_job",), ("mothers_name",), ("move_abroad",),
-            ("office_address",), ("partners_religious_level",), ("college_name",),
-            ("professional_category",), ("relation",), ("religious_level",),
-            ("salary_range",), ("preferences",), ("age",), ("email",), ("phone_number",),
-        ]
+        fake_cur.description = description
         fake_conn.cursor.return_value = fake_cur
+        return fake_conn, fake_cur
+
+    def test_given_immutable_field_already_set_when_changed_in_patch_then_returns_400(self):
+        mod = _import_handler()
+        tup, desc = _complete_profile_tuple_and_description()
+        # sex is already "Male" in the tuple; attempt to change to "Female"
+        fake_conn, fake_cur = self._make_fake_conn(tup, desc)
 
         event = _make_event(
             "PATCH",
             "/v1/profile/me",
-            body={"sex": "Female"},   # trying to change already-set "sex"
+            body={"sex": "Female"},
             user_sub="user-sub-1234",
             user_sex="Male",
         )
@@ -431,66 +435,23 @@ class TestPatchProfileMeImmutableField400:
         ):
             response = mod.handler(event, None)
 
-        assert response["statusCode"] == 400, (
-            f"Expected 400 but got {response['statusCode']}. Body: {response.get('body')}"
-        )
+        assert response["statusCode"] == 400
         body = json.loads(response["body"])
         assert body["error"] == "immutable_field"
         assert "sex" in body["fields"]
 
-        # Confirm no UPDATE users statement was executed — the immutable-field 400 fires
-        # BEFORE any DB write. Note: SELECT ... FOR UPDATE is NOT a write, so we check
-        # specifically for "UPDATE users" (the actual UPDATE DML statement).
         update_dml_calls = [
             call for call in fake_cur.execute.call_args_list
             if "UPDATE users" in str(call)
         ]
-        assert update_dml_calls == [], "UPDATE users was executed but should not be — immutable 400 must fire first"
+        assert update_dml_calls == [], "UPDATE users must not be called on 400 path"
 
     def test_given_same_immutable_value_resent_when_patch_then_returns_200(self):
-        """
-        Re-PATCHing with the EXACT SAME value as the existing column value
-        is a no-op and must return 200 (idempotent re-PATCH rule).
-        """
         mod = _import_handler()
-
-        # DB row — first_name already "Test"
-        current_row_tuple = (
-            "user-sub-1234",  # user_id
-            "Test",           # first_name — same as patch
-            "User",           # last_name
-            "Male",           # sex
-            "2000-01-01",     # birthday
-            "Other",          # religion
-            None,             # subsect
-            "testuser",       # username
-            True,             # profile_complete_verified
-        ) + (None,) * 38     # remaining mutable fields
-
-        fake_conn = MagicMock()
-        fake_cur = MagicMock()
-        fake_cur.__enter__ = MagicMock(return_value=fake_cur)
-        fake_cur.__exit__ = MagicMock(return_value=False)
-        fake_cur.fetchone.return_value = current_row_tuple
-        fake_cur.description = [
-            ("user_id",), ("first_name",), ("last_name",), ("sex",), ("birthday",),
-            ("religion",), ("subsect",), ("username",), ("profile_complete_verified",),
-            ("job_title",), ("photo_url",), ("chosen_profile_avatar",),
-            ("current_residence_city",), ("current_residence_country",),
-            ("resident_country_code",), ("district",), ("education_level",),
-            ("employer_name",), ("employment_type",), ("family_residence_address",),
-            ("father_retired",), ("fathers_job",), ("fathers_name",),
-            ("graduation_year",), ("has_children",), ("higher_secondary",),
-            ("higher_secondary_passing_year",), ("highest_degree",), ("high_school",),
-            ("high_school_passing_year",), ("marital_status",), ("marriage_time",),
-            ("mother_retired",), ("mothers_job",), ("mothers_name",), ("move_abroad",),
-            ("office_address",), ("partners_religious_level",), ("college_name",),
-            ("professional_category",), ("relation",), ("religious_level",),
-            ("salary_range",), ("preferences",), ("age",), ("email",), ("phone_number",),
-        ]
-        fake_conn.cursor.return_value = fake_cur
-        # fetchall returns the updated row for the final response
-        fake_cur.fetchall.return_value = [current_row_tuple]
+        tup, desc = _complete_profile_tuple_and_description()
+        fake_conn, fake_cur = self._make_fake_conn(tup, desc)
+        # RETURNING * returns same row
+        fake_cur.fetchone.side_effect = [tup, tup]
 
         event = _make_event(
             "PATCH",
@@ -506,50 +467,25 @@ class TestPatchProfileMeImmutableField400:
         ):
             response = mod.handler(event, None)
 
-        assert response["statusCode"] == 200, (
-            f"Expected 200 for idempotent re-PATCH but got {response['statusCode']}. "
-            f"Body: {response.get('body')}"
-        )
+        assert response["statusCode"] == 200
 
 
 # ---------------------------------------------------------------------------
-# Area E: Route dispatch — GET /v1/profile/me vs GET /v1/profiles/{userId}
+# Area E: Route dispatch
 # ---------------------------------------------------------------------------
 
 class TestRouteDispatch:
-    """
-    The handler must route requests to the correct sub-handler based on
-    HTTP method + path combination. Verified via mock injection.
-    """
+    """Handler routes requests to the correct sub-handler."""
 
     def test_given_get_profile_me_when_called_then_dispatched_to_get_me_handler(self):
-        """GET /v1/profile/me must call the own-profile sub-handler."""
         mod = _import_handler()
-
+        tup, desc = _complete_profile_tuple_and_description()
         fake_conn = MagicMock()
         fake_cur = MagicMock()
         fake_cur.__enter__ = MagicMock(return_value=fake_cur)
         fake_cur.__exit__ = MagicMock(return_value=False)
-        # own-profile query returns one row tuple
-        own_row = ("user-sub-1234", "Test", "User", "Male", "2000-01-01", "Other", None,
-                   "testuser", True) + (None,) * 38
-        fake_cur.fetchone.return_value = own_row
-        fake_cur.description = [
-            ("user_id",), ("first_name",), ("last_name",), ("sex",), ("birthday",),
-            ("religion",), ("subsect",), ("username",), ("profile_complete_verified",),
-            ("job_title",), ("photo_url",), ("chosen_profile_avatar",),
-            ("current_residence_city",), ("current_residence_country",),
-            ("resident_country_code",), ("district",), ("education_level",),
-            ("employer_name",), ("employment_type",), ("family_residence_address",),
-            ("father_retired",), ("fathers_job",), ("fathers_name",),
-            ("graduation_year",), ("has_children",), ("higher_secondary",),
-            ("higher_secondary_passing_year",), ("highest_degree",), ("high_school",),
-            ("high_school_passing_year",), ("marital_status",), ("marriage_time",),
-            ("mother_retired",), ("mothers_job",), ("mothers_name",), ("move_abroad",),
-            ("office_address",), ("partners_religious_level",), ("college_name",),
-            ("professional_category",), ("relation",), ("religious_level",),
-            ("salary_range",), ("preferences",), ("age",), ("email",), ("phone_number",),
-        ]
+        fake_cur.fetchone.return_value = tup
+        fake_cur.description = desc
         fake_conn.cursor.return_value = fake_cur
 
         event = _make_event("GET", "/v1/profile/me", user_sub="user-sub-1234", user_sex="Male")
@@ -562,40 +498,19 @@ class TestRouteDispatch:
 
         assert response["statusCode"] == 200
         body = json.loads(response["body"])
-        # Full profile — email must be present for GET /v1/profile/me
         assert "email" in body
 
     def test_given_get_profiles_by_user_id_then_deck_view_fields_only(self):
-        """
-        GET /v1/profiles/{userId} must return only deck-view fields —
-        email, phone_number, and family fields must NOT be present.
-        """
         mod = _import_handler()
-
         other_user_id = str(uuid.uuid4())
-
         fake_conn = MagicMock()
         fake_cur = MagicMock()
         fake_cur.__enter__ = MagicMock(return_value=fake_cur)
         fake_cur.__exit__ = MagicMock(return_value=False)
         other_row = (
-            other_user_id,  # user_id
-            "Other",        # first_name
-            "Person",       # last_name
-            "Female",       # sex
-            "1998-03-20",   # birthday
-            "Other",        # religion
-            None,           # subsect
-            "otherperson",  # username
-            True,           # profile_complete_verified
-            "Engineer",     # job_title
-            None,           # photo_url
-            None,           # chosen_profile_avatar
-            "Berlin",       # current_residence_city
-            "Germany",      # current_residence_country
-            "DE",           # resident_country_code
+            other_user_id, "Other", "Person", "Female", "1998-03-20", "Other", None,
+            "otherperson", True, "Engineer", None, None, "Berlin", "Germany", "DE",
         )
-        # fetchone returns the deck-view row from the DB query
         fake_cur.fetchone.return_value = other_row
         fake_cur.description = [
             ("user_id",), ("first_name",), ("last_name",), ("sex",), ("birthday",),
@@ -622,23 +537,17 @@ class TestRouteDispatch:
 
         assert response["statusCode"] == 200
         body = json.loads(response["body"])
-        # Deck-view must NOT contain sensitive fields
         assert "email" not in body
         assert "phone_number" not in body
         assert "family_residence_address" not in body
 
     def test_given_get_profiles_with_no_row_returned_then_404(self):
-        """
-        When the DB returns no row for GET /v1/profiles/{userId} (RLS hides it
-        or it doesn't exist), the handler must return 404.
-        """
         mod = _import_handler()
-
         fake_conn = MagicMock()
         fake_cur = MagicMock()
         fake_cur.__enter__ = MagicMock(return_value=fake_cur)
         fake_cur.__exit__ = MagicMock(return_value=False)
-        fake_cur.fetchone.return_value = None   # no row
+        fake_cur.fetchone.return_value = None
         fake_conn.cursor.return_value = fake_cur
 
         other_user_id = str(uuid.uuid4())
@@ -659,11 +568,7 @@ class TestRouteDispatch:
         assert response["statusCode"] == 404
 
     def test_given_get_profiles_username_with_no_match_then_404(self):
-        """
-        GET /v1/profiles?username=unknown returns 404 when DB returns no row.
-        """
         mod = _import_handler()
-
         fake_conn = MagicMock()
         fake_cur = MagicMock()
         fake_cur.__enter__ = MagicMock(return_value=fake_cur)
@@ -688,19 +593,172 @@ class TestRouteDispatch:
         assert response["statusCode"] == 404
 
     def test_given_missing_edge_secret_then_403(self):
-        """
-        A request missing the edge secret header must be rejected with 403
-        BEFORE any DB access is attempted.
-        """
         mod = _import_handler()
+        event = _make_event("GET", "/v1/profile/me", edge_secret="wrong-secret")
 
-        event = _make_event(
-            "GET",
-            "/v1/profile/me",
-            edge_secret="wrong-secret",
-        )
-
-        with patch.dict(os.environ, {"EDGE_SECRET": _EDGE_SECRET, "DB_SECRET_NAME": "test"}):
+        with patch.dict(os.environ, {"EDGE_SECRET": _EDGE_SECRET, "DB_SECRET_NAME": "test",
+                                     "USER_POOL_ID": "eu-central-1_TESTPOOL"}):
             response = mod.handler(event, None)
 
         assert response["statusCode"] == 403
+
+
+# ---------------------------------------------------------------------------
+# Area F: Cognito attribute write after commit (story 7.0b)
+# ---------------------------------------------------------------------------
+
+class TestCognitoAttributeWriteAfterCommit:
+    """
+    When PATCH /v1/profile/me flips profile_complete_verified from false → true,
+    the handler must call boto3 cognito-idp admin_update_user_attributes
+    AFTER the with conn: block commits.
+    """
+
+    def _make_fake_conn_for_flip(self, user_id: str, sex: str):
+        """
+        Build a fake connection where:
+          - First fetchone = incomplete row (profile_complete_verified=False)
+          - Second fetchone (RETURNING *) = updated row with profile_complete_verified=True
+        """
+        tup_before, desc = _complete_profile_tuple_and_description(user_id=user_id, sex=sex)
+        # mark profile_complete_verified as False in the initial fetch
+        tup_list = list(tup_before)
+        pvc_idx = [c[0] for c in desc].index("profile_complete_verified")
+        tup_list[pvc_idx] = False
+        tup_before = tuple(tup_list)
+
+        # RETURNING * row has profile_complete_verified=True
+        tup_after = list(tup_before)
+        tup_after[pvc_idx] = True
+        tup_after = tuple(tup_after)
+
+        fake_conn = MagicMock()
+        fake_cur = MagicMock()
+        fake_cur.__enter__ = MagicMock(return_value=fake_cur)
+        fake_cur.__exit__ = MagicMock(return_value=False)
+        fake_cur.fetchone.side_effect = [tup_before, tup_after]
+        fake_cur.description = desc
+        fake_conn.cursor.return_value = fake_cur
+        return fake_conn, desc, pvc_idx
+
+    def test_given_profile_completes_when_patch_then_cognito_admin_update_called(self):
+        """
+        When PATCH supplies all required fields and flips profile_complete_verified
+        from false to true, admin_update_user_attributes must be called with
+        custom:profile_complete = "true" on the correct user pool.
+        """
+        mod = _import_handler()
+        user_id = "user-sub-1234"
+        fake_conn, desc, _ = self._make_fake_conn_for_flip(user_id, "Male")
+
+        mock_cognito = MagicMock()
+
+        # PATCH body with all 34 required fields (supply a subset that together
+        # with the DB row makes it complete; the DB row fixture supplies the rest)
+        event = _make_event(
+            "PATCH",
+            "/v1/profile/me",
+            body={"job_title": "Engineer"},
+            user_sub=user_id,
+            user_sex="Male",
+        )
+
+        with (
+            patch.object(mod, "_get_conn", return_value=fake_conn),
+            patch.object(mod, "_USER_POOL_ID", "eu-central-1_TESTPOOL"),
+            patch.dict(os.environ, {
+                "EDGE_SECRET": _EDGE_SECRET,
+                "DB_SECRET_NAME": "test",
+            }),
+            patch.object(mod.boto3, "client", return_value=mock_cognito) as mock_b3_client,
+        ):
+            response = mod.handler(event, None)
+
+        assert response["statusCode"] == 200
+        mock_b3_client.assert_called_once_with("cognito-idp")
+        mock_cognito.admin_update_user_attributes.assert_called_once_with(
+            UserPoolId="eu-central-1_TESTPOOL",
+            Username=user_id,
+            UserAttributes=[{"Name": "custom:profile_complete", "Value": "true"}],
+        )
+
+    def test_given_profile_already_complete_when_patch_then_cognito_not_called(self):
+        """
+        When profile_complete_verified is already True in the DB row,
+        the flag does not flip and admin_update_user_attributes is NOT called.
+        """
+        mod = _import_handler()
+        tup, desc = _complete_profile_tuple_and_description()
+        pvc_idx = [c[0] for c in desc].index("profile_complete_verified")
+        # Already True in both before and after
+        tup_list = list(tup)
+        tup_list[pvc_idx] = True
+        tup_true = tuple(tup_list)
+
+        fake_conn = MagicMock()
+        fake_cur = MagicMock()
+        fake_cur.__enter__ = MagicMock(return_value=fake_cur)
+        fake_cur.__exit__ = MagicMock(return_value=False)
+        fake_cur.fetchone.side_effect = [tup_true, tup_true]
+        fake_cur.description = desc
+        fake_conn.cursor.return_value = fake_cur
+
+        event = _make_event(
+            "PATCH",
+            "/v1/profile/me",
+            body={"job_title": "New Title"},
+            user_sub="user-sub-1234",
+            user_sex="Male",
+        )
+
+        with (
+            patch.object(mod, "_get_conn", return_value=fake_conn),
+            patch.object(mod, "_USER_POOL_ID", "eu-central-1_TESTPOOL"),
+            patch.dict(os.environ, {
+                "EDGE_SECRET": _EDGE_SECRET,
+                "DB_SECRET_NAME": "test",
+            }),
+            patch.object(mod.boto3, "client") as mock_b3_client,
+        ):
+            response = mod.handler(event, None)
+
+        assert response["statusCode"] == 200
+        mock_b3_client.assert_not_called()
+
+    def test_given_cognito_write_fails_when_profile_completes_then_returns_200_anyway(self):
+        """
+        Best-effort: if admin_update_user_attributes raises (transient failure),
+        the handler logs a warning and still returns HTTP 200.
+        The Aurora commit already succeeded and must not be rolled back.
+        """
+        mod = _import_handler()
+        user_id = "user-sub-1234"
+        fake_conn, desc, _ = self._make_fake_conn_for_flip(user_id, "Male")
+
+        mock_cognito = MagicMock()
+        mock_cognito.admin_update_user_attributes.side_effect = Exception(
+            "Transient Cognito error"
+        )
+
+        event = _make_event(
+            "PATCH",
+            "/v1/profile/me",
+            body={"job_title": "Engineer"},
+            user_sub=user_id,
+            user_sex="Male",
+        )
+
+        with (
+            patch.object(mod, "_get_conn", return_value=fake_conn),
+            patch.object(mod, "_USER_POOL_ID", "eu-central-1_TESTPOOL"),
+            patch.dict(os.environ, {
+                "EDGE_SECRET": _EDGE_SECRET,
+                "DB_SECRET_NAME": "test",
+            }),
+            patch.object(mod.boto3, "client", return_value=mock_cognito),
+        ):
+            response = mod.handler(event, None)
+
+        assert response["statusCode"] == 200, (
+            f"Expected 200 even on Cognito failure, got {response['statusCode']}"
+        )
