@@ -1,6 +1,6 @@
 phase: 7
 title: Match and deck
-last_updated: 2026-06-16 (story 7.0 complete)
+last_updated: 2026-06-16 (story 7.0a complete)
 
 context_summary: |
   Implements the matching and swipe-deck endpoints backed by pgvector ranking
@@ -156,7 +156,7 @@ stories:
   - id: 7.0a
     title: deck_view extended columns migration
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: []
     tracking_issue: 90
     acceptance_criteria:
