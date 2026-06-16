@@ -1,5 +1,5 @@
 project: knotify-backend
-last_updated: 2026-06-15 # phase-6 complete; 4 post-merge hotfixes (#84, #85, #86, #87) all merged + verified in dev
+last_updated: 2026-06-16 # phase-7 complete — all 8 stories done (7.0, 7.0a, 7.0b, 7.1, 7.2, 7.3, 7.4, 7.5, 7.6)
 
 phases:
 
@@ -49,7 +49,7 @@ phases:
   title: Match and deck
   file: implementationplan/phase-7-match.md
   ready: true
-  done: false
+  done: true
 
 - phase: 8
   title: Chat (AppSync + DynamoDB Streams + push fan-out)

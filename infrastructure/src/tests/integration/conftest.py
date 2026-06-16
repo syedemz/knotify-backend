@@ -608,3 +608,148 @@ def app_user_conn():
             conn.close()
         except Exception:
             pass
+
+
+# ---------------------------------------------------------------------------
+# seeded_match_candidates fixture — story 7.6
+#
+# Creates n synthetic candidate users whose preference_vectors are the
+# requester's vector plus a deterministic perturbation with monotonically-
+# growing L2 norm.  This produces a strict, predictable cosine-distance
+# ranking when combined with the requester's own vector.
+#
+# Perturbation strategy (one non-zero component per candidate, at position i):
+#   perturbation_i = [0, 0, ..., (i+1)*0.1, ..., 0]   (component at index i)
+#
+# Because each perturbation moves the candidate away from the requester's
+# direction in a unique dimension, the cosine distances are strictly ordered
+# (candidate 0 is closest, candidate n-1 is farthest) when the requester's
+# vector is non-zero and its non-zero components do not overlap with the
+# perturbation positions.
+#
+# Seeded users:
+#   - All have profile_complete_verified = true
+#   - All are the opposite sex to the requester
+#   - All share the same resident_country_code and religion as the requester
+#     (so they appear in a filtered search without extra filter wrangling)
+#
+# Usage:
+#   def test_something(seeded_match_candidates):
+#       result = seeded_match_candidates(
+#           conn=master_conn,
+#           requester_id="...",
+#           requester_sex="Male",
+#           requester_vector=[1.0, 0.0, ...],
+#           n=10,
+#       )
+#       # result["candidate_ids"]: list[str] — in expected cosine-ranking order
+#       # result["top_id"]: str — the candidate closest to the requester (rank 1)
+#
+# Teardown: the caller is responsible for deleting the seeded users (done
+# inside the test's finally block via the master connection, same pattern as
+# test_match_search.py and test_match_deck.py).
+#
+# Rationale for a fixture rather than a plain helper: it follows the existing
+# conftest.py pattern for shared reusable test infrastructure; keeps the
+# test file focused on assertions.
+# ---------------------------------------------------------------------------
+
+
+def seeded_match_candidates(
+    conn,
+    *,
+    requester_id: str,
+    requester_sex: str,
+    requester_vector: list[float],
+    n: int = 10,
+    religion: str = "Islam",
+    resident_country_code: str = "GB",
+) -> dict:
+    """
+    Seed n candidate users with deterministic preference vectors.
+
+    Each candidate's preference_vector is:
+        requester_vector + perturbation_i
+    where perturbation_i has a single non-zero component at position i
+    with magnitude (i+1)*0.1, giving a strictly increasing L2 distance
+    from the requester vector.
+
+    Args:
+        conn:                  psycopg2 connection with autocommit=True
+                               (master credentials, bypasses RLS).
+        requester_id:          user_id of the requester (used only to derive
+                               opposite sex and to avoid collision).
+        requester_sex:         "Male" or "Female"; candidates will be the
+                               opposite sex.
+        requester_vector:      The requester's 20-D preference_vector
+                               (list of 20 floats). Must be non-zero.
+        n:                     Number of candidates to seed (default 10).
+        religion:              religion value for all seeded candidates.
+        resident_country_code: CHAR(2) code for all seeded candidates.
+
+    Returns:
+        dict with:
+            "candidate_ids":   list[str] — user_ids in expected cosine-
+                               ranking order (index 0 = closest to requester).
+            "top_id":          str — the top-ranked candidate's user_id.
+
+    Note:
+        The perturbation positions start at index 0 in the 20-D space.
+        The requester's vector must have its non-zero components outside
+        positions 0..(n-1) to guarantee a strict ordering.  For n=10 the
+        requester vector should have its signal at index 10 or higher.
+        (See test_match_e2e.py for the concrete vector choice.)
+    """
+    import uuid
+
+    opposite_sex = "Female" if requester_sex == "Male" else "Male"
+    candidate_ids: list[str] = []
+    dim = len(requester_vector)
+
+    with conn.cursor() as cur:
+        for i in range(n):
+            # Build the perturbation vector: single non-zero component at
+            # position i with magnitude (i+1)*0.1.  Adding this to the
+            # requester vector moves the candidate away from the requester's
+            # direction; the further from the requester direction, the lower
+            # the cosine similarity → higher cosine distance → lower rank.
+            perturbation = [0.0] * dim
+            perturbation[i] = (i + 1) * 0.1
+            candidate_vector = [
+                requester_vector[d] + perturbation[d] for d in range(dim)
+            ]
+
+            cid = str(uuid.uuid4())
+            candidate_ids.append(cid)
+
+            cur.execute(
+                """
+                INSERT INTO users (
+                    user_id, email, sex, religion,
+                    resident_country_code,
+                    profile_complete_verified,
+                    preference_vector
+                )
+                VALUES (
+                    %s::uuid, %s, %s, %s,
+                    %s,
+                    %s,
+                    %s::vector
+                )
+                ON CONFLICT (user_id) DO NOTHING
+                """,
+                (
+                    cid,
+                    f"e2e_cand_{i}_{cid[:8]}@test.invalid",
+                    opposite_sex,
+                    religion,
+                    resident_country_code,
+                    True,
+                    str(candidate_vector),
+                ),
+            )
+
+    return {
+        "candidate_ids": candidate_ids,
+        "top_id": candidate_ids[0],
+    }

@@ -1,6 +1,6 @@
 phase: 7
 title: Match and deck
-last_updated: 2026-06-16 (story 7.5 complete)
+last_updated: 2026-06-16 (story 7.6 complete)
 
 context_summary: |
   Implements the matching and swipe-deck endpoints backed by pgvector ranking
@@ -537,7 +537,7 @@ stories:
   - id: 7.6
     title: End-to-end match ordering test
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [7.0, 7.0a, 7.0b, 7.1, 7.2, 7.3, 7.4, 7.5]
     tracking_issue: 97
     acceptance_criteria:
