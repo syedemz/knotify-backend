@@ -22,6 +22,9 @@ Test coverage by area:
   E. Cognito write after commit — admin_update_user_attributes called when flag flips (story 7.0b)
   F. Cognito write best-effort — transient failure returns 200 (story 7.0b)
   G. Preference vector write — PATCH with preferences sets preference_vector in same UPDATE (story 7.3)
+  H. Refresh Lambda invoke after commit — boto3 lambda.invoke called when flag flips (story 7.4)
+  I. Refresh Lambda invoke skipped on txn rollback — no invoke when exception inside with conn: (story 7.4)
+  J. Refresh Lambda invoke best-effort — transient failure returns 200 (story 7.4)
 """
 
 from __future__ import annotations
@@ -932,4 +935,274 @@ class TestPreferenceVectorWrite:
         assert "preference_vector" not in update_sql, (
             f"preference_vector must not appear in SQL when preferences not in patch body. "
             f"SQL was:\n{update_sql}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Area H: Refresh Lambda invoke after commit (story 7.4)
+# ---------------------------------------------------------------------------
+
+
+class TestRefreshLambdaInvokeAfterCommit:
+    """
+    When PATCH /v1/profile/me flips profile_complete_verified from false → true,
+    the handler must asynchronously invoke the refresh Lambda (boto3
+    lambda.invoke with InvocationType="Event") AFTER the with conn: block commits.
+
+    Both the Cognito attribute write (story 7.0b) and the Lambda invoke (story 7.4)
+    fire after the commit; the order is: Cognito write first, then lambda.invoke.
+    """
+
+    def _make_fake_conn_for_flip(self, user_id: str, sex: str):
+        """
+        Build a fake connection where the first fetchone returns an incomplete
+        row (profile_complete_verified=False) and the second (RETURNING *) returns
+        the updated row with profile_complete_verified=True.
+        """
+        tup_before, desc = _complete_profile_tuple_and_description(user_id=user_id, sex=sex)
+        tup_list = list(tup_before)
+        pvc_idx = [c[0] for c in desc].index("profile_complete_verified")
+        tup_list[pvc_idx] = False
+        tup_before = tuple(tup_list)
+
+        tup_after = list(tup_before)
+        tup_after[pvc_idx] = True
+        tup_after = tuple(tup_after)
+
+        fake_conn = MagicMock()
+        fake_cur = MagicMock()
+        fake_cur.__enter__ = MagicMock(return_value=fake_cur)
+        fake_cur.__exit__ = MagicMock(return_value=False)
+        fake_cur.fetchone.side_effect = [tup_before, tup_after]
+        fake_cur.description = desc
+        fake_conn.cursor.return_value = fake_cur
+        return fake_conn
+
+    def test_given_profile_completes_when_patch_then_lambda_invoke_called_with_event_type(self):
+        """
+        When PATCH flips profile_complete_verified from false to true, the handler
+        must call boto3 lambda.invoke with InvocationType="Event" on the refresh Lambda.
+        """
+        mod = _import_handler()
+        user_id = "user-sub-1234"
+        fake_conn = self._make_fake_conn_for_flip(user_id, "Male")
+
+        refresh_lambda_arn = "arn:aws:lambda:eu-central-1:123456789:function:knotify-refresh-deck-view-dev"
+        mock_lambda_client = MagicMock()
+        mock_cognito_client = MagicMock()
+
+        def _mock_boto3_client(service_name, **kwargs):
+            if service_name == "lambda":
+                return mock_lambda_client
+            if service_name == "cognito-idp":
+                return mock_cognito_client
+            return MagicMock()
+
+        event = _make_event(
+            "PATCH",
+            "/v1/profile/me",
+            body={"job_title": "Engineer"},
+            user_sub=user_id,
+            user_sex="Male",
+        )
+
+        with (
+            patch.object(mod, "_get_conn", return_value=fake_conn),
+            patch.object(mod, "_USER_POOL_ID", "eu-central-1_TESTPOOL"),
+            patch.object(mod, "_REFRESH_LAMBDA_ARN", refresh_lambda_arn),
+            patch.dict(os.environ, {
+                "EDGE_SECRET": _EDGE_SECRET,
+                "DB_SECRET_NAME": "test",
+            }),
+            patch.object(mod.boto3, "client", side_effect=_mock_boto3_client),
+        ):
+            response = mod.handler(event, None)
+
+        assert response["statusCode"] == 200
+        mock_lambda_client.invoke.assert_called_once_with(
+            FunctionName=refresh_lambda_arn,
+            InvocationType="Event",
+            Payload=b"{}",
+        )
+
+    def test_given_profile_already_complete_when_patch_then_lambda_invoke_not_called(self):
+        """
+        When profile_complete_verified is already True, the flag does not flip
+        and the refresh Lambda must NOT be invoked.
+        """
+        mod = _import_handler()
+        tup, desc = _complete_profile_tuple_and_description()
+        pvc_idx = [c[0] for c in desc].index("profile_complete_verified")
+        tup_list = list(tup)
+        tup_list[pvc_idx] = True
+        tup_true = tuple(tup_list)
+
+        fake_conn = MagicMock()
+        fake_cur = MagicMock()
+        fake_cur.__enter__ = MagicMock(return_value=fake_cur)
+        fake_cur.__exit__ = MagicMock(return_value=False)
+        fake_cur.fetchone.side_effect = [tup_true, tup_true]
+        fake_cur.description = desc
+        fake_conn.cursor.return_value = fake_cur
+
+        event = _make_event(
+            "PATCH",
+            "/v1/profile/me",
+            body={"job_title": "New Title"},
+            user_sub="user-sub-1234",
+            user_sex="Male",
+        )
+
+        with (
+            patch.object(mod, "_get_conn", return_value=fake_conn),
+            patch.object(mod, "_USER_POOL_ID", "eu-central-1_TESTPOOL"),
+            patch.dict(os.environ, {
+                "EDGE_SECRET": _EDGE_SECRET,
+                "DB_SECRET_NAME": "test",
+            }),
+            patch.object(mod.boto3, "client") as mock_b3_client,
+        ):
+            response = mod.handler(event, None)
+
+        assert response["statusCode"] == 200
+        # boto3.client should never be called — no flip, no invoke
+        mock_b3_client.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Area I: Refresh Lambda invoke skipped on txn rollback (story 7.4)
+# ---------------------------------------------------------------------------
+
+
+class TestRefreshLambdaInvokeSkippedOnRollback:
+    """
+    When an exception is raised INSIDE the `with conn:` block (transaction
+    rolls back), the handler must NOT call the refresh Lambda.
+
+    This verifies that the invoke is issued OUTSIDE the transaction block —
+    if the transaction rolls back, the invoke is skipped.
+    """
+
+    def test_given_exception_inside_transaction_when_patch_then_lambda_invoke_not_called(self):
+        """
+        An exception raised inside the `with conn:` block (DB error, etc.) must
+        propagate upward WITHOUT triggering the refresh Lambda invoke.
+
+        This is the critical correctness invariant: if the Aurora transaction
+        rolls back, we must not invalidate the deck_view with a stale refresh.
+        """
+        mod = _import_handler()
+
+        # Build a fake connection that raises inside the cursor execute call
+        # (simulates a DB error mid-transaction)
+        fake_conn = MagicMock()
+        fake_cur = MagicMock()
+        fake_cur.__enter__ = MagicMock(return_value=fake_cur)
+        fake_cur.__exit__ = MagicMock(return_value=False)
+        # The SELECT for UPDATE raises an exception to simulate a txn failure
+        fake_cur.fetchone.side_effect = Exception("simulated DB error during transaction")
+        fake_conn.cursor.return_value = fake_cur
+
+        mock_lambda_client = MagicMock()
+
+        event = _make_event(
+            "PATCH",
+            "/v1/profile/me",
+            body={"job_title": "Engineer"},
+            user_sub="user-sub-1234",
+            user_sex="Male",
+        )
+
+        with (
+            patch.object(mod, "_get_conn", return_value=fake_conn),
+            patch.dict(os.environ, {
+                "EDGE_SECRET": _EDGE_SECRET,
+                "DB_SECRET_NAME": "test",
+            }),
+            patch.object(mod.boto3, "client", return_value=mock_lambda_client),
+        ):
+            with pytest.raises(Exception, match="simulated DB error during transaction"):
+                mod.handler(event, None)
+
+        # The refresh Lambda must NOT have been invoked
+        mock_lambda_client.invoke.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Area J: Refresh Lambda invoke best-effort (story 7.4)
+# ---------------------------------------------------------------------------
+
+
+class TestRefreshLambdaInvokeBestEffort:
+    """
+    If the refresh Lambda invoke raises a transient error, the handler must
+    log a warning and return HTTP 200 to the client — the Aurora commit already
+    succeeded and must not cause a 5xx to the client.
+    """
+
+    def _make_fake_conn_for_flip(self, user_id: str, sex: str):
+        tup_before, desc = _complete_profile_tuple_and_description(user_id=user_id, sex=sex)
+        tup_list = list(tup_before)
+        pvc_idx = [c[0] for c in desc].index("profile_complete_verified")
+        tup_list[pvc_idx] = False
+        tup_before = tuple(tup_list)
+
+        tup_after = list(tup_before)
+        tup_after[pvc_idx] = True
+        tup_after = tuple(tup_after)
+
+        fake_conn = MagicMock()
+        fake_cur = MagicMock()
+        fake_cur.__enter__ = MagicMock(return_value=fake_cur)
+        fake_cur.__exit__ = MagicMock(return_value=False)
+        fake_cur.fetchone.side_effect = [tup_before, tup_after]
+        fake_cur.description = desc
+        fake_conn.cursor.return_value = fake_cur
+        return fake_conn
+
+    def test_given_lambda_invoke_fails_when_profile_completes_then_returns_200_anyway(self):
+        """
+        Best-effort: if lambda.invoke raises (transient failure),
+        the handler logs a warning and still returns HTTP 200.
+        The Aurora commit already succeeded; the deck_view will be refreshed
+        on the next scheduled run.
+        """
+        mod = _import_handler()
+        user_id = "user-sub-1234"
+        fake_conn = self._make_fake_conn_for_flip(user_id, "Male")
+
+        refresh_lambda_arn = "arn:aws:lambda:eu-central-1:123456789:function:knotify-refresh-deck-view-dev"
+        mock_lambda_client = MagicMock()
+        mock_lambda_client.invoke.side_effect = Exception("Transient Lambda invoke error")
+        mock_cognito_client = MagicMock()
+
+        def _mock_boto3_client(service_name, **kwargs):
+            if service_name == "lambda":
+                return mock_lambda_client
+            if service_name == "cognito-idp":
+                return mock_cognito_client
+            return MagicMock()
+
+        event = _make_event(
+            "PATCH",
+            "/v1/profile/me",
+            body={"job_title": "Engineer"},
+            user_sub=user_id,
+            user_sex="Male",
+        )
+
+        with (
+            patch.object(mod, "_get_conn", return_value=fake_conn),
+            patch.object(mod, "_USER_POOL_ID", "eu-central-1_TESTPOOL"),
+            patch.object(mod, "_REFRESH_LAMBDA_ARN", refresh_lambda_arn),
+            patch.dict(os.environ, {
+                "EDGE_SECRET": _EDGE_SECRET,
+                "DB_SECRET_NAME": "test",
+            }),
+            patch.object(mod.boto3, "client", side_effect=_mock_boto3_client),
+        ):
+            response = mod.handler(event, None)
+
+        assert response["statusCode"] == 200, (
+            f"Expected 200 even on Lambda invoke failure, got {response['statusCode']}"
         )

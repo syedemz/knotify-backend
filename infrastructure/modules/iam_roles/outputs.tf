@@ -10,5 +10,6 @@ output "role_arns" {
     dynamodb_notifications_writer = aws_iam_role.dynamodb_notifications_writer.arn
     stepfn_task                   = aws_iam_role.stepfn_task.arn
     aurora_reader_match           = aws_iam_role.aurora_reader_match.arn
+    aurora_refresh_lambda         = aws_iam_role.aurora_refresh_lambda.arn
   }
 }

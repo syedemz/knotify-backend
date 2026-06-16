@@ -125,6 +125,11 @@ module "iam_roles" {
   # Scopes aurora_writer's cognito-idp:AdminUpdateUserAttributes to this pool
   # only. Sourced from the cognito module output (story 7.0b).
   cognito_user_pool_arn = module.cognito.user_pool_arn
+
+  # Scopes aurora_writer's lambda:InvokeFunction to the refresh Lambda ARN
+  # only (story 7.4). Terraform resolves the forward reference from the
+  # refresh_deck_view module declared later in this file.
+  refresh_lambda_arn = module.refresh_deck_view.function_arn
 }
 
 # ---------------------------------------------------------------------------
@@ -175,6 +180,11 @@ module "db_migrator" {
     # The migrator writes this secret on first run (CreateSecret) and
     # rotates it on subsequent runs (PutSecretValue).
     APP_USER_SECRET_NAME = "knotify-${var.environment}-app-user-credential"
+
+    # Friendly name of the aurora_refresh credential secret to create/update
+    # (story 7.4). Mirrors APP_USER_SECRET_NAME pattern — same create-or-update
+    # idempotency; no new abstraction.
+    AURORA_REFRESH_SECRET_NAME = "knotify-${var.environment}-aurora-refresh-credential"
 
     # Connection endpoint params. Aurora's managed master secret only
     # contains username/password — host/port/database are exposed via
@@ -604,6 +614,10 @@ module "profile" {
     # Cognito User Pool ID — needed by the profile PATCH handler to call
     # admin_update_user_attributes after a profile-completion flip (story 7.0b).
     USER_POOL_ID = module.cognito.user_pool_id
+
+    # ARN of the refresh_deck_view Lambda — async-invoked by the profile PATCH
+    # handler when profile_complete_verified flips false→true (story 7.4).
+    REFRESH_LAMBDA_ARN = module.refresh_deck_view.function_arn
   }
 }
 
@@ -1035,4 +1049,53 @@ module "match" {
     AURORA_PORT   = tostring(module.aurora.port)
     AURORA_DBNAME = module.aurora.database_name
   }
+}
+
+# ---------------------------------------------------------------------------
+# knotify-refresh-deck-view Lambda — story 7.4
+#
+# Dedicated Lambda for refreshing the deck_view materialized view.
+# Runs as aurora_refresh (privileged role with EXECUTE on refresh_deck_view())
+# rather than app_user, keeping the RLS-bearing app_user surface minimal.
+#
+# Triggered by:
+#   - EventBridge CloudWatch rule every 15 minutes (defined in the module)
+#   - Async boto3 lambda.invoke from the profile Lambda on profile_complete
+#     false→true flip (InvocationType="Event")
+#
+# The module exposes function_arn so the profile Lambda can receive it as
+# REFRESH_LAMBDA_ARN and the iam_roles module can scope lambda:InvokeFunction.
+# ---------------------------------------------------------------------------
+
+module "refresh_deck_view" {
+  source = "../../modules/refresh_deck_view"
+
+  environment   = var.environment
+  function_name = "knotify-refresh-deck-view-${var.environment}"
+  filename      = "${path.module}/../../../build/refresh_deck_view.zip"
+  role_arn      = module.iam_roles.role_arns["aurora_refresh_lambda"]
+
+  layers = [
+    module.observability_layer.layer_arn,
+    module.db_layer.layer_arn,
+  ]
+
+  vpc_config = {
+    subnet_ids         = module.networking.private_subnet_ids
+    security_group_ids = [module.networking.lambda_security_group_id]
+  }
+
+  # The aurora_refresh credential — NOT the app_user credential.
+  db_secret_name = "knotify-${var.environment}-aurora-refresh-credential"
+
+  # Aurora connection endpoint params — aurora_refresh credential carries only
+  # username + password; host/port/dbname come from aurora module outputs.
+  aurora_host   = module.aurora.cluster_endpoint
+  aurora_port   = tostring(module.aurora.port)
+  aurora_dbname = module.aurora.database_name
+
+  # EventBridge schedule: every 15 minutes (default in module variables.tf).
+  # Override here for visibility; changing to rate(5 minutes) in a future
+  # phase requires only this field.
+  schedule_expression = "rate(15 minutes)"
 }

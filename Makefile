@@ -117,6 +117,8 @@ package-all:
 	$(MAKE) package FUNC=bookmarks
 	@echo "[package-all] Building match function ..."
 	$(MAKE) package FUNC=match
+	@echo "[package-all] Building refresh_deck_view function ..."
+	$(MAKE) package FUNC=refresh_deck_view
 	@echo "[package-all] Done — all artifacts in $(BUILD_DIR)/"
 
 # ---------------------------------------------------------------------------

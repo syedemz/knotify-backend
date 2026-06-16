@@ -39,7 +39,7 @@ Design notes:
 Dependencies (Lambda layers):
   - knotify_obs: init_logger, with_edge_secret
   - knotify_db:  get_connection, rls_context
-  - boto3: cognito-idp client (used only on profile-completion flip)
+  - boto3: cognito-idp client and lambda client (used only on profile-completion flip)
 """
 
 from __future__ import annotations
@@ -62,6 +62,7 @@ logger = init_logger("knotify_profile")
 
 _DB_SECRET_NAME: str = os.environ.get("DB_SECRET_NAME", "")
 _USER_POOL_ID: str = os.environ.get("USER_POOL_ID", "")
+_REFRESH_LAMBDA_ARN: str = os.environ.get("REFRESH_LAMBDA_ARN", "")
 
 # Module-level connection (reused across warm invocations)
 _conn = None
@@ -387,6 +388,54 @@ def _write_cognito_profile_complete(user_id: str) -> None:
         )
 
 
+def _invoke_refresh_lambda() -> None:
+    """
+    Best-effort async invocation of the refresh_deck_view Lambda.
+
+    Called AFTER the with conn: block has committed the Aurora UPDATE, and
+    ONLY when profile_complete_verified flips false→true.  If the txn rolls
+    back the caller never reaches this function, so no stale refresh is
+    triggered.
+
+    InvocationType="Event" means fire-and-forget: the call returns immediately
+    once Lambda accepts the invocation; we do not wait for the refresh to complete.
+
+    On any failure (missing ARN, transient AWS error), logs a structured warning
+    and returns — does NOT raise.  The EventBridge 15-minute schedule covers
+    any missed refresh.
+
+    Post-commit call order: Cognito attribute write first, then lambda.invoke
+    (both are best-effort; order is arbitrary but documented here for consistency).
+    """
+    if not _REFRESH_LAMBDA_ARN:
+        logger.warning(
+            "refresh_lambda_invoke_skipped",
+            extra={"reason": "REFRESH_LAMBDA_ARN not configured"},
+        )
+        return
+
+    try:
+        client = boto3.client("lambda")
+        client.invoke(
+            FunctionName=_REFRESH_LAMBDA_ARN,
+            InvocationType="Event",
+            Payload=b"{}",
+        )
+        logger.info(
+            "refresh_lambda_invoked",
+            extra={"refresh_lambda_arn": _REFRESH_LAMBDA_ARN},
+        )
+    except Exception as exc:
+        logger.warning(
+            "refresh_lambda_invoke_failed",
+            extra={
+                "refresh_lambda_arn": _REFRESH_LAMBDA_ARN,
+                "error": str(exc),
+                "note": "Aurora commit succeeded; deck_view will refresh on next scheduled run",
+            },
+        )
+
+
 # ---------------------------------------------------------------------------
 # Sub-handlers (each handles exactly one route)
 # ---------------------------------------------------------------------------
@@ -512,9 +561,12 @@ def _handle_patch_profile_me(event: dict, user_id: str, user_sex: str) -> dict:
         raise
     # with conn: block has committed here (rls_context commits on exit)
 
-    # Step 6: best-effort Cognito attribute write AFTER Aurora commit
+    # Step 6: best-effort post-commit calls AFTER Aurora commit, only on flag flip.
+    # Order: Cognito attribute write first, then refresh Lambda invoke.
+    # Both are best-effort; either failure logs a warning and returns HTTP 200.
     if flag_flipped:
         _write_cognito_profile_complete(user_id)
+        _invoke_refresh_lambda()
 
     return _json_response(200, updated)
 

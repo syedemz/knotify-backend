@@ -1,6 +1,6 @@
 phase: 7
 title: Match and deck
-last_updated: 2026-06-16 (story 7.3 complete)
+last_updated: 2026-06-16 (story 7.4 complete)
 
 context_summary: |
   Implements the matching and swipe-deck endpoints backed by pgvector ranking
@@ -437,7 +437,7 @@ stories:
   - id: 7.4
     title: deck_view refresh — dedicated Lambda + privileged role + scheduler + PATCH trigger
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [7.0a]
     tracking_issue: 95
     acceptance_criteria:

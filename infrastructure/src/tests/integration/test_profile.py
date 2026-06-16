@@ -524,3 +524,268 @@ class TestProfileCrossSexRLS:
             "Same-sex hiding verification requires a second Male user. "
             "Covered in test_profile_e2e.py (story 6.7)."
         )
+
+
+class TestRefreshDeckView:
+    """
+    Integration tests for the refresh_deck_view Lambda (story 7.4).
+
+    Two acceptance criteria tested here:
+      AC-REFRESH  Insert a verified user via direct Aurora INSERT (bypassing PATCH);
+                  assert deck_view contains no row for that user; invoke refresh
+                  Lambda synchronously; assert row now appears.
+      AC-LOCK     Invoke the refresh Lambda twice in parallel; both return 200;
+                  assert SELECT COUNT(*) FROM refresh_log WHERE refreshed_at > test_start = 1.
+
+    Requires:
+      - AURORA_HOST, AURORA_PORT, AURORA_DBNAME, AURORA_MASTER_SECRET_ARN (direct DB access)
+      - REFRESH_LAMBDA_FUNCTION_NAME or REFRESH_LAMBDA_ARN env var (Lambda invoke)
+      - AWS credentials with lambda:InvokeFunction on the refresh Lambda
+    """
+
+    @pytest.fixture(autouse=True)
+    def _load_env(self):
+        self.aurora_host = os.environ.get("AURORA_HOST")
+        self.aurora_port = os.environ.get("AURORA_PORT")
+        self.aurora_dbname = os.environ.get("AURORA_DBNAME")
+        self.aurora_secret_arn = os.environ.get("AURORA_MASTER_SECRET_ARN")
+        self.refresh_lambda_name = os.environ.get("REFRESH_LAMBDA_FUNCTION_NAME")
+
+        if not all([
+            self.aurora_host,
+            self.aurora_port,
+            self.aurora_dbname,
+            self.aurora_secret_arn,
+            self.refresh_lambda_name,
+        ]):
+            pytest.skip(
+                "Direct Aurora + Lambda access env vars not set. Required: "
+                "AURORA_HOST, AURORA_PORT, AURORA_DBNAME, AURORA_MASTER_SECRET_ARN, "
+                "REFRESH_LAMBDA_FUNCTION_NAME"
+            )
+
+    def _get_db_conn(self):
+        """Open a direct psycopg2 connection using master credentials."""
+        try:
+            import psycopg2
+            import boto3 as _boto3
+            import json as _json
+        except ImportError:
+            pytest.skip("psycopg2 or boto3 not installed")
+
+        region = os.environ.get("AWS_REGION", "eu-central-1")
+        sm = _boto3.client("secretsmanager", region_name=region)
+        secret_val = sm.get_secret_value(SecretId=self.aurora_secret_arn)
+        creds = _json.loads(secret_val["SecretString"])
+
+        return psycopg2.connect(
+            host=self.aurora_host,
+            port=int(self.aurora_port),
+            dbname=self.aurora_dbname,
+            user=creds["username"],
+            password=creds["password"],
+        )
+
+    def _invoke_refresh_sync(self):
+        """Invoke the refresh Lambda synchronously and return the response payload."""
+        try:
+            import boto3 as _boto3
+            import json as _json
+        except ImportError:
+            pytest.skip("boto3 not installed")
+
+        region = os.environ.get("AWS_REGION", "eu-central-1")
+        client = _boto3.client("lambda", region_name=region)
+        response = client.invoke(
+            FunctionName=self.refresh_lambda_name,
+            InvocationType="RequestResponse",
+            Payload=b"{}",
+        )
+        payload = _json.loads(response["Payload"].read())
+        assert "FunctionError" not in response or not response.get("FunctionError"), (
+            f"Refresh Lambda returned FunctionError: {payload}"
+        )
+        return payload
+
+    def test_given_verified_user_inserted_directly_when_refresh_invoked_then_deck_view_row_appears(
+        self,
+    ):
+        """
+        Story 7.4 AC — Integration (refresh triggers deck_view population):
+        1. Insert a verified user directly into Aurora (bypassing PATCH — the
+           INSERT sets profile_complete_verified=true).
+        2. Assert deck_view contains NO row for that user (not yet refreshed).
+        3. Invoke the refresh Lambda synchronously.
+        4. Assert deck_view NOW contains the row.
+        """
+        try:
+            import psycopg2
+            import psycopg2.extras
+            import uuid as _uuid
+        except ImportError:
+            pytest.skip("psycopg2 or uuid not installed")
+
+        test_user_id = str(_uuid.uuid4())
+        test_email = f"refresh-test-{test_user_id}@knotify-integration-test.invalid"
+        test_username = f"rtest{test_user_id.replace('-', '')[:12]}"
+
+        conn = self._get_db_conn()
+        try:
+            with conn.cursor() as cur:
+                # Insert a minimal verified user row. Only the columns required
+                # by the DB NOT NULL constraints and the widened CHECK constraint.
+                # Set autocommit off so we can clean up on failure.
+                cur.execute("""
+                    INSERT INTO users (
+                        user_id, email, first_name, last_name, sex, birthday,
+                        religion, subsect, religious_level,
+                        current_residence_city, current_residence_country,
+                        resident_country_code, district,
+                        education_level, highest_degree, high_school,
+                        higher_secondary, college_name,
+                        job_title, employer_name, employment_type, office_address,
+                        professional_category, salary_range,
+                        fathers_name, fathers_job, father_retired,
+                        mothers_name, mothers_job, mother_retired,
+                        family_residence_address, marital_status, has_children,
+                        move_abroad, relation, username,
+                        profile_complete_verified
+                    ) VALUES (
+                        %s::uuid, %s,
+                        'RefreshTest', 'Integration', 'Male', '1990-01-01',
+                        'Islam', 'Sunni', 'Moderate',
+                        'London', 'United Kingdom', 'GB', 'East London',
+                        'Bachelors', 'BSc CS', 'Test High School',
+                        'Test A-Levels', 'Test University',
+                        'Engineer', 'Acme Corp', 'Full-time', '1 Test St London',
+                        'Technology', '50000-70000',
+                        'Test Father', 'Engineer', 'No',
+                        'Test Mother', 'Teacher', 'No',
+                        '1 Family Addr London', 'Single', FALSE,
+                        FALSE, 'Self', %s,
+                        TRUE
+                    )
+                """, (test_user_id, test_email, test_username))
+            conn.commit()
+
+            # Step 2: assert deck_view has no row yet (not yet refreshed)
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) FROM deck_view WHERE user_id = %s::uuid",
+                    (test_user_id,),
+                )
+                count_before = cur.fetchone()[0]
+
+            assert count_before == 0, (
+                f"Expected deck_view to have 0 rows for new user before refresh, "
+                f"got {count_before}"
+            )
+
+            # Step 3: invoke refresh Lambda synchronously
+            payload = self._invoke_refresh_sync()
+            status = payload.get("statusCode", 0)
+            assert status == 200, (
+                f"Refresh Lambda returned non-200: {payload}"
+            )
+
+            # Step 4: assert deck_view now has the row
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) FROM deck_view WHERE user_id = %s::uuid",
+                    (test_user_id,),
+                )
+                count_after = cur.fetchone()[0]
+
+            assert count_after == 1, (
+                f"Expected deck_view to have 1 row for verified user after refresh, "
+                f"got {count_after}"
+            )
+
+        finally:
+            # Clean up — remove the test user row
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "DELETE FROM users WHERE user_id = %s::uuid",
+                        (test_user_id,),
+                    )
+                conn.commit()
+            except Exception:
+                pass
+            conn.close()
+
+    def test_given_two_concurrent_refresh_invocations_when_both_complete_then_exactly_one_log_row(
+        self,
+    ):
+        """
+        Story 7.4 AC — Integration (advisory lock):
+        Invoke the refresh Lambda twice in parallel.
+        Both must return 200 (skip is not an error).
+        SELECT COUNT(*) FROM refresh_log WHERE refreshed_at > test_start must equal 1
+        (only one invocation did actual work; the other skipped due to advisory lock).
+        """
+        try:
+            import boto3 as _boto3
+            import json as _json
+            import concurrent.futures
+            from datetime import datetime, timezone
+        except ImportError:
+            pytest.skip("boto3, json, or concurrent.futures not installed")
+
+        region = os.environ.get("AWS_REGION", "eu-central-1")
+
+        conn = self._get_db_conn()
+        try:
+            # Record the test start time (UTC)
+            test_start = datetime.now(tz=timezone.utc)
+
+            # Invoke the refresh Lambda twice in parallel using ThreadPoolExecutor
+            lambda_client = _boto3.client("lambda", region_name=region)
+
+            def _invoke():
+                response = lambda_client.invoke(
+                    FunctionName=self.refresh_lambda_name,
+                    InvocationType="RequestResponse",
+                    Payload=b"{}",
+                )
+                return (
+                    response.get("StatusCode"),
+                    response.get("FunctionError"),
+                    _json.loads(response["Payload"].read()),
+                )
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                fut1 = executor.submit(_invoke)
+                fut2 = executor.submit(_invoke)
+                result1 = fut1.result(timeout=60)
+                result2 = fut2.result(timeout=60)
+
+            # Both must return 200 Lambda HTTP status (invocation success)
+            for idx, (status_code, func_err, payload) in enumerate(
+                [result1, result2], start=1
+            ):
+                assert status_code == 200, (
+                    f"Invocation {idx}: expected Lambda StatusCode=200, got {status_code}"
+                )
+                assert not func_err, (
+                    f"Invocation {idx}: Lambda returned FunctionError: {payload}"
+                )
+                body_status_code = payload.get("statusCode")
+                assert body_status_code == 200, (
+                    f"Invocation {idx}: expected payload statusCode=200, got {body_status_code}"
+                )
+
+            # Assert exactly 1 refresh_log row was inserted since test_start
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) FROM refresh_log WHERE refreshed_at >= %s",
+                    (test_start,),
+                )
+                log_count = cur.fetchone()[0]
+
+            assert log_count == 1, (
+                f"Expected exactly 1 refresh_log row from concurrent invocations "
+                f"(advisory lock must prevent double-refresh), got {log_count}"
+            )
+        finally:
+            conn.close()

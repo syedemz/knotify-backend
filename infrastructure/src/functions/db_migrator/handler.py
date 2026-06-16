@@ -1,30 +1,40 @@
 """
 db_migrator — Lambda handler for running yoyo migrations against Aurora
-and rotating the app_user password.
+and rotating the app_user and aurora_refresh passwords.
 
 Invoked once per `terraform apply` via a null_resource local-exec when
 migration files or the function code change (via null_resource triggers).
 
-What this handler does (story 3.7):
-  1. Reads AURORA_MASTER_SECRET_ARN, APP_USER_SECRET_NAME, AURORA_HOST,
-     AURORA_PORT, and AURORA_DBNAME from env.
+What this handler does (story 3.7 + story 7.4):
+  1. Reads AURORA_MASTER_SECRET_ARN, APP_USER_SECRET_NAME,
+     AURORA_REFRESH_SECRET_NAME, AURORA_HOST, AURORA_PORT, and AURORA_DBNAME
+     from env.
   2. Fetches the master Aurora credential from Secrets Manager. The
      Aurora-managed secret contains ONLY `username` and `password`; the
      host/port/dbname come from the cluster endpoint outputs (passed via
      env vars from Terraform).
   3. Constructs a PostgreSQL connection URL and applies all pending yoyo
      migrations (using the Python API — no subprocess shelling).
-  4. Generates a cryptographically-random 32-char password.
-  5. Writes the password to a Secrets Manager secret named
+  4. Generates a cryptographically-random 32-char password for app_user.
+  5. Writes the app_user password to a Secrets Manager secret named
      APP_USER_SECRET_NAME:
        - CreateSecret on the first run (action = "created")
        - PutSecretValue on subsequent runs (action = "updated")
   6. Runs ALTER ROLE app_user WITH PASSWORD '<random>' against the cluster.
-  7. Returns a structured JSON dict with:
-       applied_migration_ids   — list of migration IDs applied in this run
-       pending_migrations      — count of pending migrations (0 on success)
-       app_user_secret_action  — "created" or "updated"
-       elapsed_time_seconds    — float, wall-clock time for this invocation
+  7. Generates a cryptographically-random 32-char password for aurora_refresh
+     (story 7.4). Writes it to AURORA_REFRESH_SECRET_NAME using the same
+     create-or-update pattern. Runs ALTER ROLE aurora_refresh WITH PASSWORD.
+     If the aurora_refresh role does not yet exist (migration 0013 not yet
+     applied on this run), the step is silently skipped — migration order
+     guarantees the role exists by the time this code runs in normal operation;
+     the skip guard only protects against a cold-start where the schema
+     pre-dates migration 0013.
+  8. Returns a structured JSON dict with:
+       applied_migration_ids          — list of migration IDs applied in this run
+       pending_migrations             — count of pending migrations (0 on success)
+       app_user_secret_action         — "created" or "updated"
+       aurora_refresh_secret_action   — "created", "updated", or "skipped"
+       elapsed_time_seconds           — float, wall-clock time for this invocation
 
 Dependencies (via the shared db layer):
   - psycopg2-binary (aarch64 manylinux wheel)
@@ -73,6 +83,7 @@ except ImportError:  # local test environment without yoyo
 
 _MASTER_SECRET_ARN: str = os.environ.get("AURORA_MASTER_SECRET_ARN", "")
 _APP_USER_SECRET_NAME: str = os.environ.get("APP_USER_SECRET_NAME", "")
+_AURORA_REFRESH_SECRET_NAME: str = os.environ.get("AURORA_REFRESH_SECRET_NAME", "")
 _AURORA_HOST: str = os.environ.get("AURORA_HOST", "")
 _AURORA_PORT: str = os.environ.get("AURORA_PORT", "5432")
 _AURORA_DBNAME: str = os.environ.get("AURORA_DBNAME", "")
@@ -157,6 +168,78 @@ def _alter_role_password(conn: psycopg2.extensions.connection, password: str) ->
     conn.commit()
 
 
+def _write_aurora_refresh_secret(
+    sm_client,
+    secret_name: str,
+    password: str,
+) -> str:
+    """
+    Write *password* to a Secrets Manager secret named *secret_name* for
+    the aurora_refresh role.
+
+    Mirrors _write_app_user_secret exactly — same create-or-update pattern,
+    same exception-based idempotency — but stores username="aurora_refresh"
+    and uses a description specific to the refresh credential.
+
+    Args:
+        sm_client:   boto3 SecretsManager client.
+        secret_name: The friendly name for the secret
+                     (e.g. "knotify-dev-aurora-refresh-credential").
+        password:    The new password to store.
+
+    Returns:
+        "created" or "updated" — reflects which API path was taken.
+    """
+    secret_value = json.dumps({"password": password, "username": "aurora_refresh"})
+    try:
+        sm_client.create_secret(
+            Name=secret_name,
+            SecretString=secret_value,
+            Description="aurora_refresh role credential — rotated on every migrator invocation",
+        )
+        return "created"
+    except sm_client.exceptions.ResourceExistsException:
+        sm_client.put_secret_value(
+            SecretId=secret_name,
+            SecretString=secret_value,
+        )
+        return "updated"
+
+
+def _alter_aurora_refresh_password(
+    conn: psycopg2.extensions.connection, password: str
+) -> bool:
+    """
+    Run ALTER ROLE aurora_refresh WITH PASSWORD '<password>' against the cluster.
+
+    Returns True if the role exists and the password was updated.
+    Returns False (skips silently) if the aurora_refresh role does not yet
+    exist — this guard protects a cold-start where migration 0013 has not
+    yet been applied in this run. In normal operation migration order ensures
+    the role exists before this function is called.
+
+    Args:
+        conn:     An open psycopg2 connection (master credential).
+        password: The new password for the aurora_refresh role.
+
+    Returns:
+        True if the ALTER was executed; False if the role was absent.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT 1 FROM pg_roles WHERE rolname = 'aurora_refresh'"
+        )
+        role_exists = cur.fetchone() is not None
+
+    if not role_exists:
+        return False
+
+    with conn.cursor() as cur:
+        cur.execute("ALTER ROLE aurora_refresh WITH PASSWORD %s", (password,))
+    conn.commit()
+    return True
+
+
 def _apply_migrations(db_url: str, migrations_path: Path) -> dict:
     """
     Apply all pending yoyo migrations against the database at *db_url*.
@@ -195,8 +278,8 @@ def handler(event: dict, context: object) -> dict:
     DB migrator Lambda entrypoint.
 
     Reads the master Aurora credential, applies pending yoyo migrations,
-    rotates the app_user password in Secrets Manager and on the cluster,
-    then returns a structured JSON response.
+    rotates the app_user and aurora_refresh passwords in Secrets Manager and
+    on the cluster, then returns a structured JSON response.
 
     Args:
         event:   Lambda event dict (unused — migrator is invoked without a
@@ -205,7 +288,8 @@ def handler(event: dict, context: object) -> dict:
 
     Returns:
         dict with keys: applied_migration_ids, pending_migrations,
-                        app_user_secret_action, elapsed_time_seconds.
+                        app_user_secret_action, aurora_refresh_secret_action,
+                        elapsed_time_seconds.
     """
     start = time.time()
 
@@ -240,13 +324,7 @@ def handler(event: dict, context: object) -> dict:
     applied_ids = migration_result["applied_ids"]
     pending_count = migration_result["pending_count"]
 
-    # 3. Generate a new random password for app_user
-    new_password = _generate_password()
-
-    # 4. Write it to Secrets Manager (create or update)
-    secret_action = _write_app_user_secret(sm, _APP_USER_SECRET_NAME, new_password)
-
-    # 5. Apply the new password to the cluster role
+    # Open one connection for all ALTER ROLE operations (master credential).
     conn = psycopg2.connect(
         host=host,
         port=port,
@@ -255,7 +333,35 @@ def handler(event: dict, context: object) -> dict:
         password=password,
     )
     try:
-        _alter_role_password(conn, new_password)
+        # 3. Generate a new random password for app_user
+        new_app_password = _generate_password()
+
+        # 4. Write it to Secrets Manager (create or update)
+        app_user_secret_action = _write_app_user_secret(
+            sm, _APP_USER_SECRET_NAME, new_app_password
+        )
+
+        # 5. Apply the new password to the app_user cluster role
+        _alter_role_password(conn, new_app_password)
+
+        # 6. Generate a new random password for aurora_refresh (story 7.4)
+        new_refresh_password = _generate_password()
+
+        # 7. Write it to Secrets Manager (create or update) — same pattern as
+        #    app_user_credential; no new abstraction (story 7.4 AC).
+        aurora_refresh_secret_action: str
+        if _AURORA_REFRESH_SECRET_NAME:
+            aurora_refresh_secret_action = _write_aurora_refresh_secret(
+                sm, _AURORA_REFRESH_SECRET_NAME, new_refresh_password
+            )
+            # 8. Apply the new password to the aurora_refresh cluster role.
+            #    Skips silently if the role does not yet exist (migration 0013
+            #    not yet applied — only possible on a partial rollback scenario).
+            role_updated = _alter_aurora_refresh_password(conn, new_refresh_password)
+            if not role_updated:
+                aurora_refresh_secret_action = "skipped"
+        else:
+            aurora_refresh_secret_action = "skipped"
     finally:
         conn.close()
 
@@ -264,6 +370,7 @@ def handler(event: dict, context: object) -> dict:
     return {
         "applied_migration_ids": applied_ids,
         "pending_migrations": pending_count,
-        "app_user_secret_action": secret_action,
+        "app_user_secret_action": app_user_secret_action,
+        "aurora_refresh_secret_action": aurora_refresh_secret_action,
         "elapsed_time_seconds": round(elapsed, 3),
     }

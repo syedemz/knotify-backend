@@ -402,3 +402,101 @@ resource "aws_iam_role_policy" "aurora_reader_match_app_user_credential" {
   role   = aws_iam_role.aurora_reader_match.name
   policy = data.aws_iam_policy_document.aurora_reader_match_app_user_credential.json
 }
+
+# ===========================================================================
+# Role: aurora_writer — lambda:InvokeFunction on refresh_deck_view (story 7.4)
+#
+# The profile Lambda (aurora_writer role) async-invokes the refresh Lambda
+# after a profile_complete_verified false→true flip commits.  Scoped to the
+# refresh Lambda's function ARN — not "*" — per least-privilege principle.
+# Default "" ARN value is used in unit tests (refresh module not yet created).
+# ===========================================================================
+
+data "aws_iam_policy_document" "aurora_writer_invoke_refresh" {
+  statement {
+    sid    = "InvokeRefreshDeckViewLambda"
+    effect = "Allow"
+    actions = [
+      "lambda:InvokeFunction",
+    ]
+    resources = [
+      var.refresh_lambda_arn != "" ? var.refresh_lambda_arn : "arn:aws:lambda:*:*:function:knotify-refresh-deck-view-*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "aurora_writer_invoke_refresh" {
+  name   = "aurora-writer-invoke-refresh"
+  role   = aws_iam_role.aurora_writer.name
+  policy = data.aws_iam_policy_document.aurora_writer_invoke_refresh.json
+}
+
+# ===========================================================================
+# Role: aurora_refresh_lambda
+#
+# For the knotify-refresh-deck-view Lambda (story 7.4).
+# Connects to Aurora as the aurora_refresh role using the dedicated
+# knotify-<env>-aurora-refresh-credential Secrets Manager secret.
+# Does NOT use the app_user credential — isolated surface per design.
+#
+# KMS: the project uses the default AWS-managed Secrets Manager KMS key
+# (aws/secretsmanager), so no explicit kms:Decrypt statement is required —
+# the default key policy grants Decrypt to the secret's resource-based policy
+# and the IAM principal automatically. Mirroring aurora_reader_match which
+# also has no explicit kms:Decrypt statement (story 7.0 precedent).
+# ===========================================================================
+
+resource "aws_iam_role" "aurora_refresh_lambda" {
+  name               = "knotify-${var.environment}-aurora-refresh-lambda"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+resource "aws_iam_role_policy_attachment" "aurora_refresh_lambda_vpc_access" {
+  role       = aws_iam_role.aurora_refresh_lambda.name
+  policy_arn = local.vpc_access_policy_arn
+}
+
+# Allow reading the aurora_refresh credential so the refresh Lambda can connect
+# to Aurora as aurora_refresh (NOT as app_user).
+data "aws_iam_policy_document" "aurora_refresh_lambda_credential" {
+  statement {
+    sid    = "ReadAuroraRefreshCredential"
+    effect = "Allow"
+    actions = [
+      "secretsmanager:GetSecretValue",
+    ]
+    resources = [
+      "${local.sm_arn_prefix}:secret:knotify-${var.environment}-aurora-refresh-credential-*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "aurora_refresh_lambda_credential" {
+  name   = "aurora-refresh-lambda-credential"
+  role   = aws_iam_role.aurora_refresh_lambda.name
+  policy = data.aws_iam_policy_document.aurora_refresh_lambda_credential.json
+}
+
+# Also allow the db_migrator to write (create/update) the aurora-refresh
+# credential secret. The db_migrator IAM role is extended in the same module
+# rather than opening a separate policy attachment.
+data "aws_iam_policy_document" "db_migrator_aurora_refresh_credential" {
+  statement {
+    sid    = "ManageAuroraRefreshCredential"
+    effect = "Allow"
+    actions = [
+      "secretsmanager:CreateSecret",
+      "secretsmanager:PutSecretValue",
+      "secretsmanager:DescribeSecret",
+    ]
+    resources = [
+      "${local.sm_arn_prefix}:secret:knotify-${var.environment}-aurora-refresh-credential-*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "db_migrator_aurora_refresh_credential" {
+  name   = "db-migrator-aurora-refresh-credential"
+  role   = aws_iam_role.db_migrator.name
+  policy = data.aws_iam_policy_document.db_migrator_aurora_refresh_credential.json
+}

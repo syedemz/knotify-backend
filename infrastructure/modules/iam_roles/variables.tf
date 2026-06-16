@@ -13,3 +13,9 @@ variable "cognito_user_pool_arn" {
   type        = string
   default     = ""
 }
+
+variable "refresh_lambda_arn" {
+  description = "ARN of the refresh_deck_view Lambda function. Used to scope aurora_writer's lambda:InvokeFunction permission (story 7.4) and to scope aurora_refresh_lambda's db_migrator credential access. Pass module.refresh_deck_view.function_arn from each environment root module."
+  type        = string
+  default     = ""
+}
