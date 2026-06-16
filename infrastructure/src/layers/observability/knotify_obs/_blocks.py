@@ -46,7 +46,10 @@ _ALLOWED_COLUMNS = frozenset(
         "fr.from_user_id",
         "fr.to_user_id",
         "bk.bookmarked_user_id",
+        # Match search (story 7.1) — users table aliased as u
         "u.user_id",
+        # Match deck (story 7.2) — deck_view aliased as dv
+        "dv.user_id",
     }
 )
 

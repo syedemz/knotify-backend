@@ -130,14 +130,20 @@ def test_given_get_root_when_dispatched_then_returns_404() -> None:
     assert body["error"] == "not_found"
 
 
-def test_given_post_match_search_when_dispatched_then_returns_404() -> None:
-    """given POST /v1/match/search (not yet wired), when dispatched, then 404."""
+def test_given_post_match_search_when_dispatched_then_not_404() -> None:
+    """
+    given POST /v1/match/search (wired in story 7.1),
+    when dispatched with an incomplete body,
+    then the response is NOT 404 (route is handled — expects 400 for bad body).
+    """
     mod = _import_handler()
+    # Body omits required fields — validation returns 400, not the 404 that the
+    # empty-dispatcher (story 7.0) would have returned.
     event = _make_event("POST", "/v1/match/search", body={"countries": ["GB"]})
     response = mod._dispatch(event, "user-sub-1234", "Male")
-    assert response["statusCode"] == 404
-    body = json.loads(response["body"])
-    assert body["error"] == "not_found"
+    assert response["statusCode"] != 404, (
+        "POST /v1/match/search is wired in story 7.1 — it must not return 404"
+    )
 
 
 def test_given_get_match_deck_when_dispatched_then_returns_404() -> None:

@@ -1,6 +1,6 @@
 phase: 7
 title: Match and deck
-last_updated: 2026-06-16 (story 7.4 complete)
+last_updated: 2026-06-16 (story 7.1 complete)
 
 context_summary: |
   Implements the matching and swipe-deck endpoints backed by pgvector ranking
@@ -307,7 +307,7 @@ stories:
   - id: 7.1
     title: knotify-match POST /v1/match/search
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [7.0]
     tracking_issue: 92
     acceptance_criteria:

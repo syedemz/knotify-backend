@@ -85,6 +85,20 @@ class TestBlockFilterWhitelistAccepted(unittest.TestCase):
         self.assertIn("NOT EXISTS", result)
         self.assertIn("u.user_id", result)
 
+    def test_given_deck_view_user_id_when_block_filter_then_returns_sql_fragment(self):
+        """
+        story 7.2 whitelist entry: deck_view aliased as dv uses dv.user_id in block_filter.
+        Added alongside u.user_id in a single _ALLOWED_COLUMNS edit (story 7.1 AC).
+        """
+        from knotify_obs import block_filter
+
+        result = block_filter("dv.user_id")
+
+        self.assertIsInstance(result, str)
+        self.assertIn("NOT EXISTS", result)
+        self.assertIn("blocks", result)
+        self.assertIn("dv.user_id", result)
+
 
 class TestBlockFilterWhitelistRejected(unittest.TestCase):
     """
@@ -173,6 +187,20 @@ class TestBlockFilterSqlShape(unittest.TestCase):
         from knotify_obs import block_filter
 
         col = "u.user_id"
+        fragment = block_filter(col)
+
+        self.assertIn(f"b.blocker_id = {col}", fragment)
+        self.assertIn(f"b.blocked_id = {col}", fragment)
+        self.assertEqual(fragment.count("%s"), 2)
+        self.assertTrue(fragment.strip().startswith("NOT EXISTS"))
+
+    def test_given_deck_view_user_id_when_block_filter_then_fragment_has_correct_structure(self):
+        """
+        story 7.2: dv.user_id whitelist entry produces a correctly-shaped fragment.
+        """
+        from knotify_obs import block_filter
+
+        col = "dv.user_id"
         fragment = block_filter(col)
 
         self.assertIn(f"b.blocker_id = {col}", fragment)
