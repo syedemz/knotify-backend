@@ -1052,6 +1052,55 @@ module "match" {
 }
 
 # ---------------------------------------------------------------------------
+# API Gateway wiring — story 7.5
+#
+# One integration + two routes + one Lambda permission for the match Lambda.
+# Both routes require JWT authorization (Cognito User Pool, same authorizer as
+# all other routes in the HTTP API) and the @with_edge_secret + @require_profile_complete
+# decorator chain enforced at the Lambda layer.
+#
+# Lambda permission source_arn MUST use api_execution_arn (not default_stage_arn).
+# Per hotfix #86: using default_stage_arn causes 5xx with no Lambda invocation
+# log entry because it is the management ARN, not the execute-api principal ARN.
+# ---------------------------------------------------------------------------
+
+resource "aws_apigatewayv2_integration" "match" {
+  api_id                 = module.api_gateway.api_id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = module.match.invoke_arn
+  payload_format_version = "2.0"
+}
+
+resource "aws_apigatewayv2_route" "post_match_search" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "POST /v1/match/search"
+  target             = "integrations/${aws_apigatewayv2_integration.match.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+resource "aws_apigatewayv2_route" "get_match_deck" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "GET /v1/match/deck"
+  target             = "integrations/${aws_apigatewayv2_integration.match.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+# Lambda permission — scoped to all match routes on this API.
+# source_arn uses api_execution_arn (execute-api ARN) + wildcard suffix per
+# hotfix #86. The /v1/match* prefix covers both /v1/match/search and
+# /v1/match/deck while remaining tightly scoped to the match Lambda.
+resource "aws_lambda_permission" "match_api_gateway" {
+  statement_id  = "AllowMatchAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = module.match.function_name
+  qualifier     = "live"
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${module.api_gateway.api_execution_arn}/*/*/v1/match*"
+}
+
+# ---------------------------------------------------------------------------
 # knotify-refresh-deck-view Lambda — story 7.4
 #
 # Dedicated Lambda for refreshing the deck_view materialized view.
