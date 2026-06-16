@@ -1,6 +1,6 @@
 phase: 7
 title: Match and deck
-last_updated: 2026-06-16 (story 7.0a complete)
+last_updated: 2026-06-16 (story 7.0b complete)
 
 context_summary: |
   Implements the matching and swipe-deck endpoints backed by pgvector ranking
@@ -179,7 +179,7 @@ stories:
   - id: 7.0b
     title: Onboarding enforcement — profile_complete JWT claim, decorator, widened CHECK
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: []
     tracking_issue: 91
     acceptance_criteria:
