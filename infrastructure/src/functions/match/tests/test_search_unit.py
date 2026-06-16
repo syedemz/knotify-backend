@@ -157,13 +157,20 @@ def test_given_get_match_search_when_dispatched_then_returns_404() -> None:
     assert json.loads(response["body"])["error"] == "not_found"
 
 
-def test_given_get_match_deck_when_dispatched_then_returns_404_after_71() -> None:
-    """given GET /v1/match/deck, when dispatched after 7.1 adds search, then 404."""
+def test_given_get_match_deck_when_dispatched_after_72_then_routes_to_deck_handler() -> None:
+    """
+    given GET /v1/match/deck (wired in story 7.2),
+    when dispatched, then not 404 (route is handled).
+    """
     mod = _import_handler()
+    stub_response = {"statusCode": 200, "headers": {}, "body": '{"results":[],"next_cursor":null}'}
+    mod._handle_get_match_deck = MagicMock(return_value=stub_response)
     event = _make_event("GET", "/v1/match/deck")
     response = mod._dispatch(event, "user-sub-1234", "Male")
-    assert response["statusCode"] == 404
-    assert json.loads(response["body"])["error"] == "not_found"
+    assert response["statusCode"] != 404, (
+        "GET /v1/match/deck is wired in story 7.2 — it must not return 404"
+    )
+    mod._handle_get_match_deck.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

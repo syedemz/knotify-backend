@@ -24,6 +24,10 @@ Design notes:
     be redundant. A comment in _build_search_sql notes this.
   - Ranking falls back from cosine ORDER BY to created_at DESC when the
     requester's preference_vector is NULL or all zeros (see _is_empty_vector).
+  - GET /v1/match/deck reads from deck_view (aliased dv). RLS does NOT
+    propagate through materialized views, so an explicit opposite-sex WHERE
+    using the app.requesting_user_sex GUC is the sole enforcement mechanism
+    on the deck path. rls_context() sets that GUC via SET LOCAL.
 
 Dependencies (Lambda layers):
   - knotify_obs: init_logger, with_edge_secret, require_profile_complete,
@@ -35,6 +39,7 @@ from __future__ import annotations
 
 import json
 import os
+import urllib.parse
 from typing import Any
 
 import knotify_db
@@ -80,6 +85,20 @@ _SEARCH_RESULT_COLS = (
     "u.photo_url, u.chosen_profile_avatar, "
     "u.created_at"
 )
+
+# Result columns for GET /v1/match/deck — mirrors search shape, but sourced
+# from deck_view (alias dv). sex is included so the handler can log/assert;
+# created_at is not in deck_view (not needed; deck orders by user_id).
+_DECK_RESULT_COLS = (
+    "dv.user_id, dv.username, dv.age, dv.religion, "
+    "dv.current_residence_country, dv.resident_country_code, "
+    "dv.current_residence_city, dv.job_title, "
+    "dv.photo_url, dv.chosen_profile_avatar, "
+    "dv.sex"
+)
+
+# Number of candidates per deck page.
+_DECK_PAGE_SIZE = 20
 
 # ---------------------------------------------------------------------------
 # Pure helper functions (no I/O — fully unit-testable)
@@ -251,6 +270,115 @@ def _build_search_sql(
     return sql, tuple(params)
 
 
+def _parse_deck_filters(raw: str) -> tuple[dict | None, str | None]:
+    """
+    URL-decode and validate the optional ?filters= query parameter.
+
+    Args:
+        raw: The raw (possibly URL-encoded) JSON string from the query string.
+
+    Returns:
+        (filters_dict, None)  when the string is valid JSON and passes
+                              _validate_search_body.
+        (None, error_string)  when JSON parsing fails or validation rejects
+                              the content.
+
+    Reuses _validate_search_body so deck and search share the same filter rules.
+    """
+    try:
+        decoded = urllib.parse.unquote(raw)
+        body = json.loads(decoded)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None, "filters must be valid url-encoded JSON"
+
+    if not isinstance(body, dict):
+        return None, "filters must be a JSON object"
+
+    err = _validate_search_body(body)
+    if err:
+        return None, err
+
+    return body, None
+
+
+def _build_deck_sql(
+    *,
+    user_id: str,
+    user_sex: str,
+    cursor: str | None = None,
+    filters: dict | None = None,
+) -> tuple[str, tuple]:
+    """
+    Build the parameterised SQL SELECT for GET /v1/match/deck.
+
+    Returns:
+        (sql_string, params_tuple)
+
+    SQL design:
+      - Reads from deck_view aliased as dv (materialized view; already
+        filtered to profile_complete_verified = true and deleted_at IS NULL).
+      - Explicit opposite-sex WHERE using the app.requesting_user_sex GUC:
+          WHERE dv.sex != current_setting('app.requesting_user_sex', true)
+        This is mandatory because RLS does NOT propagate through materialized
+        views — without this predicate, requester could see same-sex rows.
+      - block_filter("dv.user_id") enforces mutual-block exclusion.
+      - Optional hard filters (countries / religion / age) from ?filters= param.
+      - Optional cursor: WHERE dv.user_id > %s::uuid for keyset pagination.
+      - ORDER BY dv.user_id ASC, LIMIT 20.
+
+    Parameter order in the returned tuple:
+      1. block_filter first %s  (user_id — blocked_id direction)
+      2. block_filter second %s (user_id — blocker_id direction)
+      3. (optional) countries array     if filters present
+      4. (optional) religion string     if filters present
+      5. (optional) age_min int         if filters present
+      6. (optional) age_max int         if filters present
+      7. (optional) cursor UUID string  if cursor present
+    """
+    bf = block_filter("dv.user_id")
+
+    params: list[Any] = [user_id, user_id]  # two slots for block_filter NOT EXISTS
+
+    where_clauses = [
+        "dv.sex != current_setting('app.requesting_user_sex', true)",
+        bf,
+    ]
+
+    if filters:
+        countries: list[str] = filters["countries"]
+        religion: str = filters["religion"]
+        age_min: int = filters["age_min"]
+        age_max: int = filters["age_max"]
+
+        where_clauses.append("dv.resident_country_code = ANY(%s)")
+        params.append(countries)
+
+        where_clauses.append("dv.religion = %s")
+        params.append(religion)
+
+        where_clauses.append("dv.age >= %s")
+        params.append(age_min)
+
+        where_clauses.append("dv.age <= %s")
+        params.append(age_max)
+
+    if cursor is not None:
+        where_clauses.append("dv.user_id > %s::uuid")
+        params.append(cursor)
+
+    where_sql = "\n  AND ".join(where_clauses)
+
+    sql = (
+        f"SELECT {_DECK_RESULT_COLS} "
+        f"FROM deck_view dv "
+        f"WHERE {where_sql} "
+        f"ORDER BY dv.user_id ASC "
+        f"LIMIT {_DECK_PAGE_SIZE}"
+    )
+
+    return sql, tuple(params)
+
+
 # ---------------------------------------------------------------------------
 # Sub-handlers
 # ---------------------------------------------------------------------------
@@ -350,11 +478,94 @@ def _handle_post_match_search(event: dict, user_id: str, user_sex: str) -> dict:
     return _json_response(200, {"results": results})
 
 
+def _handle_get_match_deck(event: dict, user_id: str, user_sex: str) -> dict:
+    """
+    GET /v1/match/deck — swipe-deck with cursor pagination.
+
+    Query parameters:
+        cursor  (optional) — UUID string; returns rows after this user_id.
+        filters (optional) — URL-encoded JSON; same structure as search body.
+                             When present, hard filters are applied before
+                             pagination.
+
+    Steps:
+      1. Parse optional query parameters (cursor, filters).
+      2. Validate filters if present — reuses _validate_search_body via
+         _parse_deck_filters.
+      3. Open DB connection (cached across warm invocations).
+      4. Inside rls_context: execute deck SQL against deck_view dv.
+         The opposite-sex WHERE clause references app.requesting_user_sex GUC,
+         which rls_context sets via SET LOCAL — this is the ONLY enforcement
+         of opposite-sex visibility on the deck path (RLS does not propagate
+         through materialized views).
+      5. Build response with next_cursor = last user_id when batch is full,
+         or null when fewer than _DECK_PAGE_SIZE rows returned.
+
+    Response shape:
+        {"results": [...], "next_cursor": "<uuid-or-null>"}
+    """
+    # -- Step 1: parse query parameters --
+    qsp: dict = event.get("queryStringParameters") or {}
+    cursor: str | None = qsp.get("cursor")
+    filters_raw: str | None = qsp.get("filters")
+
+    # -- Step 2: validate filters if supplied --
+    filters: dict | None = None
+    if filters_raw is not None:
+        filters, parse_error = _parse_deck_filters(filters_raw)
+        if parse_error:
+            return _json_response(400, {"error": parse_error})
+
+    # -- Step 3: get DB connection --
+    conn = _get_conn()
+
+    # -- Step 4: run inside RLS context --
+    sql, params = _build_deck_sql(
+        user_id=user_id,
+        user_sex=user_sex,
+        cursor=cursor,
+        filters=filters,
+    )
+
+    try:
+        with knotify_db.rls_context(conn, user_id, user_sex):
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                rows = cur.fetchall()
+                description = cur.description
+
+    except Exception:
+        conn.close()
+        global _conn
+        _conn = None
+        raise
+
+    # -- Step 5: build response with next_cursor --
+    results = [_row_to_dict(row, description) for row in rows]
+    next_cursor: str | None = (
+        results[-1]["user_id"] if len(results) >= _DECK_PAGE_SIZE else None
+    )
+
+    logger.info(
+        "match_deck_complete",
+        extra={
+            "user_id": user_id,
+            "result_count": len(results),
+            "cursor": cursor,
+            "has_filters": filters is not None,
+            "next_cursor": next_cursor,
+        },
+    )
+
+    return _json_response(200, {"results": results, "next_cursor": next_cursor})
+
+
 # ---------------------------------------------------------------------------
 # Route dispatcher
 # ---------------------------------------------------------------------------
 
 _PATH_MATCH_SEARCH = "/v1/match/search"
+_PATH_MATCH_DECK = "/v1/match/deck"
 
 
 def _dispatch(event: dict, user_id: str, user_sex: str) -> dict:
@@ -363,7 +574,7 @@ def _dispatch(event: dict, user_id: str, user_sex: str) -> dict:
 
     Routes:
       POST /v1/match/search  → _handle_post_match_search  (story 7.1)
-      GET  /v1/match/deck    → _handle_get_match_deck      (story 7.2, not yet wired)
+      GET  /v1/match/deck    → _handle_get_match_deck      (story 7.2)
 
     All unknown routes return 404 {"error": "not_found"}.
     """
@@ -374,7 +585,9 @@ def _dispatch(event: dict, user_id: str, user_sex: str) -> dict:
     if method == "POST" and path == _PATH_MATCH_SEARCH:
         return _handle_post_match_search(event, user_id, user_sex)
 
-    # GET /v1/match/deck is added in story 7.2
+    if method == "GET" and path == _PATH_MATCH_DECK:
+        return _handle_get_match_deck(event, user_id, user_sex)
+
     logger.warning(
         "unmatched_route",
         extra={"method": method, "path": path},
