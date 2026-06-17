@@ -588,6 +588,14 @@ module "profile" {
   handler       = "handler.handler"
   filename      = "${path.module}/../../../build/profile.zip"
 
+  # PATCH /v1/profile/me on the false→true profile_complete flip does
+  # Aurora UPDATE + Cognito admin_update_user_attributes (3–4s from a VPC
+  # Lambda via the cognito-idp interface endpoint) + lambda.invoke of the
+  # refresh_deck_view Lambda. Worst case overruns the 10s module default;
+  # direct invokes measured ~5s warm, longer on cold start. 30s gives
+  # headroom without masking real latency regressions.
+  timeout = 30
+
   layers = [
     module.observability_layer.layer_arn,
     module.db_layer.layer_arn,
