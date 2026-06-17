@@ -119,6 +119,8 @@ package-all:
 	$(MAKE) package FUNC=match
 	@echo "[package-all] Building refresh_deck_view function ..."
 	$(MAKE) package FUNC=refresh_deck_view
+	@echo "[package-all] Building chat_resolver function ..."
+	$(MAKE) package FUNC=chat_resolver
 	@echo "[package-all] Done — all artifacts in $(BUILD_DIR)/"
 
 # ---------------------------------------------------------------------------

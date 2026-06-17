@@ -11,5 +11,6 @@ output "role_arns" {
     stepfn_task                   = aws_iam_role.stepfn_task.arn
     aurora_reader_match           = aws_iam_role.aurora_reader_match.arn
     aurora_refresh_lambda         = aws_iam_role.aurora_refresh_lambda.arn
+    chat_resolver                 = aws_iam_role.chat_resolver.arn
   }
 }

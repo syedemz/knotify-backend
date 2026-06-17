@@ -130,6 +130,14 @@ module "iam_roles" {
   # only (story 7.4). Terraform resolves the forward reference from the
   # refresh_deck_view module declared later in this file.
   refresh_lambda_arn = module.refresh_deck_view.function_arn
+
+  # Scope chat_resolver DynamoDB permissions to exact table ARNs (story 8.0).
+  # Sourced from the dynamodb module outputs added in story 8.0.
+  chat_rooms_table_arn           = module.dynamodb.chat_rooms_arn
+  chat_room_membership_table_arn = module.dynamodb.chat_room_membership_arn
+  chat_messages_table_arn        = module.dynamodb.chat_messages_arn
+  message_reads_table_arn        = module.dynamodb.message_reads_arn
+  notifications_table_arn        = module.dynamodb.notifications_arn
 }
 
 # ---------------------------------------------------------------------------
@@ -1106,6 +1114,45 @@ resource "aws_lambda_permission" "match_api_gateway" {
   qualifier     = "live"
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${module.api_gateway.api_execution_arn}/*/*/v1/match*"
+}
+
+# ---------------------------------------------------------------------------
+# knotify-chat-resolver Lambda — story 8.0 scaffold
+#
+# AppSync Lambda resolver for all chat domain fields (Query, Mutation, and
+# Subscription types).  Story 8.0 ships an empty dispatcher; subsequent
+# stories (8.3, 8.4, 8.5, 8.7, 8.8) extend handler.py with concrete
+# (typeName, fieldName) implementations.
+#
+# Placement: inside the VPC (private subnets) to reach Aurora on the private
+# endpoint. DynamoDB is accessed via the VPC endpoint (networking module).
+#
+# The module output lambda_arn is consumed by the AppSync module in story 8.1
+# to register the Lambda data source.
+# ---------------------------------------------------------------------------
+
+module "chat_resolver" {
+  source = "../../modules/chat_resolver"
+
+  environment   = var.environment
+  function_name = "knotify-chat-resolver-${var.environment}"
+  filename      = "${path.module}/../../../build/chat_resolver.zip"
+  role_arn      = module.iam_roles.role_arns["chat_resolver"]
+
+  layers = [
+    module.observability_layer.layer_arn,
+    module.db_layer.layer_arn,
+  ]
+
+  vpc_config = {
+    subnet_ids         = module.networking.private_subnet_ids
+    security_group_ids = [module.networking.lambda_security_group_id]
+  }
+
+  db_secret_name = "knotify-${var.environment}-app-user-credential"
+  aurora_host    = module.aurora.cluster_endpoint
+  aurora_port    = tostring(module.aurora.port)
+  aurora_dbname  = module.aurora.database_name
 }
 
 # ---------------------------------------------------------------------------

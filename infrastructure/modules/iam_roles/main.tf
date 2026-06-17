@@ -500,3 +500,86 @@ resource "aws_iam_role_policy" "db_migrator_aurora_refresh_credential" {
   role   = aws_iam_role.db_migrator.name
   policy = data.aws_iam_policy_document.db_migrator_aurora_refresh_credential.json
 }
+
+# ===========================================================================
+# Role: chat_resolver
+#
+# For the knotify-chat-resolver AppSync Lambda resolver (phase 8 story 8.0).
+# Connects to Aurora as app_user via the app_user_credential.
+# Has scoped DynamoDB permissions on the five chat domain tables:
+#   ChatRooms, ChatRoomMembership, ChatMessages, MessageReads, Notifications.
+# Table ARNs are sourced from module.dynamodb outputs; default "" is used in
+# unit tests (dynamodb module not yet created).
+#
+# Actions granted match the chat resolver's access pattern:
+#   GetItem        — membership checks, room lookups, read-receipt reads
+#   PutItem        — new chat room creation, new message creation
+#   UpdateItem     — last_message_* on ChatRooms, MessageReads upsert
+#   Query          — messages-by-room, membership-by-user pagination
+#   BatchGetItem   — bulk room fetch (listMyRooms)
+#   TransactWriteItems — atomic multi-table writes (createOrGetRoom, sendMessage)
+# ===========================================================================
+
+resource "aws_iam_role" "chat_resolver" {
+  name               = "knotify-${var.environment}-chat-resolver"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+resource "aws_iam_role_policy_attachment" "chat_resolver_vpc_access" {
+  role       = aws_iam_role.chat_resolver.name
+  policy_arn = local.vpc_access_policy_arn
+}
+
+# Allow reading the app_user credential so the chat resolver can connect to Aurora.
+# Scoped to the knotify-<env>-app-user-credential wildcard (matches the
+# Secrets Manager secret name pattern used by the db_migrator on first run).
+data "aws_iam_policy_document" "chat_resolver_app_user_credential" {
+  statement {
+    sid    = "ReadAppUserCredential"
+    effect = "Allow"
+    actions = [
+      "secretsmanager:GetSecretValue",
+    ]
+    resources = [
+      "${local.sm_arn_prefix}:secret:knotify-${var.environment}-app-user-credential-*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "chat_resolver_app_user_credential" {
+  name   = "chat-resolver-app-user-credential"
+  role   = aws_iam_role.chat_resolver.name
+  policy = data.aws_iam_policy_document.chat_resolver_app_user_credential.json
+}
+
+# Scoped DynamoDB permissions on the five chat domain tables.
+# Table ARNs sourced from module.dynamodb outputs (var.*_table_arn) so the
+# policy is portable across environments and avoids hardcoded ARN strings.
+# Default "" fallback is a wildcard pattern used only in IAM unit tests.
+data "aws_iam_policy_document" "chat_resolver_dynamodb" {
+  statement {
+    sid    = "ChatTableReadWrite"
+    effect = "Allow"
+    actions = [
+      "dynamodb:GetItem",
+      "dynamodb:PutItem",
+      "dynamodb:UpdateItem",
+      "dynamodb:Query",
+      "dynamodb:BatchGetItem",
+      "dynamodb:TransactWriteItems",
+    ]
+    resources = [
+      var.chat_rooms_table_arn != "" ? var.chat_rooms_table_arn : "arn:aws:dynamodb:*:*:table/ChatRooms",
+      var.chat_room_membership_table_arn != "" ? var.chat_room_membership_table_arn : "arn:aws:dynamodb:*:*:table/ChatRoomMembership",
+      var.chat_messages_table_arn != "" ? var.chat_messages_table_arn : "arn:aws:dynamodb:*:*:table/ChatMessages",
+      var.message_reads_table_arn != "" ? var.message_reads_table_arn : "arn:aws:dynamodb:*:*:table/MessageReads",
+      var.notifications_table_arn != "" ? var.notifications_table_arn : "arn:aws:dynamodb:*:*:table/Notifications",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "chat_resolver_dynamodb" {
+  name   = "chat-resolver-dynamodb"
+  role   = aws_iam_role.chat_resolver.name
+  policy = data.aws_iam_policy_document.chat_resolver_dynamodb.json
+}

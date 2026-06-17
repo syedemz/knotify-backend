@@ -19,3 +19,37 @@ variable "refresh_lambda_arn" {
   type        = string
   default     = ""
 }
+
+# ---------------------------------------------------------------------------
+# Story 8.0 — chat_resolver IAM role DynamoDB scoping
+# ---------------------------------------------------------------------------
+
+variable "chat_rooms_table_arn" {
+  description = "ARN of the ChatRooms DynamoDB table. Used to scope chat_resolver IAM policy (story 8.0). Pass module.dynamodb.chat_rooms_arn from each environment root module."
+  type        = string
+  default     = ""
+}
+
+variable "chat_room_membership_table_arn" {
+  description = "ARN of the ChatRoomMembership DynamoDB table. Used to scope chat_resolver IAM policy (story 8.0). Pass module.dynamodb.chat_room_membership_arn from each environment root module."
+  type        = string
+  default     = ""
+}
+
+variable "chat_messages_table_arn" {
+  description = "ARN of the ChatMessages DynamoDB table. Used to scope chat_resolver IAM policy (story 8.0). Pass module.dynamodb.chat_messages_arn from each environment root module."
+  type        = string
+  default     = ""
+}
+
+variable "message_reads_table_arn" {
+  description = "ARN of the MessageReads DynamoDB table. Used to scope chat_resolver IAM policy (story 8.0). Pass module.dynamodb.message_reads_arn from each environment root module."
+  type        = string
+  default     = ""
+}
+
+variable "notifications_table_arn" {
+  description = "ARN of the Notifications DynamoDB table. Used to scope chat_resolver IAM policy (story 8.0). Pass module.dynamodb.notifications_arn from each environment root module."
+  type        = string
+  default     = ""
+}
