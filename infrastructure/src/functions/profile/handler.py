@@ -561,9 +561,12 @@ def _handle_patch_profile_me(event: dict, user_id: str, user_sex: str) -> dict:
                 f"RETURNING *"
             )
 
+            logger.info("patch_before_update_execute", extra={"user_id": user_id, "flag_flipped": flag_flipped, "n_set_clauses": len(set_clauses)})
             with conn.cursor() as cur:
                 cur.execute(update_sql, [*set_values, user_id])
+                logger.info("patch_after_update_execute", extra={"user_id": user_id})
                 updated_row = cur.fetchone()
+                logger.info("patch_after_update_fetch", extra={"user_id": user_id})
                 updated = _row_to_dict(updated_row, cur.description) if updated_row else proposed
 
     except Exception:
