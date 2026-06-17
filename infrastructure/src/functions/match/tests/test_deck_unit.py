@@ -162,6 +162,27 @@ def test_given_no_cursor_no_filters_when_build_deck_sql_then_opposite_sex_where_
     assert "dv.sex != current_setting('app.requesting_user_sex', true)" in sql
 
 
+def test_given_no_cursor_no_filters_when_build_deck_sql_then_self_excluded_from_results() -> None:
+    """
+    Regression for hotfix user-sex-jwt-propagation:
+
+    The opposite-sex predicate `dv.sex != current_setting('app.requesting_user_sex', true)`
+    silently degrades to `dv.sex != ''` when the GUC is empty (which it is for
+    any JWT minted before the pre-token-gen Lambda started emitting custom:user_sex).
+    Empty != any value, so the requester leaks into their own deck.
+
+    The defence-in-depth fix is an explicit `dv.user_id != %s::uuid` predicate
+    bound to the requester's user_id, regardless of GUC state.
+    """
+    mod = _import_handler()
+    sql, params = mod._build_deck_sql(user_id=_UUID_1, user_sex="Male")
+    assert "dv.user_id != %s::uuid" in sql
+    # The requester's user_id appears in params (at least once for self-exclusion;
+    # block_filter consumes two more slots as well).
+    assert _UUID_1 in params
+    assert sum(1 for p in params if p == _UUID_1) >= 1
+
+
 def test_given_no_cursor_no_filters_when_build_deck_sql_then_block_filter_dv_user_id() -> None:
     """
     given no cursor and no filters,

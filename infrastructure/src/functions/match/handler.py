@@ -333,20 +333,29 @@ def _build_deck_sql(
       - ORDER BY dv.user_id ASC, LIMIT 20.
 
     Parameter order in the returned tuple:
-      1. block_filter first %s  (user_id — blocked_id direction)
-      2. block_filter second %s (user_id — blocker_id direction)
-      3. (optional) countries array     if filters present
-      4. (optional) religion string     if filters present
-      5. (optional) age_min int         if filters present
-      6. (optional) age_max int         if filters present
-      7. (optional) cursor UUID string  if cursor present
+      1. self-exclusion (user_id — dv.user_id != %s::uuid)
+      2. block_filter first %s  (user_id — blocked_id direction)
+      3. block_filter second %s (user_id — blocker_id direction)
+      4. (optional) countries array     if filters present
+      5. (optional) religion string     if filters present
+      6. (optional) age_min int         if filters present
+      7. (optional) age_max int         if filters present
+      8. (optional) cursor UUID string  if cursor present
     """
     bf = block_filter("dv.user_id")
 
-    params: list[Any] = [user_id, user_id]  # two slots for block_filter NOT EXISTS
+    # Three user_id slots, in placeholder order:
+    #   1. explicit self-exclusion (defence-in-depth — see hotfix
+    #      user-sex-jwt-propagation: if the GUC is empty the opposite-sex
+    #      predicate degrades to `dv.sex != ''`, which lets the requester
+    #      leak into their own deck).
+    #   2. block_filter blocked_id direction
+    #   3. block_filter blocker_id direction
+    params: list[Any] = [user_id, user_id, user_id]
 
     where_clauses = [
         "dv.sex != current_setting('app.requesting_user_sex', true)",
+        "dv.user_id != %s::uuid",
         bf,
     ]
 

@@ -53,13 +53,17 @@ def _import_handler():
 # ---------------------------------------------------------------------------
 
 def _make_v2_event(sub: str, trigger_source: str = "TokenGeneration_Authentication",
-                   profile_complete_attr: str | None = None) -> dict:
+                   profile_complete_attr: str | None = None,
+                   gender_attr: str | None = None) -> dict:
     """
     Build a minimal V2 PreTokenGeneration event.
 
     profile_complete_attr — if given, sets custom:profile_complete in
     userAttributes; if None, the attribute is absent (simulates a user
     whose profile_complete attribute has never been set).
+    gender_attr — if given, sets the standard Cognito `gender` attribute;
+    if None, simulates a user with no gender attribute set (the broken
+    state from before this hotfix shipped).
     """
     user_attributes = {
         "sub": sub,
@@ -68,6 +72,8 @@ def _make_v2_event(sub: str, trigger_source: str = "TokenGeneration_Authenticati
     }
     if profile_complete_attr is not None:
         user_attributes["custom:profile_complete"] = profile_complete_attr
+    if gender_attr is not None:
+        user_attributes["gender"] = gender_attr
 
     return {
         "version": "2",
@@ -207,6 +213,146 @@ def test_given_any_event_when_handler_invoked_then_no_db_connection_opened():
 
 # ---------------------------------------------------------------------------
 # Test 6: Handler always returns the original event dict (identity)
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Test 7: gender = "Male" → custom:user_sex = "Male" on both tokens
+# ---------------------------------------------------------------------------
+
+def test_given_gender_male_when_handler_invoked_then_user_sex_claim_is_male():
+    """
+    The standard Cognito `gender` attribute "Male" must flow through as the
+    custom:user_sex claim with the canonical "Male" value on both tokens.
+    """
+    mod = _import_handler()
+    sub = str(uuid.uuid4())
+    event = _make_v2_event(
+        sub,
+        "TokenGeneration_Authentication",
+        profile_complete_attr="true",
+        gender_attr="Male",
+    )
+
+    with patch.dict(os.environ, {"DB_SECRET_NAME": "ignored"}):
+        result = mod.handler(event, {})
+
+    override = result["response"]["claimsAndScopeOverrideDetails"]
+    assert override["idTokenGeneration"]["claimsToAddOrOverride"]["custom:user_sex"] == "Male"
+    assert override["accessTokenGeneration"]["claimsToAddOrOverride"]["custom:user_sex"] == "Male"
+
+
+# ---------------------------------------------------------------------------
+# Test 8: gender = "Female" → custom:user_sex = "Female" on both tokens
+# ---------------------------------------------------------------------------
+
+def test_given_gender_female_when_handler_invoked_then_user_sex_claim_is_female():
+    mod = _import_handler()
+    sub = str(uuid.uuid4())
+    event = _make_v2_event(
+        sub,
+        "TokenGeneration_Authentication",
+        profile_complete_attr="true",
+        gender_attr="Female",
+    )
+
+    with patch.dict(os.environ, {"DB_SECRET_NAME": "ignored"}):
+        result = mod.handler(event, {})
+
+    override = result["response"]["claimsAndScopeOverrideDetails"]
+    assert override["idTokenGeneration"]["claimsToAddOrOverride"]["custom:user_sex"] == "Female"
+    assert override["accessTokenGeneration"]["claimsToAddOrOverride"]["custom:user_sex"] == "Female"
+
+
+# ---------------------------------------------------------------------------
+# Test 9: lowercase / single-letter forms fold to canonical
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("male", "Male"),
+        ("MALE", "Male"),
+        ("m", "Male"),
+        ("M", "Male"),
+        ("female", "Female"),
+        ("F", "Female"),
+        ("  Male  ", "Male"),
+    ],
+)
+def test_given_gender_variants_when_handler_invoked_then_user_sex_claim_normalized(raw, expected):
+    mod = _import_handler()
+    sub = str(uuid.uuid4())
+    event = _make_v2_event(
+        sub,
+        "TokenGeneration_Authentication",
+        profile_complete_attr="true",
+        gender_attr=raw,
+    )
+
+    with patch.dict(os.environ, {"DB_SECRET_NAME": "ignored"}):
+        result = mod.handler(event, {})
+
+    override = result["response"]["claimsAndScopeOverrideDetails"]
+    assert override["idTokenGeneration"]["claimsToAddOrOverride"]["custom:user_sex"] == expected
+    assert override["accessTokenGeneration"]["claimsToAddOrOverride"]["custom:user_sex"] == expected
+
+
+# ---------------------------------------------------------------------------
+# Test 10: gender absent → custom:user_sex claim OMITTED (not set to "")
+# ---------------------------------------------------------------------------
+
+def test_given_gender_absent_when_handler_invoked_then_user_sex_claim_omitted():
+    """
+    If the gender attribute is absent (existing pre-hotfix user, JWT not yet
+    refreshed after backfill), the custom:user_sex claim must NOT appear in
+    the override block. Emitting "" would poison the GUC and silently disable
+    opposite-sex filtering — better to omit and let the consumer log the
+    missing case.
+    """
+    mod = _import_handler()
+    sub = str(uuid.uuid4())
+    event = _make_v2_event(
+        sub,
+        "TokenGeneration_Authentication",
+        profile_complete_attr="true",
+        gender_attr=None,
+    )
+
+    with patch.dict(os.environ, {"DB_SECRET_NAME": "ignored"}):
+        result = mod.handler(event, {})
+
+    override = result["response"]["claimsAndScopeOverrideDetails"]
+    assert "custom:user_sex" not in override["idTokenGeneration"]["claimsToAddOrOverride"]
+    assert "custom:user_sex" not in override["accessTokenGeneration"]["claimsToAddOrOverride"]
+    # And the profile_complete claim is still present.
+    assert override["idTokenGeneration"]["claimsToAddOrOverride"]["custom:profile_complete"] == "true"
+
+
+# ---------------------------------------------------------------------------
+# Test 11: unrecognised gender value → claim OMITTED
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("raw", ["X", "other", "Non-Binary", "true", "1"])
+def test_given_unknown_gender_when_handler_invoked_then_user_sex_claim_omitted(raw):
+    mod = _import_handler()
+    sub = str(uuid.uuid4())
+    event = _make_v2_event(
+        sub,
+        "TokenGeneration_Authentication",
+        profile_complete_attr="true",
+        gender_attr=raw,
+    )
+
+    with patch.dict(os.environ, {"DB_SECRET_NAME": "ignored"}):
+        result = mod.handler(event, {})
+
+    override = result["response"]["claimsAndScopeOverrideDetails"]
+    assert "custom:user_sex" not in override["idTokenGeneration"]["claimsToAddOrOverride"]
+    assert "custom:user_sex" not in override["accessTokenGeneration"]["claimsToAddOrOverride"]
+
+
+# ---------------------------------------------------------------------------
+# Test 12: handler always returns the event dict (identity)
 # ---------------------------------------------------------------------------
 
 def test_given_any_event_handler_returns_the_event_dict():
