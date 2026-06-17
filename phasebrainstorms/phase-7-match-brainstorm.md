@@ -266,3 +266,93 @@ Unchanged from the 2026-06-16 08:20 review. Graph is consistent: 7.0/7.0a/7.0b/7
 ### Verdict
 
 PRD is implementation-ready. The S1 wording bug is a single-sentence subagent brief addendum; doesn't require a PRD edit. Recommend proceeding to Step 1 (tracking-issue sweep).
+
+## 2026-06-17 07:30 brainstorm (post-implementation operational audit)
+
+Final sanity-check pass after all nine stories shipped `done: true` (PR #98 merged) and a live end-to-end probe ran against dev via CloudFront. Three hotfixes (#99, #100, #101) have already merged since the PRD was finalized. Cross-checked PRD against repo HEAD = `f154c03` plus the hotfix tip, against `scripts/probe_phase7.py`, and against CloudWatch traces from probe run on 2026-06-17 06:55Z.
+
+The phase is shipped — these findings are NOT blockers. They are operational gaps and PRD-coverage gaps that the live probe surfaced; relevant for phase 11 hardening and for the unresolved cold-start issue in front of us today.
+
+### Drift since 2026-06-16 — post-merge hotfixes
+
+**D1. Hotfix #99 — psycopg2 dict adaptation for `preferences` jsonb column.**
+
+Story 7.3 wires `preference_vector = %s::vector` alongside `preferences` (jsonb) in the same UPDATE. The story's AC requires that "PATCH with preferences in body produces an UPDATE that sets both preferences (JSONB) and preference_vector (vector(20)) in a single SQL statement" — verified by a unit test. The unit test passes against a mocked cursor, but psycopg2 has no built-in `dict` adapter — a real cursor receiving a raw Python dict raises `ProgrammingError: can't adapt type 'dict'`. The live probe surfaced this at runtime.
+
+Hotfix PR #99 (merged 2026-06-17, commit on `development`) wraps dict values with `psycopg2.extras.Json(...)` at the SET-clause build site in `infrastructure/src/functions/profile/handler.py`. Story 7.3's AC is silent on jsonb adaptation. Either:
+- amend story 7.3 AC to require `psycopg2.extras.Json` wrapping for jsonb columns and add the explicit assertion to the unit test, OR
+- add a lessons-learned entry: "psycopg2 jsonb columns require `psycopg2.extras.Json` wrapping at execute-time; pure-Python mocks won't catch this."
+
+This is the canonical "unit tests passed because the mock lied" gap.
+
+**D2. Hotfix #100 — Aurora Serverless v2 `max_capacity` bumped 2.0 → 4.0 in dev.**
+
+Phase 2 set `aurora_max_acu = 2.0` for dev (story 2.14 AC). Phase 7's probe creates two Cognito users in rapid succession, each issuing a 34-field PATCH that triggers Aurora UPDATE + Cognito admin write + lambda.invoke. 2 ACU saturated connection slots (~90 conns) under that parallelism.
+
+Hotfix #100 bumped dev `aurora_max_acu` to 4.0. No PRD change needed — phase 2's value was a deliberate dev-cost choice; phase 7's load profile is the first to exceed it. Flag for phase 11 hardening: revisit dev ACU caps once observability lands.
+
+**D3. Hotfix #101 — profile Lambda timeout 10s → 30s.**
+
+Phase-6 module default timeout was 10s. Phase 7's story 7.0b extended the PATCH handler with a Cognito `admin_update_user_attributes` call from a VPC-attached Lambda (~3–4s via the cognito-idp interface endpoint), and story 7.4 added an async `lambda.invoke` of the refresh Lambda. Combined with a 34-field Aurora UPDATE on the flip path, the worst-case envelope overruns 10s on cold start.
+
+Hotfix #101 bumped the profile module's timeout to 30s in both dev and prod main.tf (with rationale comment in the code). Story 7.0b's AC does not specify a timeout budget. Recommendation: PRD-amend a sentence in 7.0b notes — "profile module timeout must be ≥30s to accommodate the flip path (Aurora UPDATE + Cognito admin write + lambda.invoke)" — so phase 11 doesn't trip the same wire.
+
+### Unresolved — cold-start budget still insufficient
+
+**U1. Cold-start PATCH-with-flip exceeds 30s when Aurora is at min_acu=0.**
+
+After #101 merged and dev redeployed, the probe re-ran on 2026-06-17 06:55Z. CloudWatch:
+```
+Init Duration: 790.93 ms
+Duration: 30000.00 ms
+Status: timeout
+```
+
+The Lambda init was 790ms (fast). The handler itself ran for ~29s before being killed by the 30s timeout. Dev `aurora_min_acu = 0` means Aurora Serverless v2 pauses to zero compute when idle; cold-start wake-from-paused is ~10–20s, then a 34-field UPDATE + Cognito admin write on top. The 30s budget is real-world insufficient for a true cold-start.
+
+Phase 7 PRD does not address dev cold-start operationally. Options for the user to consider (no PRD or code change without authorization):
+- **(a)** Raise dev `aurora_min_acu` from 0 to 0.5 (~$30/mo extra cost) to eliminate cold-start latency. Phase 2 AC explicitly chose 0 for dev cost — this would be a deliberate reversal for phase-7 testability.
+- **(b)** Pre-warm Aurora in the probe script with a no-op `SELECT 1` or a short DescribeDBClusters-then-wait loop before the PATCH calls.
+- **(c)** Bump profile Lambda timeout further (60s) — wasteful, masks the real cost, and Cognito's post-confirmation trigger has a 5s budget elsewhere that we can't bump.
+- **(d)** Document the warm-up step in `scripts/probe_phase7.py` and require the operator to ensure Aurora is non-zero before running.
+
+This is the live blocker on validating phase 7 end-to-end. Phase 11 (pre-launch hardening) will need a documented production warm-up strategy — prod will have nonzero min_acu so this is dev-specific.
+
+**U2. Probe script lacks Aurora pre-warm step.**
+
+`scripts/probe_phase7.py` (lines 150–180) opens immediately with `_signup` + `_signin` + PATCH calls. The first PATCH against a paused Aurora cluster is guaranteed to hit cold-start latency. The probe is not phase-7 deliverable code — it's an operator tool — so this isn't a PRD gap, but worth noting alongside U1's option (b).
+
+### Gaps in test coverage surfaced by the live probe
+
+**T1. Story 7.0b's integration test doesn't exercise the real cold-start cost.**
+
+Story 7.0b's AC includes an integration test that PATCHes the profile, completes onboarding, calls `cognito-idp initiate_auth(REFRESH_TOKEN_AUTH)`, and asserts 200s on the gated endpoints. This test runs against docker-compose Postgres + likely mocked Cognito (not real Aurora Serverless v2 + real Cognito interface endpoint). The compound 30s cost is invisible until live.
+
+This isn't a PRD bug — phase-6 set the integration-test floor (docker-compose) and phase 7 inherited it. The structural gap is: there's no test tier between "unit + mocked" and "manual probe against live infra". Phase 11 hardening should consider a `tests/live/` tier that runs against dev infra with documented prerequisites (Aurora warm, secrets present).
+
+**T2. Story 7.3 unit test "produces an UPDATE that sets both preferences and preference_vector" passed against the dict-adapter bug.**
+
+See D1. The unit test asserted the SQL shape but didn't run a real psycopg2 cursor. A live probe was required to surface the dict-adaptation bug. Same structural recommendation as T1.
+
+### Drift NOT requiring action
+
+- **Layer artifact corruption (resolved out-of-band).** During U1 debugging, a `terraform apply -target=module.profile` rebuilt and republished `knotify-db-layer` and `knotify-observability-layer` from local placeholder zips (build artifacts cleared from the working tree). `aws_lambda_layer_version` does destroy-on-replace (no skip_destroy) so v23 was destroyed before broken v24 published, breaking all 9 Lambdas. Recovered via GitHub Actions artifact download from the phase-7 merge build (run 27664703103) — published v25 manually, then CI from #99 merge naturally rebuilt v26 correctly on Linux. Lessons.md candidate: never target-apply a module whose deps re-evaluate disk inputs; always build through CI. Out of phase 7 scope, but worth a lessons-learned entry.
+
+- **`engineeringprinciples.md` "no parallelism" honored.** All nine stories shipped serially with subagent dispatch. No concurrent edits to `profile/handler.py` despite 7.0b, 7.3, 7.4 all touching it.
+
+### `depends_on` recheck
+
+No changes. Graph stayed sound throughout dispatch. Topological order matched commit order in `context.md`.
+
+### Verdict
+
+Phase 7 implementation: ✅ shipped, all stories `done: true`, PR #98 merged.
+
+Phase 7 live validation: ❌ blocked on U1 (cold-start budget). Three hotfixes (#99, #100, #101) cleared the surface bugs; the residual is dev Aurora min_acu=0 + interface endpoint warmup + 34-field UPDATE compounding past 30s.
+
+**Recommendations for the user, in order of preference (await direction before acting):**
+1. Accept U1 option (b) — add Aurora pre-warm to `scripts/probe_phase7.py`. Cheapest, doesn't change infra, validates phase 7 end-to-end. Probe becomes a 2-stage script: warm + exercise.
+2. If (b) doesn't fit the workflow (e.g., probe is meant to be a true cold-path test), pick (a): bump dev `aurora_min_acu` to 0.5 via a hotfix and re-run. This is a deliberate reversal of phase-2's cost choice for testability.
+3. Open a lessons-learned entry covering: (i) psycopg2 jsonb dict adaptation, (ii) Lambda layer destroy-on-replace trap during target-apply, (iii) docker-compose vs live-infra cold-start latency invisibility.
+
+No further story dispatch is needed. The phase is complete; only operational closeout remains.
