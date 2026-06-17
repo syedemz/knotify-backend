@@ -501,15 +501,19 @@ def _handle_patch_profile_me(event: dict, user_id: str, user_sex: str) -> dict:
     if not patch_data:
         return _json_response(400, {"error": "no_valid_fields"})
 
+    logger.info("patch_before_get_conn", extra={"user_id": user_id})
     conn = _get_conn()
+    logger.info("patch_after_get_conn", extra={"user_id": user_id})
     flag_flipped = False  # tracks whether this PATCH flipped false→true
 
     try:
         with knotify_db.rls_context(conn, user_id, user_sex):
+            logger.info("patch_after_rls_enter", extra={"user_id": user_id})
             with conn.cursor() as cur:
                 # Step 1: fetch current row with row-lock
                 cur.execute(_SELECT_FOR_UPDATE_SQL, (user_id,))
                 row = cur.fetchone()
+                logger.info("patch_after_select_for_update", extra={"user_id": user_id, "row_found": row is not None})
                 if row is None:
                     return _json_response(404, {"error": "not_found"})
                 current = _row_to_dict(row, cur.description)
