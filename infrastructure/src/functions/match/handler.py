@@ -238,6 +238,10 @@ def _build_search_sql(
         # u.sex predicate intentionally omitted: RLS on the users table enforces
         # opposite-sex visibility for the app_user role; adding an explicit
         # predicate would be redundant (and could mask an RLS misconfiguration).
+        # u.user_id != %s is NOT redundant — RLS allows a user to read their
+        # own row (the policy is opposite-sex OR self), but candidate search
+        # results must never contain the requester themselves.
+        f"  AND u.user_id != %s::uuid "
         f"  AND u.religion = %s "
         f"  AND u.resident_country_code = ANY(%s) "
         f"  AND u.age >= %s "
@@ -248,14 +252,16 @@ def _build_search_sql(
     )
 
     # Parameters must be in the order the %s placeholders appear in the SQL:
-    # 1. religion                                      (WHERE u.religion = %s)
-    # 2. countries array            (WHERE u.resident_country_code = ANY(%s))
-    # 3. age_min                                          (WHERE u.age >= %s)
-    # 4. age_max                                          (WHERE u.age <= %s)
-    # 5. user_id   (first %s in block_filter NOT EXISTS — blocked_id = %s)
-    # 6. user_id   (second %s in block_filter NOT EXISTS — blocker_id = %s)
-    # 7. (cosine path only) requester_vector       (ORDER BY ... <=> %s::vector)
+    # 1. user_id                                  (WHERE u.user_id != %s::uuid)
+    # 2. religion                                      (WHERE u.religion = %s)
+    # 3. countries array            (WHERE u.resident_country_code = ANY(%s))
+    # 4. age_min                                          (WHERE u.age >= %s)
+    # 5. age_max                                          (WHERE u.age <= %s)
+    # 6. user_id   (first %s in block_filter NOT EXISTS — blocked_id = %s)
+    # 7. user_id   (second %s in block_filter NOT EXISTS — blocker_id = %s)
+    # 8. (cosine path only) requester_vector       (ORDER BY ... <=> %s::vector)
     params: list[Any] = [
+        user_id,
         religion,
         countries,
         age_min,
