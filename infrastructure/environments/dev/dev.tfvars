@@ -8,7 +8,7 @@ hosted_zone_id = ""
 
 # Aurora — dev values per story 2.14 AC
 aurora_min_acu                 = 0
-aurora_max_acu                 = 2.0
+aurora_max_acu                 = 4.0
 aurora_deletion_protection     = false
 aurora_skip_final_snapshot     = true
 aurora_apply_immediately       = true
