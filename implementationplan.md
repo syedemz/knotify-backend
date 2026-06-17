@@ -1,5 +1,5 @@
 project: knotify-backend
-last_updated: 2026-06-16 # phase-7 complete — all 8 stories done (7.0, 7.0a, 7.0b, 7.1, 7.2, 7.3, 7.4, 7.5, 7.6)
+last_updated: 2026-06-17 # phase-7 complete + probe-verified + tagged (phase-7-complete); 4 post-merge hotfixes shipped (#106/#107/#108/#109)
 
 phases:
 
