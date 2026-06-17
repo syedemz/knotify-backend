@@ -223,13 +223,10 @@ def _build_search_sql(
     use_cosine = not _is_empty_vector(requester_vector)
     bf = block_filter("u.user_id")
 
-    params: list[Any] = []
-
     if use_cosine:
         # The ::vector cast lets psycopg2's default list adapter bind the
         # Python list as a pgvector literal without register_vector().
         order_clause = "ORDER BY u.preference_vector <=> %s::vector ASC"
-        params.append(str(requester_vector))
     else:
         order_clause = "ORDER BY u.created_at DESC"
 
@@ -250,22 +247,25 @@ def _build_search_sql(
         f"LIMIT 50"
     )
 
-    # Parameters must be appended in the order the %s placeholders appear:
-    # 1. (optional) requester_vector for the cosine ORDER BY — already appended above
-    # 2. religion
-    # 3. countries array
-    # 4. age_min
-    # 5. age_max
-    # 6. user_id (first %s for block_filter NOT EXISTS — blocked_id = %s)
-    # 7. user_id (second %s for block_filter NOT EXISTS — blocker_id = %s)
-    params.extend([
+    # Parameters must be in the order the %s placeholders appear in the SQL:
+    # 1. religion                                      (WHERE u.religion = %s)
+    # 2. countries array            (WHERE u.resident_country_code = ANY(%s))
+    # 3. age_min                                          (WHERE u.age >= %s)
+    # 4. age_max                                          (WHERE u.age <= %s)
+    # 5. user_id   (first %s in block_filter NOT EXISTS — blocked_id = %s)
+    # 6. user_id   (second %s in block_filter NOT EXISTS — blocker_id = %s)
+    # 7. (cosine path only) requester_vector       (ORDER BY ... <=> %s::vector)
+    params: list[Any] = [
         religion,
         countries,
         age_min,
         age_max,
         user_id,
         user_id,
-    ])
+    ]
+
+    if use_cosine:
+        params.append(str(requester_vector))
 
     return sql, tuple(params)
 
