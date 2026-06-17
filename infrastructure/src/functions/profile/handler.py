@@ -51,6 +51,7 @@ from typing import Any
 
 import boto3
 import knotify_db
+import psycopg2.extras
 from knotify_db import encode_prefs
 from knotify_obs import init_logger, with_edge_secret
 
@@ -526,7 +527,14 @@ def _handle_patch_profile_me(event: dict, user_id: str, user_sex: str) -> dict:
 
             # Step 4: execute the UPDATE
             set_clauses = [f"{col} = %s" for col in patch_data]
-            set_values = list(patch_data.values())
+            # Wrap dict values (jsonb columns like preferences) in psycopg2.extras.Json
+            # so psycopg2 emits valid JSON literals. Without this, psycopg2 raises
+            # "can't adapt type 'dict'" at execute time — there is no global Json
+            # adapter registered in the knotify_db layer (only register_uuid()).
+            set_values = [
+                psycopg2.extras.Json(v) if isinstance(v, dict) else v
+                for v in patch_data.values()
+            ]
 
             # Story 7.3: when preferences is in the patch body, also write
             # preference_vector in the same UPDATE using an explicit ::vector cast.
