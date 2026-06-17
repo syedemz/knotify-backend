@@ -83,3 +83,48 @@ resource "aws_vpc_endpoint_route_table_association" "dynamodb_db" {
   vpc_endpoint_id = aws_vpc_endpoint.dynamodb.id
   route_table_id  = aws_route_table.db[count.index].id
 }
+
+# ---------------------------------------------------------------------------
+# Cognito IDP Interface VPC Endpoint
+# Profile Lambda calls cognito-idp:AdminUpdateUserAttributes to flip
+# custom:profile_complete after the PATCH UPDATE commits. Private subnets
+# have no NAT, so without this endpoint the SDK hangs on DNS / TCP SYN to
+# cognito-idp.<region>.amazonaws.com until the Lambda's 30s timeout.
+# Surfaced by the phase-7 live probe on 2026-06-17.
+# ---------------------------------------------------------------------------
+
+resource "aws_vpc_endpoint" "cognito_idp" {
+  vpc_id              = aws_vpc.this.id
+  service_name        = "com.amazonaws.${data.aws_region.current.region}.cognito-idp"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = aws_subnet.private[*].id
+  security_group_ids  = [aws_security_group.vpce.id]
+  private_dns_enabled = true
+
+  tags = {
+    Name        = "knotify-${var.environment}-vpce-cognito-idp"
+    Environment = var.environment
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Lambda Interface VPC Endpoint
+# Profile Lambda fires lambda:Invoke(InvocationType=Event) against the
+# refresh_deck_view function after PATCH commits. Same private-subnet egress
+# problem as cognito-idp above. Surfaced by the phase-7 live probe on
+# 2026-06-17.
+# ---------------------------------------------------------------------------
+
+resource "aws_vpc_endpoint" "lambda" {
+  vpc_id              = aws_vpc.this.id
+  service_name        = "com.amazonaws.${data.aws_region.current.region}.lambda"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = aws_subnet.private[*].id
+  security_group_ids  = [aws_security_group.vpce.id]
+  private_dns_enabled = true
+
+  tags = {
+    Name        = "knotify-${var.environment}-vpce-lambda"
+    Environment = var.environment
+  }
+}
