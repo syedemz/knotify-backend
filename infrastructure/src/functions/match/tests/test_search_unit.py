@@ -575,6 +575,28 @@ def test_given_religion_filter_when_build_search_sql_then_religion_in_sql() -> N
     assert "religion" in sql
 
 
+def test_given_search_request_when_build_search_sql_then_requester_excluded_from_results() -> None:
+    """
+    Regression: RLS on the users table is `opposite-sex OR self` — a user is
+    always allowed to read their own row. Without an explicit `u.user_id != %s`
+    predicate, candidate search responses include the requester themselves
+    (confirmed by the phase-7 live probe on 2026-06-17). Search must filter
+    self out at the SQL level so the API contract doesn't leak the requester
+    into their own candidate list.
+    """
+    mod = _import_handler()
+    sql, _ = mod._build_search_sql(
+        user_id="req",
+        user_sex="Male",
+        countries=["GB"],
+        religion="Islam",
+        age_min=20,
+        age_max=30,
+        requester_vector=None,
+    )
+    assert "u.user_id != %s" in sql
+
+
 def test_given_fallback_path_when_build_search_sql_then_params_align_with_placeholders() -> None:
     """
     Regression: each %s placeholder in the SQL must receive the value the
@@ -582,12 +604,13 @@ def test_given_fallback_path_when_build_search_sql_then_params_align_with_placeh
     against the params tuple is the only way to catch order drift between
     the SQL builder and the params list — pure substring assertions miss it.
 
-    The fallback path (requester_vector=None) has six placeholders:
-      1. religion
-      2. countries
-      3. age_min
-      4. age_max
-      5, 6. block_filter user_id, user_id
+    The fallback path (requester_vector=None) has seven placeholders:
+      1. user_id (self-exclusion: u.user_id != %s)
+      2. religion
+      3. countries
+      4. age_min
+      5. age_max
+      6, 7. block_filter user_id, user_id
     """
     # Use a block_filter stub that contains the two %s placeholders the real
     # knotify_obs.block_filter emits (one for blocked_id, one for blocker_id).
@@ -607,7 +630,7 @@ def test_given_fallback_path_when_build_search_sql_then_params_align_with_placeh
         requester_vector=None,
     )
     assert sql.count("%s") == len(params)
-    assert params == ("Islam", ["GB", "PK"], 22, 35, "REQ-UUID", "REQ-UUID")
+    assert params == ("REQ-UUID", "Islam", ["GB", "PK"], 22, 35, "REQ-UUID", "REQ-UUID")
 
 
 def test_given_cosine_path_when_build_search_sql_then_vector_param_is_last() -> None:
@@ -617,13 +640,14 @@ def test_given_cosine_path_when_build_search_sql_then_vector_param_is_last() -> 
     bug appended the vector first, shifting religion → countries, countries →
     age_min, etc., and produced "malformed array literal" in prod.
 
-    Cosine path has seven placeholders:
-      1. religion
-      2. countries
-      3. age_min
-      4. age_max
-      5, 6. block_filter user_id, user_id
-      7. requester_vector (ORDER BY <=>)
+    Cosine path has eight placeholders:
+      1. user_id (self-exclusion: u.user_id != %s)
+      2. religion
+      3. countries
+      4. age_min
+      5. age_max
+      6, 7. block_filter user_id, user_id
+      8. requester_vector (ORDER BY <=>)
     """
     realistic_bf = (
         "NOT EXISTS (SELECT 1 FROM blocks b "
@@ -642,13 +666,14 @@ def test_given_cosine_path_when_build_search_sql_then_vector_param_is_last() -> 
         requester_vector=vec,
     )
     assert sql.count("%s") == len(params)
-    assert params[0] == "Islam"
-    assert params[1] == ["GB"]
-    assert params[2] == 22
-    assert params[3] == 35
-    assert params[4] == "REQ-UUID"
+    assert params[0] == "REQ-UUID"
+    assert params[1] == "Islam"
+    assert params[2] == ["GB"]
+    assert params[3] == 22
+    assert params[4] == 35
     assert params[5] == "REQ-UUID"
-    assert params[6] == str(vec)
+    assert params[6] == "REQ-UUID"
+    assert params[7] == str(vec)
 
 
 # ---------------------------------------------------------------------------
