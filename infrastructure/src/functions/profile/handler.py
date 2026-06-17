@@ -353,13 +353,26 @@ def _json_response(status_code: int, body: Any) -> dict:
     }
 
 
-def _write_cognito_profile_complete(user_id: str) -> None:
+def _write_cognito_profile_complete(user_id: str, sex: str | None = None) -> None:
     """
-    Best-effort call to set custom:profile_complete = "true" on the Cognito user.
+    Best-effort call to set custom:profile_complete = "true" on the Cognito user,
+    and propagate users.sex into the standard Cognito `gender` attribute when
+    a value is supplied.
 
     Called AFTER the with conn: block has committed the Aurora UPDATE.
     On any failure, logs a structured warning and returns — does NOT raise.
     The caller always returns HTTP 200 regardless of whether this call succeeds.
+
+    Why bundle the gender write here:
+      The pre-token-generation Lambda reads Cognito's standard `gender`
+      attribute and emits it as the custom:user_sex JWT claim, which the five
+      domain Lambdas push into the app.requesting_user_sex GUC for RLS and
+      explicit opposite-sex predicates.  If Aurora has users.sex set but
+      Cognito has no gender attribute, every freshly minted JWT carries no
+      sex claim and opposite-sex filtering collapses to a no-op.  The flag
+      flips at the same moment sex first becomes non-NULL in Aurora (sex is
+      one of the 34 required-for-completion fields), so we have an
+      always-available value here and exactly one round-trip is needed.
 
     Eventual-consistency footnote: a successful PATCH may briefly have
     Aurora=true and Cognito=false until this call lands.  The client must
@@ -367,16 +380,25 @@ def _write_cognito_profile_complete(user_id: str) -> None:
     means the user stays gated until the next PATCH or a phase-11 backfill
     job sweeps users with Aurora=true / Cognito=false mismatches.
     """
+    attributes: list[dict[str, str]] = [
+        {"Name": "custom:profile_complete", "Value": "true"},
+    ]
+    if sex:
+        attributes.append({"Name": "gender", "Value": sex})
+
     try:
         client = boto3.client("cognito-idp")
         client.admin_update_user_attributes(
             UserPoolId=_USER_POOL_ID,
             Username=user_id,
-            UserAttributes=[{"Name": "custom:profile_complete", "Value": "true"}],
+            UserAttributes=attributes,
         )
         logger.info(
             "cognito_profile_complete_attribute_set",
-            extra={"user_id": user_id},
+            extra={
+                "user_id": user_id,
+                "gender_propagated": bool(sex),
+            },
         )
     except Exception as exc:
         logger.warning(
@@ -384,6 +406,7 @@ def _write_cognito_profile_complete(user_id: str) -> None:
             extra={
                 "user_id": user_id,
                 "error": str(exc),
+                "gender_propagated": False,
                 "note": "Aurora commit succeeded; Cognito attribute will be set on next PATCH or backfill",
             },
         )
@@ -580,7 +603,11 @@ def _handle_patch_profile_me(event: dict, user_id: str, user_sex: str) -> dict:
     # Order: Cognito attribute write first, then refresh Lambda invoke.
     # Both are best-effort; either failure logs a warning and returns HTTP 200.
     if flag_flipped:
-        _write_cognito_profile_complete(user_id)
+        # Pull sex out of the post-update row so the Cognito gender attribute
+        # tracks Aurora users.sex; missing/blank values fall through to
+        # profile_complete-only (no harm — backfill script covers that case).
+        proposed_sex = updated.get("sex") if isinstance(updated, dict) else None
+        _write_cognito_profile_complete(user_id, sex=proposed_sex)
         _invoke_refresh_lambda()
 
     return _json_response(200, updated)

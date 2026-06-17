@@ -680,10 +680,16 @@ class TestCognitoAttributeWriteAfterCommit:
 
         assert response["statusCode"] == 200
         mock_b3_client.assert_called_once_with("cognito-idp")
+        # Hotfix user-sex-jwt-propagation: the call now bundles the standard
+        # `gender` attribute alongside custom:profile_complete so the
+        # pre-token-gen Lambda has a value to read on next sign-in / refresh.
         mock_cognito.admin_update_user_attributes.assert_called_once_with(
             UserPoolId="eu-central-1_TESTPOOL",
             Username=user_id,
-            UserAttributes=[{"Name": "custom:profile_complete", "Value": "true"}],
+            UserAttributes=[
+                {"Name": "custom:profile_complete", "Value": "true"},
+                {"Name": "gender", "Value": "Male"},
+            ],
         )
 
     def test_given_profile_already_complete_when_patch_then_cognito_not_called(self):

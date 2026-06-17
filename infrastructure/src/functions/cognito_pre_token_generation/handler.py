@@ -52,6 +52,16 @@ _ATTR_NAME = "custom:profile_complete"
 # Claim name written to both ID token and access token.
 _CLAIM_NAME = "custom:profile_complete"
 
+# Standard Cognito attribute that carries the user's sex. Set by the profile
+# PATCH handler whenever users.sex changes in Aurora. The post-confirmation
+# Lambda already writes it for users who supply `gender` at sign-up.
+_GENDER_ATTR = "gender"
+
+# JWT claim name read by every domain Lambda (match, blocks, bookmarks,
+# friends, profile) and pushed into the app.requesting_user_sex GUC for RLS
+# + the explicit opposite-sex predicates on materialized views.
+_SEX_CLAIM = "custom:user_sex"
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -67,6 +77,41 @@ def _get_conn():
     """
     import knotify_db  # noqa: F401 — only imported if this path is called
     return knotify_db.get_connection(_DB_SECRET_NAME)
+
+
+def _normalize_sex(raw: str | None) -> str:
+    """
+    Coerce a Cognito `gender` attribute value into the canonical "Male" or
+    "Female" form the rest of the system expects.
+
+    Accepts the canonical values as identity and folds the lowercase / single-
+    letter variants the post-confirmation Lambda may have written at sign-up.
+    Anything unrecognised returns "" so the claim is omitted (and the GUC
+    falls back to "") rather than poisoning RLS with a malformed value.
+    """
+    if not raw:
+        return ""
+    value = raw.strip()
+    if value in ("Male", "Female"):
+        return value
+    low = value.lower()
+    if low in ("m", "male"):
+        return "Male"
+    if low in ("f", "female"):
+        return "Female"
+    return ""
+
+
+def _read_user_sex(event: dict) -> str:
+    """
+    Pull the standard Cognito `gender` attribute out of the V2 event and
+    normalise it. Returns "" when the attribute is absent — callers MUST
+    treat that as "claim should not be emitted".
+    """
+    user_attributes: dict = (
+        event.get("request", {}).get("userAttributes", {})
+    )
+    return _normalize_sex(user_attributes.get(_GENDER_ATTR))
 
 
 def _read_profile_complete(event: dict) -> bool:
@@ -93,26 +138,34 @@ def _read_profile_complete(event: dict) -> bool:
     return attr_value == "true"
 
 
-def _build_claims_override(profile_complete: bool) -> dict:
+def _build_claims_override(profile_complete: bool, user_sex: str) -> dict:
     """
     Build the V2 claimsAndScopeOverrideDetails response dict.
 
     Sets custom:profile_complete on BOTH idTokenGeneration and
     accessTokenGeneration (B1 resolution).  The claim value is a string
     "true" or "false" — Cognito custom claims are always strings.
+
+    Also sets custom:user_sex on both tokens when a normalised sex value is
+    available. The five domain Lambdas (match, blocks, bookmarks, friends,
+    profile) read this claim and push it into the app.requesting_user_sex
+    GUC; an empty value would silently disable opposite-sex filtering, so
+    we omit the claim entirely when no value is known and let downstream
+    code surface the missing-claim case explicitly.
     """
     claim_value = "true" if profile_complete else "false"
+    id_claims: dict = {_CLAIM_NAME: claim_value}
+    access_claims: dict = {_CLAIM_NAME: claim_value}
+    if user_sex:
+        id_claims[_SEX_CLAIM] = user_sex
+        access_claims[_SEX_CLAIM] = user_sex
     return {
         "claimsAndScopeOverrideDetails": {
             "idTokenGeneration": {
-                "claimsToAddOrOverride": {
-                    _CLAIM_NAME: claim_value,
-                },
+                "claimsToAddOrOverride": id_claims,
             },
             "accessTokenGeneration": {
-                "claimsToAddOrOverride": {
-                    _CLAIM_NAME: claim_value,
-                },
+                "claimsToAddOrOverride": access_claims,
             },
         }
     }
@@ -154,5 +207,23 @@ def handler(event: dict, context: object) -> dict:
         )
         profile_complete = False  # safe default — fail-closed
 
-    event["response"].update(_build_claims_override(profile_complete))
+    try:
+        user_sex = _read_user_sex(event)
+    except Exception as exc:
+        logger.error(
+            "pre_token_generation_sex_read_error",
+            extra={
+                "error": str(exc),
+                "trigger_source": event.get("triggerSource"),
+            },
+        )
+        user_sex = ""  # claim omitted; domain Lambdas log the missing case
+
+    if not user_sex:
+        logger.info(
+            "user_sex_attribute_absent",
+            extra={"defaulting_to": "claim_omitted"},
+        )
+
+    event["response"].update(_build_claims_override(profile_complete, user_sex))
     return event

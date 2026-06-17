@@ -1,6 +1,6 @@
 phase: 7
 title: Match and deck
-last_updated: 2026-06-16 (story 7.6 complete)
+last_updated: 2026-06-17 (post-merge hotfixes + user-sex JWT propagation hotfix)
 
 context_summary: |
   Implements the matching and swipe-deck endpoints backed by pgvector ranking
@@ -735,3 +735,126 @@ stories:
 # so the column is never NULL going forward without forcing the user to
 # fill it in. The rollback migration drops the default and does NOT
 # restore NULLs (NULLs were a transient state pre-migration).
+
+
+# ============================================================================
+# Post-merge hotfix record (2026-06-17)
+# ============================================================================
+#
+# Phase 7 squash-merged into development on 2026-06-16. The live probe against
+# the dev CloudFront edge surfaced four classes of bugs that the unit and plan-
+# mode test suites could not catch. Each was resolved on a dedicated
+# hotfix/* branch and merged via PR into development. This block exists so a
+# future reader of this PRD does not assume the merged commit set represents
+# the final shape of phase 7.
+#
+# Hotfix #106 — VPC endpoints for cognito-idp and lambda
+#   Problem: PATCH /v1/profile/me hung for the full Lambda 30s timeout and
+#   returned 502. The Lambda lives in private subnets with NO NAT egress;
+#   the post-commit boto3 calls (cognito-idp:AdminUpdateUserAttributes and
+#   lambda:Invoke for refresh_deck_view) hit the public endpoint hostnames
+#   and SYN-blackholed forever.
+#   Fix: Added two aws_vpc_endpoint Interface resources in
+#   modules/networking/vpc_endpoints.tf, mirroring the existing
+#   secretsmanager pattern (same sg-vpce, both private subnets,
+#   private_dns_enabled = true).
+#
+# Hotfix #107 — _build_search_sql parameter order
+#   Problem: POST /v1/match/search returned a 500 even with valid filters.
+#   The cosine-path branch built `ORDER BY u.preference_vector <=> %s::vector`
+#   but prepended the vector to params instead of appending. psycopg2 binds
+#   positionally, so the vector landed in the religion slot, religion in the
+#   countries slot, etc. — the whole WHERE clause was poisoned.
+#   Fix: params list built fully, then vector appended LAST so positional
+#   binding lines up with the trailing ORDER BY placeholder. Regression test
+#   asserts sql.count("%s") == len(params) on both branches.
+#
+# Hotfix #108 — Search self-exclusion
+#   Problem: A requester's own row appeared in their own search results when
+#   they matched the filter criteria. RLS on `users` permits two paths:
+#   `sex != requesting_user_sex OR user_id = requesting_user_id` (the second
+#   clause is the self-row escape hatch the phase-6 endpoints depend on).
+#   Search relied on RLS alone for sex filtering and never added an explicit
+#   `u.user_id != requester` predicate, so the self-row leaked through.
+#   Fix: AND u.user_id != %s::uuid added to the search WHERE clause with
+#   user_id appended to params as the first element (regression test asserts
+#   the predicate is present and the requester's id is bound).
+#
+# Hotfix user-sex-jwt-propagation (this branch)
+#   Problem (root cause of the deck-self-leak surfaced on 2026-06-17):
+#     Five domain Lambdas (profile, blocks, bookmarks, friends, match) read
+#     `claims.get("custom:user_sex", "")` and push the value into the
+#     `app.requesting_user_sex` Postgres GUC. That JWT claim was specified
+#     in architecture.md §6 but the propagation layer was never built:
+#       - phase 4 (Cognito) declared `custom:profile_complete` only.
+#       - phase 6 brainstorm finding A.5 flagged the gap and resolved it by
+#         making rls_context accept the empty string ("workaround until
+#         the propagation layer lands"). Phase 6 endpoints all carry the
+#         self-row RLS escape hatch, so an empty GUC did not visibly break
+#         anything at the time.
+#       - phase 7 is the first phase where opposite-sex filtering is
+#         load-bearing. The probe surfaced the gap: requester's own row
+#         leaks into both the deck (no self-exclusion + degenerate GUC)
+#         and search (until hotfix #108 added the explicit predicate).
+#     With the GUC empty, `dv.sex != current_setting(...)` degenerates to
+#     `dv.sex != ''`, which matches every row — same-sex candidates included.
+#     RLS on `users` is broken in the same way.
+#
+#   Fix (this hotfix, four bundled edits):
+#     1. cognito_pre_token_generation/handler.py — read the standard
+#        Cognito `gender` user attribute from event.request.userAttributes,
+#        normalise via _normalize_sex (accepts "Male"/"Female" as identity,
+#        folds m/M/male/f/F/female), inject as custom:user_sex on BOTH
+#        idTokenGeneration and accessTokenGeneration claims. Claim is
+#        OMITTED entirely when the attribute is absent or unrecognised —
+#        omission is safer than an empty string because the consumers then
+#        log a missing-claim event instead of silently mis-filtering.
+#     2. profile/handler.py — _write_cognito_profile_complete now accepts a
+#        `sex` kwarg and bundles `{Name: "gender", Value: sex}` into the
+#        same AdminUpdateUserAttributes call that sets custom:profile_complete.
+#        The flag flips at the same moment users.sex first becomes non-NULL
+#        in Aurora (sex is in the 34 required-for-completion fields), so
+#        we always have a value at that point and exactly one round-trip
+#        is needed.
+#     3. match/handler.py — _build_deck_sql adds defence-in-depth
+#        `AND dv.user_id != %s::uuid` predicate with the requester's id
+#        prepended to params. Regression test asserts the predicate is
+#        present so the deck cannot leak the self-row even if the GUC is
+#        empty for some edge case in the future.
+#     4. infrastructure/src/scripts/backfill_cognito_gender.py — one-shot
+#        script that scans Aurora users.sex for every active user and
+#        pushes the value to Cognito `gender` via AdminUpdateUserAttributes.
+#        Runs from a developer workstation (NOT a Lambda) with credentials
+#        scoped to read the DB secret and update the user pool. Idempotent:
+#        repeat writes of the same value are no-ops. Includes --dry-run.
+#
+#   Why no Cognito schema change is needed:
+#     `gender` is a STANDARD Cognito attribute, already declared on the
+#     user pool from project bootstrap. Hotfix #85's
+#     lifecycle.ignore_changes = [schema] on aws_cognito_user_pool.this
+#     covers the four OIDC schema blocks (gender is in that set), but
+#     because it is already declared, there is no add/remove diff for
+#     Terraform to flap on. The custom:profile_complete pattern that
+#     story 7.0b proved out applies identically here.
+#
+#   Roll-out:
+#     - PR merged into development; CI rolls cognito_pre_token_generation
+#       and profile Lambdas.
+#     - Existing dev testers MUST either (a) have the backfill script run
+#       against them, or (b) trigger a fresh PATCH that includes their sex
+#       (no-op for the immutable case, but the post-commit Cognito write
+#       sets `gender` going forward). New JWT refresh after either path
+#       carries the claim.
+#     - Live probe re-run expected outcomes: GET /v1/match/deck no longer
+#       contains the requester's own user_id; only opposite-sex candidates
+#       appear; POST /v1/match/search behaviour unchanged from hotfix #108.
+#
+#   Future cleanup (not part of this hotfix):
+#     - Remove the diagnostic logging markers in profile/handler.py
+#       (`patch_before_get_conn`, `patch_after_rls_enter`, etc.) once the
+#       probe is fully clean. Owner direction on 2026-06-17 was to leave
+#       them in for one more probe cycle.
+#     - lessons.md: capture "custom claim propagation requires both a
+#       Cognito writer (admin_update_user_attributes after Aurora commit)
+#       and a pre-token-gen reader; one without the other is silently
+#       broken until a load-bearing filter exposes it".
