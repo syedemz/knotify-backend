@@ -110,6 +110,41 @@ resource "aws_cognito_user_pool" "this" {
   }
 
   # ---------------------------------------------------------------------------
+  # Custom attribute: profile_complete (story 7.0b)
+  #
+  # Tracks whether the user has completed onboarding. Set by the profile Lambda
+  # via cognito-idp:AdminUpdateUserAttributes after a successful PATCH that
+  # flips profile_complete_verified in Aurora. Copied into JWT access-token
+  # and ID-token claims by the cognito_pre_token_generation Lambda.
+  #
+  # Apply protocol (B1 resolution from brainstorm):
+  #   - This custom schema block is added alongside the existing lifecycle
+  #     { ignore_changes = [schema] } that suppresses provider-6.x oscillation
+  #     of STANDARD attribute schema blocks.
+  #   - After adding this block, run `terraform apply` in dev, then immediately
+  #     re-run `terraform plan`.
+  #   - If plan shows zero diff, custom attributes are stable under the
+  #     existing lifecycle (record as "custom attributes confirmed stable").
+  #   - If oscillation is observed (add/remove loop), fall back to the two-step
+  #     apply: temporarily lift ignore_changes = [schema], apply, restore the
+  #     lifecycle, apply again to confirm zero diff.
+  #   - See lessons.md for the outcome recorded after the first dev apply.
+  # ---------------------------------------------------------------------------
+
+  schema {
+    name                     = "profile_complete"
+    attribute_data_type      = "String"
+    mutable                  = true
+    required                 = false
+    developer_only_attribute = false
+
+    string_attribute_constraints {
+      min_length = 1
+      max_length = 5
+    }
+  }
+
+  # ---------------------------------------------------------------------------
   # Advanced Security Mode
   #
   # Wired to var.advanced_security_mode (default "AUDIT").

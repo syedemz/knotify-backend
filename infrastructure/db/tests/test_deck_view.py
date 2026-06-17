@@ -32,9 +32,14 @@ Assertions:
      appears in deck_view after refresh_deck_view() is called.
   B. Negative — ineligible user (profile_complete_verified=false) does NOT
      appear in deck_view after refresh, even if they are inserted into users.
+  C. Extended columns — a verified user with non-NULL preference_vector and
+     religion values appears in deck_view with those exact values after
+     migration 0011 (deck_view extended columns) is applied and the view is
+     refreshed. Verifies that preference_vector and religion are projected
+     through the materialized view as new columns.
 
-Run against a local docker-compose Postgres container with all 9 migrations
-applied:
+Run against a local docker-compose Postgres container with all migrations
+applied (through 0011 for assertions A/B/C):
     python -m pytest infrastructure/db/tests/test_deck_view.py -v
 
 Environment variables (with defaults matching docker-compose.yml):
@@ -238,4 +243,138 @@ def test_given_ineligible_user_when_deck_view_refreshed_then_user_is_absent(
         f"Expected ineligible user {ineligible_id} (profile_complete_verified=false) "
         "to be absent from deck_view, but it was found. Check that the view "
         "filter includes AND profile_complete_verified = true."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Assertion C: extended columns (migration 0011) — preference_vector and
+# religion are projected correctly through the refreshed materialized view
+# ---------------------------------------------------------------------------
+
+_INSERT_USER_WITH_VECTOR_SQL = """
+    INSERT INTO users (
+        user_id, email, username, first_name, last_name,
+        birthday, sex, religion,
+        preference_vector,
+        profile_complete_verified
+    ) VALUES (
+        %s, %s, %s, %s, %s,
+        '1990-01-15'::date, %s, %s,
+        %s::vector,
+        true
+    )
+"""
+
+_KNOWN_RELIGION = "Islam"
+# 20-dimensional vector with 1.0 at index 0 and 0.0 elsewhere.
+# Stored as a Postgres vector literal string and cast with ::vector in the SQL.
+_KNOWN_VECTOR = "[1.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0]"
+
+
+@pytest.fixture(scope="module")
+def seeded_user_with_vector():
+    """
+    Insert one verified user whose preference_vector and religion are both
+    non-NULL, yield their UUID, then delete during teardown.
+
+    This fixture is independent of seeded_users so the two can be used in
+    the same pytest session without ordering constraints.
+    """
+    user_id = uuid.uuid4()
+
+    conn = _master_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                _INSERT_USER_WITH_VECTOR_SQL,
+                (
+                    user_id,
+                    f"deck_vec_{user_id}@test.invalid",
+                    f"deck_vec_{user_id}",
+                    "DeckVec",
+                    "User",
+                    "Female",
+                    _KNOWN_RELIGION,
+                    _KNOWN_VECTOR,
+                ),
+            )
+    finally:
+        conn.close()
+
+    yield user_id
+
+    conn = _master_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM users WHERE user_id = %s", (user_id,))
+    finally:
+        conn.close()
+
+
+@pytest.fixture(scope="module")
+def refresh_view_after_vector_seed(seeded_user_with_vector):
+    """
+    Refresh deck_view after seeding the vector user so the materialized view
+    snapshot includes the new row.
+    """
+    conn = _master_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT refresh_deck_view()")
+    finally:
+        conn.close()
+
+
+def test_given_verified_user_with_preference_vector_and_religion_when_view_refreshed_then_extended_columns_present(
+    seeded_user_with_vector,
+    refresh_view_after_vector_seed,
+):
+    """
+    After migration 0011 drops and recreates deck_view with preference_vector
+    and religion columns, a verified user whose users row has non-NULL values
+    for those columns must appear in deck_view with the exact same values after
+    refresh_deck_view() is called.
+
+    This test catches any regression where the SELECT list in the CREATE
+    MATERIALIZED VIEW statement omits or mis-aliases the two new columns.
+    """
+    user_id = seeded_user_with_vector
+
+    conn = _master_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute(
+                "SELECT preference_vector, religion "
+                "FROM deck_view "
+                "WHERE user_id = %s",
+                (user_id,),
+            )
+            row = cur.fetchone()
+    finally:
+        conn.close()
+
+    assert row is not None, (
+        f"Expected user {user_id} to appear in deck_view after refresh, "
+        "but no row was found. Verify migration 0011 was applied and "
+        "refresh_deck_view() was called after the insert."
+    )
+    assert row["religion"] == _KNOWN_RELIGION, (
+        f"Expected religion='{_KNOWN_RELIGION}' in deck_view, "
+        f"got: {row['religion']!r}. Check the SELECT list in migration 0011."
+    )
+    # preference_vector is returned as a string by psycopg2 in the absence of
+    # the pgvector adapter.  Parse it and compare element-wise.
+    raw = row["preference_vector"]
+    assert raw is not None, (
+        "preference_vector was NULL in deck_view but users row had a non-NULL "
+        "value. Check the SELECT list in migration 0011."
+    )
+    # Postgres returns the vector as a string like '[1,0,0,...]'; strip brackets
+    # and split on commas to get float values.
+    parsed = [float(v) for v in raw.strip("[]").split(",")]
+    expected = [float(v) for v in _KNOWN_VECTOR.strip("[]").split(",")]
+    assert parsed == expected, (
+        f"preference_vector mismatch in deck_view. "
+        f"Expected: {expected}, got: {parsed}. "
+        "Check the SELECT list in migration 0011."
     )

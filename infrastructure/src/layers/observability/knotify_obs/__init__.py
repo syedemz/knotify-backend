@@ -22,6 +22,11 @@ Public API (as specified in story 6.0b):
   is_blocked(conn, user_a, user_b) → True if a block exists between the pair in either
                                     direction; uses parameter binding only
 
+Public API (as specified in story 7.0b):
+  require_profile_complete        → decorator: returns 403 {"error":"profile_incomplete"}
+                                    when custom:profile_complete JWT claim != "true";
+                                    fail-closed when claim is absent
+
 NOTE: verify_cognito_jwt is rarely used in v1.  The HTTP API Cognito JWT
 authorizer (phase 5) handles routine validation natively — business Lambdas
 read claims from event.requestContext.authorizer.jwt.claims.  This helper
@@ -35,6 +40,7 @@ from knotify_obs._jwt import verify_cognito_jwt
 from knotify_obs._edge_secret import EdgeSecretRequired, require_edge_secret, with_edge_secret
 from knotify_obs._chat_room_id import chat_room_id
 from knotify_obs._blocks import block_filter, is_blocked
+from knotify_obs._profile_complete import require_profile_complete
 
 __all__ = [
     "init_logger",
@@ -46,4 +52,5 @@ __all__ = [
     "chat_room_id",
     "block_filter",
     "is_blocked",
+    "require_profile_complete",
 ]

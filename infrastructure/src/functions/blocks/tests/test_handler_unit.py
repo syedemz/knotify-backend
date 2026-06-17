@@ -77,6 +77,8 @@ def _make_event(
                     "claims": {
                         "sub": user_sub,
                         "custom:user_sex": user_sex,
+                        # story 7.0b: blocks endpoint requires completed profile
+                        "custom:profile_complete": "true",
                     }
                 }
             },
@@ -746,9 +748,15 @@ class TestRouteDispatch:
 
         assert response["statusCode"] == 404
 
-    def test_given_missing_jwt_claims_then_returns_401(self):
+    def test_given_missing_jwt_claims_then_returns_403(self):
         """
-        A request missing the JWT claims block must return 401 before DB access.
+        A request missing the JWT claims block returns 403 (not 401).
+
+        @require_profile_complete is fail-closed: when the custom:profile_complete
+        claim is absent it returns 403 {"error":"profile_incomplete"} immediately,
+        before the handler's own JWT-extraction logic (which would have returned
+        401) can run.  The outer @with_edge_secret has already passed at this
+        point (edge secret header is present), so 403 is the correct status.
         """
         mod = _import_handler()
         conn, cur = _make_conn()
@@ -767,4 +775,6 @@ class TestRouteDispatch:
         ):
             response = mod.handler(event, None)
 
-        assert response["statusCode"] == 401
+        assert response["statusCode"] == 403
+        body = json.loads(response["body"])
+        assert body["error"] == "profile_incomplete"

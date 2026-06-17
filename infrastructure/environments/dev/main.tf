@@ -121,6 +121,15 @@ module "iam_roles" {
 
   environment                   = var.environment
   aurora_master_user_secret_arn = module.aurora.master_user_secret_arn
+
+  # Scopes aurora_writer's cognito-idp:AdminUpdateUserAttributes to this pool
+  # only. Sourced from the cognito module output (story 7.0b).
+  cognito_user_pool_arn = module.cognito.user_pool_arn
+
+  # Scopes aurora_writer's lambda:InvokeFunction to the refresh Lambda ARN
+  # only (story 7.4). Terraform resolves the forward reference from the
+  # refresh_deck_view module declared later in this file.
+  refresh_lambda_arn = module.refresh_deck_view.function_arn
 }
 
 # ---------------------------------------------------------------------------
@@ -171,6 +180,11 @@ module "db_migrator" {
     # The migrator writes this secret on first run (CreateSecret) and
     # rotates it on subsequent runs (PutSecretValue).
     APP_USER_SECRET_NAME = "knotify-${var.environment}-app-user-credential"
+
+    # Friendly name of the aurora_refresh credential secret to create/update
+    # (story 7.4). Mirrors APP_USER_SECRET_NAME pattern — same create-or-update
+    # idempotency; no new abstraction.
+    AURORA_REFRESH_SECRET_NAME = "knotify-${var.environment}-aurora-refresh-credential"
 
     # Connection endpoint params. Aurora's managed master secret only
     # contains username/password — host/port/database are exposed via
@@ -596,6 +610,14 @@ module "profile" {
     AURORA_HOST   = module.aurora.cluster_endpoint
     AURORA_PORT   = tostring(module.aurora.port)
     AURORA_DBNAME = module.aurora.database_name
+
+    # Cognito User Pool ID — needed by the profile PATCH handler to call
+    # admin_update_user_attributes after a profile-completion flip (story 7.0b).
+    USER_POOL_ID = module.cognito.user_pool_id
+
+    # ARN of the refresh_deck_view Lambda — async-invoked by the profile PATCH
+    # handler when profile_complete_verified flips false→true (story 7.4).
+    REFRESH_LAMBDA_ARN = module.refresh_deck_view.function_arn
   }
 }
 
@@ -981,4 +1003,148 @@ resource "aws_lambda_permission" "bookmarks_api_gateway" {
   qualifier     = "live"
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${module.api_gateway.api_execution_arn}/*/*/v1/bookmarks*"
+}
+
+# ---------------------------------------------------------------------------
+# knotify-match Lambda — story 7.0 scaffold
+#
+# Empty dispatcher (returns 404 for all routes until 7.5 wires them).
+# Handles two routes registered in story 7.5:
+#   POST /v1/match/search   — candidate search with preference-vector ranking
+#   GET  /v1/match/deck     — swipe-deck with cursor pagination
+#
+# Uses the aurora_reader_match IAM role (Aurora read-only via app_user
+# credential; no write access, no DynamoDB). EDGE_SECRET is injected so the
+# @with_edge_secret decorator validates all traffic arrived via CloudFront.
+# Routes are wired in story 7.5 (depends on 7.0b, 7.1, 7.2).
+# ---------------------------------------------------------------------------
+
+module "match" {
+  source = "../../modules/lambda"
+
+  function_name = "knotify-match-${var.environment}"
+  handler       = "handler.handler"
+  filename      = "${path.module}/../../../build/match.zip"
+
+  layers = [
+    module.observability_layer.layer_arn,
+    module.db_layer.layer_arn,
+  ]
+
+  role_arn = module.iam_roles.role_arns["aurora_reader_match"]
+
+  vpc_config = {
+    subnet_ids         = module.networking.private_subnet_ids
+    security_group_ids = [module.networking.lambda_security_group_id]
+  }
+
+  environment_variables = {
+    DB_SECRET_NAME = "knotify-${var.environment}-app-user-credential"
+    EDGE_SECRET    = module.cloudfront.edge_secret
+
+    # Aurora connection endpoint params — secret carries only username +
+    # password (db_migrator writer pattern); host/port/dbname come from
+    # aurora module outputs.
+    AURORA_HOST   = module.aurora.cluster_endpoint
+    AURORA_PORT   = tostring(module.aurora.port)
+    AURORA_DBNAME = module.aurora.database_name
+  }
+}
+
+# ---------------------------------------------------------------------------
+# API Gateway wiring — story 7.5
+#
+# One integration + two routes + one Lambda permission for the match Lambda.
+# Both routes require JWT authorization (Cognito User Pool, same authorizer as
+# all other routes in the HTTP API) and the @with_edge_secret + @require_profile_complete
+# decorator chain enforced at the Lambda layer.
+#
+# Lambda permission source_arn MUST use api_execution_arn (not default_stage_arn).
+# Per hotfix #86: using default_stage_arn causes 5xx with no Lambda invocation
+# log entry because it is the management ARN, not the execute-api principal ARN.
+# ---------------------------------------------------------------------------
+
+resource "aws_apigatewayv2_integration" "match" {
+  api_id                 = module.api_gateway.api_id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = module.match.invoke_arn
+  payload_format_version = "2.0"
+}
+
+resource "aws_apigatewayv2_route" "post_match_search" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "POST /v1/match/search"
+  target             = "integrations/${aws_apigatewayv2_integration.match.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+resource "aws_apigatewayv2_route" "get_match_deck" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "GET /v1/match/deck"
+  target             = "integrations/${aws_apigatewayv2_integration.match.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+# Lambda permission — scoped to all match routes on this API.
+# source_arn uses api_execution_arn (execute-api ARN) + wildcard suffix per
+# hotfix #86. The /v1/match* prefix covers both /v1/match/search and
+# /v1/match/deck while remaining tightly scoped to the match Lambda.
+resource "aws_lambda_permission" "match_api_gateway" {
+  statement_id  = "AllowMatchAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = module.match.function_name
+  qualifier     = "live"
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${module.api_gateway.api_execution_arn}/*/*/v1/match*"
+}
+
+# ---------------------------------------------------------------------------
+# knotify-refresh-deck-view Lambda — story 7.4
+#
+# Dedicated Lambda for refreshing the deck_view materialized view.
+# Runs as aurora_refresh (privileged role with EXECUTE on refresh_deck_view())
+# rather than app_user, keeping the RLS-bearing app_user surface minimal.
+#
+# Triggered by:
+#   - EventBridge CloudWatch rule every 15 minutes (defined in the module)
+#   - Async boto3 lambda.invoke from the profile Lambda on profile_complete
+#     false→true flip (InvocationType="Event")
+#
+# The module exposes function_arn so the profile Lambda can receive it as
+# REFRESH_LAMBDA_ARN and the iam_roles module can scope lambda:InvokeFunction.
+# ---------------------------------------------------------------------------
+
+module "refresh_deck_view" {
+  source = "../../modules/refresh_deck_view"
+
+  environment   = var.environment
+  function_name = "knotify-refresh-deck-view-${var.environment}"
+  filename      = "${path.module}/../../../build/refresh_deck_view.zip"
+  role_arn      = module.iam_roles.role_arns["aurora_refresh_lambda"]
+
+  layers = [
+    module.observability_layer.layer_arn,
+    module.db_layer.layer_arn,
+  ]
+
+  vpc_config = {
+    subnet_ids         = module.networking.private_subnet_ids
+    security_group_ids = [module.networking.lambda_security_group_id]
+  }
+
+  # The aurora_refresh credential — NOT the app_user credential.
+  db_secret_name = "knotify-${var.environment}-aurora-refresh-credential"
+
+  # Aurora connection endpoint params — aurora_refresh credential carries only
+  # username + password; host/port/dbname come from aurora module outputs.
+  aurora_host   = module.aurora.cluster_endpoint
+  aurora_port   = tostring(module.aurora.port)
+  aurora_dbname = module.aurora.database_name
+
+  # EventBridge schedule: every 15 minutes (default in module variables.tf).
+  # Override here for visibility; changing to rate(5 minutes) in a future
+  # phase requires only this field.
+  schedule_expression = "rate(15 minutes)"
 }
