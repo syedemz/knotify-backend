@@ -27,6 +27,7 @@ stories:
   - id: 8.0
     title: Chat resolver Lambda scaffold + IAM + Terraform module
     agent: backenddeveloper
+    tracking_issue: 110
     done: false
     depends_on: []
     acceptance_criteria:
@@ -45,6 +46,7 @@ stories:
   - id: 8.1
     title: AppSync API Terraform module
     agent: backenddeveloper
+    tracking_issue: 111
     done: false
     depends_on: [8.0]
     acceptance_criteria:
@@ -62,6 +64,7 @@ stories:
   - id: 8.2
     title: Hand-written GraphQL schema
     agent: backenddeveloper
+    tracking_issue: 112
     done: false
     depends_on: [8.1]
     acceptance_criteria:
@@ -83,6 +86,7 @@ stories:
   - id: 8.3
     title: createOrGetRoom resolver (idempotent room creation)
     agent: backenddeveloper
+    tracking_issue: 113
     done: false
     depends_on: [8.0, 8.1, 8.2]
     acceptance_criteria:
@@ -99,6 +103,7 @@ stories:
   - id: 8.4
     title: sendMessage resolver (with idempotency + friendship-active gate)
     agent: backenddeveloper
+    tracking_issue: 114
     done: false
     depends_on: [8.3]
     acceptance_criteria:
@@ -118,6 +123,7 @@ stories:
   - id: 8.5
     title: Query resolvers listMyRooms and messagesByChatRoom
     agent: backenddeveloper
+    tracking_issue: 115
     done: false
     depends_on: [8.3]
     acceptance_criteria:
@@ -133,6 +139,7 @@ stories:
   - id: 8.6
     title: Scoped subscriptions with pipeline membership check
     agent: backenddeveloper
+    tracking_issue: 116
     done: false
     depends_on: [8.3, 8.4]
     acceptance_criteria:
@@ -147,6 +154,7 @@ stories:
   - id: 8.7
     title: markAsRead mutation and read-receipt updates
     agent: backenddeveloper
+    tracking_issue: 117
     done: false
     depends_on: [8.4]
     acceptance_criteria:
@@ -161,6 +169,7 @@ stories:
   - id: 8.8
     title: setTyping mutation with no storage
     agent: backenddeveloper
+    tracking_issue: 118
     done: false
     depends_on: [8.6]
     acceptance_criteria:
@@ -172,6 +181,7 @@ stories:
   - id: 8.9
     title: Extend the knotify-blocks Lambda for chat-room deactivation / reactivation
     agent: backenddeveloper
+    tracking_issue: 119
     done: false
     depends_on: [8.3, 8.4]
     acceptance_criteria:
@@ -191,6 +201,7 @@ stories:
   - id: 8.9a
     title: Room-state publisher Lambda (DynamoDB Streams → AppSync publish mutations)
     agent: backenddeveloper
+    tracking_issue: 120
     done: false
     depends_on: [8.1, 8.2, 8.9]
     acceptance_criteria:
@@ -208,6 +219,7 @@ stories:
   - id: 8.9b
     title: Extend the knotify-friends Lambda to maintain ChatRooms.friendship_active on accept AND unfriend
     agent: backenddeveloper
+    tracking_issue: 121
     done: false
     depends_on: [8.9]
     acceptance_criteria:
@@ -226,6 +238,7 @@ stories:
   - id: 8.9c
     title: Notifications-stream publisher Lambda (DynamoDB Streams → AppSync publishNotification / _publishFriendRequestUpdated)
     agent: backenddeveloper
+    tracking_issue: 122
     done: false
     depends_on: [8.1, 8.2]
     acceptance_criteria:
@@ -247,6 +260,7 @@ stories:
   - id: 8.10
     title: PushFanout Lambda triggered by DynamoDB Streams
     agent: backenddeveloper
+    tracking_issue: 123
     done: false
     depends_on: [8.4]
     acceptance_criteria:
@@ -271,6 +285,7 @@ stories:
   - id: 8.11
     title: POST /v1/push-tokens REST endpoint
     agent: backenddeveloper
+    tracking_issue: 124
     done: false
     depends_on: []
     acceptance_criteria:
@@ -292,6 +307,7 @@ stories:
   - id: 8.12
     title: Stale token cleanup scheduled Lambda
     agent: backenddeveloper
+    tracking_issue: 125
     done: false
     depends_on: [8.11]
     acceptance_criteria:
@@ -306,6 +322,7 @@ stories:
   - id: 8.13
     title: End-to-end chat test
     agent: backenddeveloper
+    tracking_issue: 126
     done: false
     depends_on: [8.4, 8.6, 8.7, 8.9, 8.9a, 8.9b, 8.9c, 8.10, 8.11]
     acceptance_criteria:
