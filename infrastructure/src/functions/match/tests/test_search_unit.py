@@ -575,6 +575,82 @@ def test_given_religion_filter_when_build_search_sql_then_religion_in_sql() -> N
     assert "religion" in sql
 
 
+def test_given_fallback_path_when_build_search_sql_then_params_align_with_placeholders() -> None:
+    """
+    Regression: each %s placeholder in the SQL must receive the value the
+    surrounding clause expects. Walking the SQL placeholder-by-placeholder
+    against the params tuple is the only way to catch order drift between
+    the SQL builder and the params list — pure substring assertions miss it.
+
+    The fallback path (requester_vector=None) has six placeholders:
+      1. religion
+      2. countries
+      3. age_min
+      4. age_max
+      5, 6. block_filter user_id, user_id
+    """
+    # Use a block_filter stub that contains the two %s placeholders the real
+    # knotify_obs.block_filter emits (one for blocked_id, one for blocker_id).
+    realistic_bf = (
+        "NOT EXISTS (SELECT 1 FROM blocks b "
+        "WHERE (b.blocker_id = u.user_id AND b.blocked_id = %s::uuid) "
+        "   OR (b.blocker_id = %s::uuid AND b.blocked_id = u.user_id))"
+    )
+    mod = _import_handler(mock_block_filter=realistic_bf)
+    sql, params = mod._build_search_sql(
+        user_id="REQ-UUID",
+        user_sex="Male",
+        countries=["GB", "PK"],
+        religion="Islam",
+        age_min=22,
+        age_max=35,
+        requester_vector=None,
+    )
+    assert sql.count("%s") == len(params)
+    assert params == ("Islam", ["GB", "PK"], 22, 35, "REQ-UUID", "REQ-UUID")
+
+
+def test_given_cosine_path_when_build_search_sql_then_vector_param_is_last() -> None:
+    """
+    Regression: on the cosine path, the ORDER BY ... <=> %s::vector clause is
+    the LAST %s in the SQL, so the vector must be the LAST param. A previous
+    bug appended the vector first, shifting religion → countries, countries →
+    age_min, etc., and produced "malformed array literal" in prod.
+
+    Cosine path has seven placeholders:
+      1. religion
+      2. countries
+      3. age_min
+      4. age_max
+      5, 6. block_filter user_id, user_id
+      7. requester_vector (ORDER BY <=>)
+    """
+    realistic_bf = (
+        "NOT EXISTS (SELECT 1 FROM blocks b "
+        "WHERE (b.blocker_id = u.user_id AND b.blocked_id = %s::uuid) "
+        "   OR (b.blocker_id = %s::uuid AND b.blocked_id = u.user_id))"
+    )
+    mod = _import_handler(mock_block_filter=realistic_bf)
+    vec = [0.0] * 19 + [1.0]
+    sql, params = mod._build_search_sql(
+        user_id="REQ-UUID",
+        user_sex="Male",
+        countries=["GB"],
+        religion="Islam",
+        age_min=22,
+        age_max=35,
+        requester_vector=vec,
+    )
+    assert sql.count("%s") == len(params)
+    assert params[0] == "Islam"
+    assert params[1] == ["GB"]
+    assert params[2] == 22
+    assert params[3] == 35
+    assert params[4] == "REQ-UUID"
+    assert params[5] == "REQ-UUID"
+    assert params[6] == str(vec)
+
+
 # ---------------------------------------------------------------------------
 # Section G — Empty-vector fallback end-to-end (handler level)
 #
