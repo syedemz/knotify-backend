@@ -335,3 +335,105 @@ After 8.12 (needs 8.11): independent
 ### Summary
 
 PRD reached steady state. Proceed.
+
+## 2026-06-17 18:30 brainstorm (sixth pass — pre-dispatch sweep)
+
+Single new finding surfaced by spot-checking infrastructure outputs the prior
+brainstorms assumed existed. Prior third-pass finding #17 claimed
+`module.dynamodb.chat_rooms_arn` etc. were exported; re-checked against the
+current `infrastructure/modules/dynamodb/outputs.tf` and that claim was wrong.
+
+### New blocking gap
+
+**N. Dynamodb module exposes only `*_table_name` and two `*_stream_arn` outputs — no table `_arn` outputs, no `chat_rooms_stream_arn`.**
+
+   - Verified contents of `infrastructure/modules/dynamodb/outputs.tf`: outputs
+     are `chat_rooms_table_name`, `chat_room_membership_table_name`,
+     `chat_messages_table_name`, `message_reads_table_name`,
+     `chat_messages_stream_arn`, `notifications_table_name`,
+     `notifications_stream_arn`, `push_tokens_table_name`. That's it.
+   - Multiple phase-8 stories scope IAM policies via "table ARNs sourced from
+     module.dynamodb outputs":
+       - 8.0 (chat_resolver role on all five chat tables)
+       - 8.9 (blocks Lambda gets UpdateItem on ChatRooms)
+       - 8.9a (room_state_publisher needs ChatRooms stream ARN — currently no
+         output; the table's stream isn't even enabled yet, that's part of
+         8.9a's scope, so the output must be added in the same story)
+       - 8.9b (friends Lambda gets UpdateItem on ChatRooms)
+       - 8.9c (notifications_publisher needs Notifications stream ARN —
+         this one EXISTS as `notifications_stream_arn`; OK)
+       - 8.10 (push_fanout: ChatMessages + Notifications stream ARNs both
+         exist; but also needs table ARNs on ChatRooms, ChatRoomMembership,
+         Notifications, PushNotificationTokens for GetItem/Query/UpdateItem/
+         DeleteItem — none of those are exported)
+       - 8.11 (push_tokens needs PushNotificationTokens table ARN — not
+         exported)
+       - 8.12 (stale_token_cleanup needs same — not exported)
+   - The subagent dispatched on 8.0 will write a policy referencing
+     `module.dynamodb.chat_rooms_arn` and `terraform validate` will fail
+     with "Unsupported attribute: This object has no argument, nested block,
+     or exported attribute named 'chat_rooms_arn'."
+   - Fix scope: add the following outputs to
+     `infrastructure/modules/dynamodb/outputs.tf` as part of story 8.0
+     (it's the first story to need them, and a single small edit unblocks
+     everything downstream):
+       - `chat_rooms_arn` = `aws_dynamodb_table.chat_rooms.arn`
+       - `chat_room_membership_arn` = `aws_dynamodb_table.chat_room_membership.arn`
+       - `chat_messages_arn` = `aws_dynamodb_table.chat_messages.arn`
+       - `message_reads_arn` = `aws_dynamodb_table.message_reads.arn`
+       - `notifications_arn` = `aws_dynamodb_table.notifications.arn`
+       - `push_notification_tokens_arn` = `aws_dynamodb_table.push_notification_tokens.arn`
+     And as part of story 8.9a (which enables the ChatRooms stream):
+       - `chat_rooms_stream_arn` = `aws_dynamodb_table.chat_rooms.stream_arn`
+   - Recommendation: tighten story 8.0's AC list with one additional bullet
+     — "Extend `infrastructure/modules/dynamodb/outputs.tf` with table-ARN
+     outputs for all six chat tables (chat_rooms_arn,
+     chat_room_membership_arn, chat_messages_arn, message_reads_arn,
+     notifications_arn, push_notification_tokens_arn). The
+     chat_rooms_stream_arn output is added later by story 8.9a alongside
+     enabling the stream itself."
+
+### Verified clean
+- `knotify_obs.chat_room_id` helper already exists at
+  `infrastructure/src/layers/observability/knotify_obs/_chat_room_id.py:15`
+  and is exported via `__init__.py:41`. Story 8.3 can import directly.
+- `knotify_obs.block_filter` and `knotify_obs.is_blocked` exist at
+  `_blocks.py:57` and `_blocks.py:97`. Stories 8.0 / 8.3 / 8.4 can rely on
+  them with no scaffolding.
+- `@require_profile_complete_appsync` does NOT yet exist (only the REST
+  variant `_profile_complete.py`). Story 8.0's AC already calls this out —
+  correctly scoped.
+- Phase-7 closed cleanly: `phase-7-complete` tag in place, four hotfixes
+  merged (#106, #107, #108, #109), no in-flight branches or open PRs.
+  `development` is clean.
+
+### Summary
+
+One blocking gap (N): the dynamodb module is missing the table-ARN outputs
+that seven of seventeen stories assume. A single AC bullet on story 8.0
+(plus the chat_rooms_stream_arn on 8.9a, which is already implicit there)
+fixes it. Recommend addressing this one and proceeding — everything else
+the prior five passes covered is still accurate.
+
+## 2026-06-17 18:50 brainstorm (seventh pass — post-N fix)
+
+### Verified fix
+- Story 8.0 now has an explicit AC bullet enumerating the six table-ARN
+  outputs to add to `infrastructure/modules/dynamodb/outputs.tf`
+  (`chat_rooms_arn`, `chat_room_membership_arn`, `chat_messages_arn`,
+  `message_reads_arn`, `notifications_arn`, `push_notification_tokens_arn`).
+  Gap N closed.
+- PRD `last_updated:` bumped to `2026-06-17 # sixth-pass brainstorm: 8.0 AC
+  adds dynamodb module table-ARN outputs (gap N)`.
+
+### No new findings
+
+A fresh end-to-end scan after the edit surfaced nothing new. The 17 stories,
+their depends_on graph, AC coverage of the friendship_active lifecycle, the
+two publisher Lambdas (8.9a + 8.9c), the out-of-VPC placement of 8.10 and
+8.12, and the hotfix-86/87/106/109 carryovers all remain consistent with
+what the fifth-pass summary verified.
+
+### Summary
+
+PRD dispatch-ready. Proceed.
