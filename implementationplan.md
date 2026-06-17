@@ -54,7 +54,7 @@ phases:
 - phase: 8
   title: Chat (AppSync + DynamoDB Streams + push fan-out)
   file: implementationplan/phase-8-chat.md
-  ready: false
+  ready: true
   done: false
 
 - phase: 9
