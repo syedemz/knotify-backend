@@ -1,0 +1,36 @@
+-- Migration 0014: refresh_deck_view() runs as SECURITY DEFINER
+--
+-- Problem
+-- -------
+-- Migration 0009 defined refresh_deck_view() as a plain SQL function (no
+-- SECURITY clause), which defaults to SECURITY INVOKER. SQL functions in
+-- the INVOKER security model execute REFRESH MATERIALIZED VIEW CONCURRENTLY
+-- with the *caller's* privileges. Migration 0013 created the aurora_refresh
+-- role and granted it EXECUTE on the function, but aurora_refresh is not
+-- the owner of deck_view (the migrator/master role is). Postgres rejects
+-- the refresh with:
+--
+--   ERROR: must be owner of materialized view deck_view
+--   CONTEXT: SQL function "refresh_deck_view" statement 1
+--
+-- Result: the scheduled 15-minute refresh and the post-PATCH async invoke
+-- have been failing silently in dev since story 7.4 shipped on 2026-06-16.
+-- Surfaced by the phase-7 live probe on 2026-06-17.
+--
+-- Fix
+-- ---
+-- ALTER the function to SECURITY DEFINER. The function then executes with
+-- the privileges of its *owner* (the migrator role, which owns deck_view),
+-- regardless of which role invokes it. This is the textbook pattern for
+-- "expose a privileged action to a less-privileged caller via a function":
+-- ownership of the underlying object stays with the privileged role, and
+-- the function becomes the single, narrow surface that performs the action.
+--
+-- search_path is pinned to pg_catalog, pg_temp on the function to prevent
+-- search-path injection — standard hardening for SECURITY DEFINER per the
+-- Postgres docs. refresh_deck_view() references deck_view by unqualified
+-- name; pg_catalog comes first, so an attacker cannot shadow it via a
+-- temp-schema object.
+
+ALTER FUNCTION refresh_deck_view() SECURITY DEFINER;
+ALTER FUNCTION refresh_deck_view() SET search_path = pg_catalog, pg_temp;
