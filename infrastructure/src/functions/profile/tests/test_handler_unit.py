@@ -897,6 +897,61 @@ class TestPreferenceVectorWrite:
             f"All positions except index 0 must be 0.0, got {vec[1:]}"
         )
 
+    def test_given_preferences_in_patch_body_when_update_executed_then_preferences_param_is_json_wrapped_not_raw_dict(self):
+        """
+        Regression — `preferences` is a jsonb column. psycopg2 has no global
+        Json adapter registered (only register_uuid()), so passing a raw dict
+        raises `ProgrammingError: can't adapt type 'dict'` at execute time.
+        The handler must wrap dict values in psycopg2.extras.Json so they
+        serialize to a JSON literal.
+        """
+        import psycopg2.extras
+
+        mod = _import_handler()
+        fake_conn, fake_cur, _ = self._make_fake_conn_for_patch()
+
+        preferences_payload = {"highlyeducated": True, "athletic": True}
+        event = _make_event(
+            "PATCH",
+            "/v1/profile/me",
+            body={"preferences": preferences_payload},
+            user_sub="user-sub-1234",
+            user_sex="Male",
+        )
+
+        with (
+            patch.object(mod, "_get_conn", return_value=fake_conn),
+            patch.dict(os.environ, {
+                "EDGE_SECRET": _EDGE_SECRET,
+                "DB_SECRET_NAME": "test",
+                "USER_POOL_ID": "eu-central-1_TESTPOOL",
+            }),
+        ):
+            mod.handler(event, None)
+
+        update_calls = [
+            call_args
+            for call_args in fake_cur.execute.call_args_list
+            if "UPDATE users" in str(call_args)
+        ]
+        assert len(update_calls) == 1
+        params = list(update_calls[0].args[1])
+
+        raw_dicts = [p for p in params if isinstance(p, dict)]
+        assert raw_dicts == [], (
+            f"No raw dict may be passed to psycopg2 — preferences must be wrapped "
+            f"in psycopg2.extras.Json. Found raw dicts in params: {raw_dicts}"
+        )
+        json_wrapped = [p for p in params if isinstance(p, psycopg2.extras.Json)]
+        assert len(json_wrapped) == 1, (
+            f"Expected exactly one psycopg2.extras.Json-wrapped param "
+            f"(the preferences dict), got {len(json_wrapped)}: params={params}"
+        )
+        assert json_wrapped[0].adapted == preferences_payload, (
+            f"Wrapped preferences value must equal the input dict, got "
+            f"{json_wrapped[0].adapted!r}"
+        )
+
     def test_given_no_preferences_in_patch_body_when_update_executed_then_no_preference_vector_in_sql(self):
         """
         When "preferences" is NOT in the PATCH body, the UPDATE SQL must NOT
