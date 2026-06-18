@@ -774,3 +774,111 @@ run "role_arns_output_contains_appsync_roles" {
     error_message = "role_arns[appsync_chat_resolver_invoke] must be wired to aws_iam_role.appsync_chat_resolver_invoke.arn"
   }
 }
+
+# ===========================================================================
+# Tests 23–26: room_state_publisher IAM role (story 8.9a)
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Test 23: room_state_publisher role exists with Lambda trust policy
+#
+# Satisfies AC: "New IAM role room_state_publisher_role in iam_roles module"
+# ---------------------------------------------------------------------------
+run "room_state_publisher_role_exists_with_lambda_trust_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    chat_rooms_stream_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms/stream/2026-06-18T00:00:00.000"
+    appsync_api_arn               = "arn:aws:appsync:eu-central-1:123456789012:apis/TESTAPI"
+  }
+
+  assert {
+    condition     = aws_iam_role.room_state_publisher.assume_role_policy != ""
+    error_message = "room_state_publisher assume_role_policy must not be empty"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 24: room_state_publisher DynamoDB stream inline policy exists
+#
+# Satisfies AC: "dynamodb:DescribeStream + GetRecords + GetShardIterator +
+#               ListStreams on the ChatRooms stream ARN"
+# ---------------------------------------------------------------------------
+run "room_state_publisher_dynamodb_stream_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    chat_rooms_stream_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms/stream/2026-06-18T00:00:00.000"
+    appsync_api_arn               = "arn:aws:appsync:eu-central-1:123456789012:apis/TESTAPI"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.room_state_publisher_dynamodb_stream.name == "room-state-publisher-dynamodb-stream"
+    error_message = "room_state_publisher DynamoDB stream policy must be named room-state-publisher-dynamodb-stream"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.room_state_publisher_dynamodb_stream.role == aws_iam_role.room_state_publisher.name
+    error_message = "room_state_publisher DynamoDB stream policy must be attached to room_state_publisher role"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 25: room_state_publisher AppSync GraphQL inline policy exists
+#
+# Satisfies AC: "appsync:GraphQL on the relevant publish-mutation field ARNs"
+# ---------------------------------------------------------------------------
+run "room_state_publisher_appsync_graphql_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    chat_rooms_stream_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms/stream/2026-06-18T00:00:00.000"
+    appsync_api_arn               = "arn:aws:appsync:eu-central-1:123456789012:apis/TESTAPI"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.room_state_publisher_appsync.name == "room-state-publisher-appsync"
+    error_message = "room_state_publisher AppSync policy must be named room-state-publisher-appsync"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.room_state_publisher_appsync.role == aws_iam_role.room_state_publisher.name
+    error_message = "room_state_publisher AppSync policy must be attached to room_state_publisher role"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 26: role_arns output map contains room_state_publisher
+#
+# Satisfies the module output shape requirement so root modules can reference
+# module.iam_roles.role_arns["room_state_publisher"].
+# ---------------------------------------------------------------------------
+run "role_arns_output_contains_room_state_publisher" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    chat_rooms_stream_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms/stream/2026-06-18T00:00:00.000"
+    appsync_api_arn               = "arn:aws:appsync:eu-central-1:123456789012:apis/TESTAPI"
+  }
+
+  override_resource {
+    target = aws_iam_role.room_state_publisher
+    values = {
+      arn = "arn:aws:iam::123456789012:role/knotify-test-room-state-publisher"
+    }
+    override_during = plan
+  }
+
+  assert {
+    condition     = output.role_arns["room_state_publisher"] == "arn:aws:iam::123456789012:role/knotify-test-room-state-publisher"
+    error_message = "role_arns[room_state_publisher] must be wired to aws_iam_role.room_state_publisher.arn"
+  }
+}

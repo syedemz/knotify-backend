@@ -15,5 +15,7 @@ output "role_arns" {
     # Story 8.1 — AppSync IAM roles
     appsync_logs                  = aws_iam_role.appsync_logs.arn
     appsync_chat_resolver_invoke  = aws_iam_role.appsync_chat_resolver_invoke.arn
+    # Story 8.9a — room_state_publisher IAM role
+    room_state_publisher          = aws_iam_role.room_state_publisher.arn
   }
 }

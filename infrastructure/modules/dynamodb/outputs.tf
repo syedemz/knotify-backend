@@ -8,6 +8,11 @@ output "chat_rooms_arn" {
   value       = aws_dynamodb_table.chat_rooms.arn
 }
 
+output "chat_rooms_stream_arn" {
+  description = "DynamoDB stream ARN for the ChatRooms table — consumed by the room_state_publisher Lambda (story 8.9a). Stream view type is NEW_AND_OLD_IMAGES so the publisher can detect status transitions."
+  value       = aws_dynamodb_table.chat_rooms.stream_arn
+}
+
 output "chat_room_membership_table_name" {
   description = "Name of the ChatRoomMembership DynamoDB table"
   value       = aws_dynamodb_table.chat_room_membership.name

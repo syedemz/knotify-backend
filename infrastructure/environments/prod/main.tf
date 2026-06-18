@@ -149,6 +149,14 @@ module "iam_roles" {
   # Scope appsync_chat_resolver_invoke's lambda:InvokeFunction to the exact
   # chat_resolver Lambda ARN (story 8.1). Forward reference resolved by Terraform.
   chat_resolver_lambda_arn = module.chat_resolver.lambda_arn
+
+  # Scope room_state_publisher DynamoDB stream actions to ChatRooms stream ARN
+  # (story 8.9a). Stream ARN now output by the dynamodb module.
+  chat_rooms_stream_arn = module.dynamodb.chat_rooms_stream_arn
+
+  # Scope room_state_publisher AppSync publish permissions to the exact
+  # publish-mutation field ARNs (story 8.9a). API ARN sourced from appsync module.
+  appsync_api_arn = module.appsync.api_arn
 }
 
 # ---------------------------------------------------------------------------
@@ -1102,4 +1110,25 @@ module "refresh_deck_view" {
 
   # EventBridge schedule: every 15 minutes.
   schedule_expression = "rate(15 minutes)"
+}
+
+# ---------------------------------------------------------------------------
+# room_state_publisher Lambda — story 8.9a
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+# Mirrors the dev wiring exactly.
+#
+# Placement: OUTSIDE the VPC — AppSync HTTPS reachable via public DNS.
+# No Aurora access — DynamoDB stream only.
+# ---------------------------------------------------------------------------
+
+module "room_state_publisher" {
+  source = "../../modules/room_state_publisher"
+
+  environment           = var.environment
+  function_name         = "knotify-room-state-publisher-${var.environment}"
+  filename              = "${path.module}/../../../build/room_state_publisher.zip"
+  role_arn              = module.iam_roles.role_arns["room_state_publisher"]
+  chat_rooms_stream_arn = module.dynamodb.chat_rooms_stream_arn
+  appsync_graphql_url   = module.appsync.graphql_url
 }

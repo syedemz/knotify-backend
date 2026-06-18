@@ -121,6 +121,8 @@ package-all:
 	$(MAKE) package FUNC=refresh_deck_view
 	@echo "[package-all] Building chat_resolver function ..."
 	$(MAKE) package FUNC=chat_resolver
+	@echo "[package-all] Building room_state_publisher function ..."
+	$(MAKE) package FUNC=room_state_publisher
 	@echo "[package-all] Done — all artifacts in $(BUILD_DIR)/"
 
 # ---------------------------------------------------------------------------

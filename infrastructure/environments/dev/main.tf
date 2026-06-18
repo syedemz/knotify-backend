@@ -143,6 +143,14 @@ module "iam_roles" {
   # chat_resolver Lambda ARN (story 8.1). Forward reference — Terraform
   # resolves this after the chat_resolver module is declared below.
   chat_resolver_lambda_arn = module.chat_resolver.lambda_arn
+
+  # Scope room_state_publisher DynamoDB stream actions to ChatRooms stream ARN
+  # (story 8.9a). Stream ARN is now output by the dynamodb module.
+  chat_rooms_stream_arn = module.dynamodb.chat_rooms_stream_arn
+
+  # Scope room_state_publisher AppSync publish permissions to the exact
+  # publish-mutation field ARNs (story 8.9a). API ARN sourced from appsync module.
+  appsync_api_arn = module.appsync.api_arn
 }
 
 # ---------------------------------------------------------------------------
@@ -1255,4 +1263,28 @@ module "refresh_deck_view" {
   # Override here for visibility; changing to rate(5 minutes) in a future
   # phase requires only this field.
   schedule_expression = "rate(15 minutes)"
+}
+
+# ---------------------------------------------------------------------------
+# room_state_publisher Lambda — story 8.9a
+#
+# Consumes the ChatRooms DynamoDB Stream (NEW_AND_OLD_IMAGES) and publishes
+# AppSync mutations when room status transitions occur:
+#   active→deactivated : _publishRoomDeactivated(roomId, payload)
+#   deactivated→active : _publishRoomReactivated(roomId, payload)
+#
+# Placement: OUTSIDE the VPC — AppSync HTTPS is reachable via public DNS.
+# No Aurora access — DynamoDB-only (no db layer, no app_user credential needed).
+# SigV4 signing handled by botocore at runtime using the Lambda execution role.
+# ---------------------------------------------------------------------------
+
+module "room_state_publisher" {
+  source = "../../modules/room_state_publisher"
+
+  environment           = var.environment
+  function_name         = "knotify-room-state-publisher-${var.environment}"
+  filename              = "${path.module}/../../../build/room_state_publisher.zip"
+  role_arn              = module.iam_roles.role_arns["room_state_publisher"]
+  chat_rooms_stream_arn = module.dynamodb.chat_rooms_stream_arn
+  appsync_graphql_url   = module.appsync.graphql_url
 }

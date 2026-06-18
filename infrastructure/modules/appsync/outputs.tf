@@ -17,3 +17,8 @@ output "chat_resolver_ds_name" {
   description = "Name of the AWS_LAMBDA datasource for the chat_resolver Lambda. Consumed by pipeline resolver attachment resources in stories 8.3–8.8 to reference the datasource by name."
   value       = aws_appsync_datasource.chat_resolver_ds.name
 }
+
+output "api_arn" {
+  description = "ARN of the AppSync GraphQL API — consumed by room_state_publisher_role and notifications_publisher_role (stories 8.9a, 8.9c) to scope appsync:GraphQL to exact publish-mutation field ARNs."
+  value       = aws_appsync_graphql_api.knotify.arn
+}

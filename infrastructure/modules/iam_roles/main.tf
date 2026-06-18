@@ -656,3 +656,88 @@ resource "aws_iam_role_policy" "appsync_chat_resolver_invoke_lambda" {
   role   = aws_iam_role.appsync_chat_resolver_invoke.name
   policy = data.aws_iam_policy_document.appsync_chat_resolver_invoke_lambda.json
 }
+
+# ===========================================================================
+# Role: room_state_publisher
+#
+# For the room_state_publisher Lambda (story 8.9a).
+# Consumes the ChatRooms DynamoDB Stream and publishes AppSync mutations via
+# SigV4 (IAM auth mode).
+#
+# OUTSIDE the VPC: AppSync HTTPS is reachable via public DNS; no VPC endpoint
+# or ENI attachment needed (same rationale as hotfix #106 lesson).
+# No VPC access policy attached — this role does NOT run in a VPC.
+#
+# DynamoDB stream actions scoped to the ChatRooms stream ARN only:
+#   dynamodb:DescribeStream + GetRecords + GetShardIterator + ListStreams
+#
+# AppSync actions scoped to the exact publish-mutation field ARNs:
+#   appsync:GraphQL on ${appsync_api_arn}/types/Mutation/fields/_publishRoomDeactivated
+#   appsync:GraphQL on ${appsync_api_arn}/types/Mutation/fields/_publishRoomReactivated
+#   NOT a wildcard on the entire API — least-privilege per codingprinciples.md.
+# ===========================================================================
+
+resource "aws_iam_role" "room_state_publisher" {
+  name               = "knotify-${var.environment}-room-state-publisher"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+# Basic Lambda execution — creates log group and can write CloudWatch logs.
+# The managed AWSLambdaBasicExecutionRole is used instead of VPC access because
+# this Lambda runs OUTSIDE the VPC (no ENI attachment needed).
+resource "aws_iam_role_policy_attachment" "room_state_publisher_basic_execution" {
+  role       = aws_iam_role.room_state_publisher.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# DynamoDB stream read actions — scoped to the ChatRooms stream ARN.
+# These four actions are exactly what a Lambda ESM consumer needs to read
+# a DynamoDB stream: DescribeStream + GetRecords + GetShardIterator + ListStreams.
+data "aws_iam_policy_document" "room_state_publisher_dynamodb_stream" {
+  statement {
+    sid    = "ChatRoomsStreamRead"
+    effect = "Allow"
+    actions = [
+      "dynamodb:DescribeStream",
+      "dynamodb:GetRecords",
+      "dynamodb:GetShardIterator",
+      "dynamodb:ListStreams",
+    ]
+    resources = [
+      var.chat_rooms_stream_arn != "" ? var.chat_rooms_stream_arn : "arn:aws:dynamodb:*:*:table/ChatRooms/stream/*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "room_state_publisher_dynamodb_stream" {
+  name   = "room-state-publisher-dynamodb-stream"
+  role   = aws_iam_role.room_state_publisher.name
+  policy = data.aws_iam_policy_document.room_state_publisher_dynamodb_stream.json
+}
+
+# AppSync GraphQL publish — scoped to the two backend-only publish mutation
+# field ARNs.  NOT a wildcard on ${appsync_api_arn}/* — codingprinciples.md
+# forbids wildcard Resource on any committed IAM policy.
+# Field ARN format: ${api_arn}/types/Mutation/fields/${field_name}
+data "aws_iam_policy_document" "room_state_publisher_appsync" {
+  statement {
+    sid    = "AppSyncPublishRoomState"
+    effect = "Allow"
+    actions = [
+      "appsync:GraphQL",
+    ]
+    resources = var.appsync_api_arn != "" ? [
+      "${var.appsync_api_arn}/types/Mutation/fields/_publishRoomDeactivated",
+      "${var.appsync_api_arn}/types/Mutation/fields/_publishRoomReactivated",
+    ] : [
+      "arn:aws:appsync:*:*:apis/*/types/Mutation/fields/_publishRoomDeactivated",
+      "arn:aws:appsync:*:*:apis/*/types/Mutation/fields/_publishRoomReactivated",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "room_state_publisher_appsync" {
+  name   = "room-state-publisher-appsync"
+  role   = aws_iam_role.room_state_publisher.name
+  policy = data.aws_iam_policy_document.room_state_publisher_appsync.json
+}

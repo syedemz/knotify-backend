@@ -1,0 +1,11 @@
+# room_state_publisher Lambda runtime dependencies
+#
+# requests — used to POST the signed GraphQL mutation to AppSync.
+#   boto3/botocore handle SigV4 signing; requests handles the actual HTTP call.
+#   boto3 and botocore are provided by the Lambda runtime.
+#
+# knotify_obs and knotify_db are supplied by Lambda layers and are
+# deliberately excluded from this file (build_package.py strips them).
+#
+# This Lambda does NOT connect to Aurora, so psycopg2 is not needed.
+requests==2.32.3

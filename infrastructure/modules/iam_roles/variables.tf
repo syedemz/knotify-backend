@@ -63,3 +63,19 @@ variable "chat_resolver_lambda_arn" {
   type        = string
   default     = ""
 }
+
+# ---------------------------------------------------------------------------
+# Story 8.9a — room_state_publisher IAM role scoping
+# ---------------------------------------------------------------------------
+
+variable "chat_rooms_stream_arn" {
+  description = "DynamoDB stream ARN for the ChatRooms table. Used to scope room_state_publisher_role's dynamodb stream read actions (story 8.9a). Pass module.dynamodb.chat_rooms_stream_arn from each environment root module."
+  type        = string
+  default     = ""
+}
+
+variable "appsync_api_arn" {
+  description = "ARN of the AppSync GraphQL API. Used to scope room_state_publisher_role's appsync:GraphQL permission to the exact _publishRoomDeactivated and _publishRoomReactivated field ARNs (story 8.9a). Pass module.appsync.api_arn from each environment root module."
+  type        = string
+  default     = ""
+}

@@ -1,6 +1,6 @@
 phase: 8
 title: Chat (AppSync + DynamoDB Streams + push fan-out)
-last_updated: 2026-06-18 # story 8.9 done
+last_updated: 2026-06-18 # story 8.9a done
 
 context_summary: |
   Delivers the full chat capability in a single phase per the owner's resolved Option A: the AppSync GraphQL API with a hand-written schema (no Amplify auto-generation, no auto-CRUD subscriptions), Lambda resolvers that enforce membership and block checks against Aurora before establishing subscriptions, the deterministic-room-id creation flow from §5.4.1, DynamoDB Streams from ChatMessages and Notifications wired to a PushFanout Lambda that targets Expo Push (per the §13 #7 resolution in v1.6), the POST /v1/push-tokens REST endpoint for token registration, and the stale-token cleanup scheduled Lambda. This phase intentionally ships data plane and API plane together because the GraphQL schema and the DynamoDB key design are tightly coupled. After this phase only account deletion, observability consolidation, hardening, and S3 photos remain.
@@ -202,7 +202,7 @@ stories:
     title: Room-state publisher Lambda (DynamoDB Streams → AppSync publish mutations)
     agent: backenddeveloper
     tracking_issue: 120
-    done: false
+    done: true
     depends_on: [8.1, 8.2, 8.9]
     acceptance_criteria:
       - New Lambda infrastructure/src/functions/room_state_publisher/ consumes a DynamoDB Stream on the ChatRooms table (the table's stream_enabled was previously off — this story enables NEW_AND_OLD_IMAGES on ChatRooms in modules/dynamodb/main.tf; phase-2 brainstorm finding #17 noted the table currently lacks a stream)

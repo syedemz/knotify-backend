@@ -923,3 +923,146 @@ run "set_typing_passthrough_function_uses_none_datasource" {
     error_message = "set_typing_passthrough AppSync function must be declared (story 8.8)"
   }
 }
+
+# ---------------------------------------------------------------------------
+# Story 8.9a tests — NONE-datasource local resolvers for backend-only
+# publish mutations (_publishRoomDeactivated, _publishRoomReactivated)
+#
+# Tests assert:
+#   AC-8.9a-T19 — _publishRoomDeactivated resolver exists on NoneDS
+#   AC-8.9a-T20 — _publishRoomReactivated resolver exists on NoneDS
+#   AC-8.9a-T21 — api_arn output is non-empty (consumed by iam_roles module to
+#                 scope room_state_publisher's appsync:GraphQL permission)
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Test 19: _publishRoomDeactivated resolver is declared on NoneDS (story 8.9a)
+#
+# Satisfies AC: "If not wired, add NONE-data-source local resolvers that just
+# forward the args — this is the standard subscription-fan-out pattern."
+# ---------------------------------------------------------------------------
+run "publish_room_deactivated_resolver_uses_none_datasource" {
+  command = plan
+
+  variables {
+    environment                     = "test"
+    user_pool_id                    = "eu-central-1_TESTPOOL"
+    appsync_logs_role_arn           = "arn:aws:iam::123456789012:role/knotify-test-appsync-logs"
+    appsync_invoke_role_arn         = "arn:aws:iam::123456789012:role/knotify-test-appsync-invoke"
+    chat_resolver_lambda_arn        = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
+    chat_rooms_table_arn            = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms"
+    chat_room_membership_table_name = "ChatRoomMembership"
+    chat_room_membership_table_arn  = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRoomMembership"
+    chat_messages_table_name        = "ChatMessages"
+    chat_messages_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages"
+    message_reads_table_name        = "MessageReads"
+    message_reads_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/MessageReads"
+    notifications_table_name        = "Notifications"
+    notifications_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications"
+    chat_rooms_table_name           = "ChatRooms"
+    dynamodb_role_arn               = "arn:aws:iam::123456789012:role/knotify-test-ddb-role"
+  }
+
+  assert {
+    condition     = aws_appsync_resolver.publish_room_deactivated.field == "_publishRoomDeactivated"
+    error_message = "_publishRoomDeactivated resolver must be declared (story 8.9a)"
+  }
+
+  assert {
+    condition     = aws_appsync_resolver.publish_room_deactivated.data_source == aws_appsync_datasource.pipeline_none.name
+    error_message = "_publishRoomDeactivated resolver must use NoneDS datasource (no storage I/O)"
+  }
+
+  assert {
+    condition     = aws_appsync_resolver.publish_room_deactivated.type == "Mutation"
+    error_message = "_publishRoomDeactivated resolver must be on the Mutation type"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 20: _publishRoomReactivated resolver is declared on NoneDS (story 8.9a)
+# ---------------------------------------------------------------------------
+run "publish_room_reactivated_resolver_uses_none_datasource" {
+  command = plan
+
+  variables {
+    environment                     = "test"
+    user_pool_id                    = "eu-central-1_TESTPOOL"
+    appsync_logs_role_arn           = "arn:aws:iam::123456789012:role/knotify-test-appsync-logs"
+    appsync_invoke_role_arn         = "arn:aws:iam::123456789012:role/knotify-test-appsync-invoke"
+    chat_resolver_lambda_arn        = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
+    chat_rooms_table_arn            = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms"
+    chat_room_membership_table_name = "ChatRoomMembership"
+    chat_room_membership_table_arn  = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRoomMembership"
+    chat_messages_table_name        = "ChatMessages"
+    chat_messages_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages"
+    message_reads_table_name        = "MessageReads"
+    message_reads_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/MessageReads"
+    notifications_table_name        = "Notifications"
+    notifications_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications"
+    chat_rooms_table_name           = "ChatRooms"
+    dynamodb_role_arn               = "arn:aws:iam::123456789012:role/knotify-test-ddb-role"
+  }
+
+  assert {
+    condition     = aws_appsync_resolver.publish_room_reactivated.field == "_publishRoomReactivated"
+    error_message = "_publishRoomReactivated resolver must be declared (story 8.9a)"
+  }
+
+  assert {
+    condition     = aws_appsync_resolver.publish_room_reactivated.data_source == aws_appsync_datasource.pipeline_none.name
+    error_message = "_publishRoomReactivated resolver must use NoneDS datasource (no storage I/O)"
+  }
+
+  assert {
+    condition     = aws_appsync_resolver.publish_room_reactivated.type == "Mutation"
+    error_message = "_publishRoomReactivated resolver must be on the Mutation type"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 21: api_arn output is wired to the AppSync API ARN (story 8.9a)
+#
+# Consumed by iam_roles module to scope room_state_publisher's appsync:GraphQL
+# permission to the exact publish-mutation field ARNs.
+# Uses override_resource to make the ARN deterministic at plan time.
+# ---------------------------------------------------------------------------
+run "api_arn_output_is_wired_to_appsync_api" {
+  command = plan
+
+  variables {
+    environment                     = "test"
+    user_pool_id                    = "eu-central-1_TESTPOOL"
+    appsync_logs_role_arn           = "arn:aws:iam::123456789012:role/knotify-test-appsync-logs"
+    appsync_invoke_role_arn         = "arn:aws:iam::123456789012:role/knotify-test-appsync-invoke"
+    chat_resolver_lambda_arn        = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
+    chat_rooms_table_arn            = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms"
+    chat_room_membership_table_name = "ChatRoomMembership"
+    chat_room_membership_table_arn  = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRoomMembership"
+    chat_messages_table_name        = "ChatMessages"
+    chat_messages_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages"
+    message_reads_table_name        = "MessageReads"
+    message_reads_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/MessageReads"
+    notifications_table_name        = "Notifications"
+    notifications_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications"
+    chat_rooms_table_name           = "ChatRooms"
+    dynamodb_role_arn               = "arn:aws:iam::123456789012:role/knotify-test-ddb-role"
+  }
+
+  override_resource {
+    target = aws_appsync_graphql_api.knotify
+    values = {
+      arn  = "arn:aws:appsync:eu-central-1:123456789012:apis/TESTAPI"
+      uris = {
+        GRAPHQL  = "https://TESTAPI.appsync-api.eu-central-1.amazonaws.com/graphql"
+        REALTIME = "wss://TESTAPI.appsync-realtime-api.eu-central-1.amazonaws.com/graphql"
+      }
+    }
+    override_during = plan
+  }
+
+  assert {
+    condition     = output.api_arn == "arn:aws:appsync:eu-central-1:123456789012:apis/TESTAPI"
+    error_message = "api_arn output must be wired to aws_appsync_graphql_api.knotify.arn (story 8.9a)"
+  }
+}

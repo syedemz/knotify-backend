@@ -604,3 +604,58 @@ resource "aws_appsync_resolver" "set_typing" {
   request_template  = "{}"
   response_template = "$util.toJson($ctx.result)"
 }
+
+# ---------------------------------------------------------------------------
+# Story 8.9a — local resolvers for backend-only @aws_iam publish mutations
+#
+# _publishRoomDeactivated and _publishRoomReactivated exist solely so AppSync
+# has a mutation surface to fan-out through to subscription subscribers.  The
+# room_state_publisher Lambda calls these via SigV4 (IAM auth mode); JWT
+# clients cannot invoke them (@aws_iam directive).
+#
+# Implementation: UNIT resolver on the NoneDS NONE datasource.
+# A UNIT resolver on NONE simply forwards the mutation arguments as the
+# resolver result.  AppSync's @aws_subscribe mechanism picks up that result and
+# fans it out to any subscriptions bound to the mutation via
+# @aws_subscribe(mutations: ["_publishRoomDeactivated"]).
+#
+# VTL:
+#   request  : return the args dict as the stash payload so the response
+#              mapping can access them directly.
+#   response : forward ctx.args to the client subscription (standard
+#              local-resolver subscription fan-out pattern).
+#
+# These resolvers NEVER perform any DynamoDB or Lambda call — the NONE
+# datasource is the Terraform-level proof that no storage I/O occurs.
+# ---------------------------------------------------------------------------
+
+resource "aws_appsync_resolver" "publish_room_deactivated" {
+  api_id      = aws_appsync_graphql_api.knotify.id
+  type        = "Mutation"
+  field       = "_publishRoomDeactivated"
+  data_source = aws_appsync_datasource.pipeline_none.name
+
+  # UNIT resolver — forwards mutation args to subscribers via @aws_subscribe.
+  request_template  = <<-VTL
+    {
+      "version": "2018-05-29",
+      "payload": $util.toJson($ctx.args)
+    }
+  VTL
+  response_template = "$util.toJson($ctx.result)"
+}
+
+resource "aws_appsync_resolver" "publish_room_reactivated" {
+  api_id      = aws_appsync_graphql_api.knotify.id
+  type        = "Mutation"
+  field       = "_publishRoomReactivated"
+  data_source = aws_appsync_datasource.pipeline_none.name
+
+  request_template  = <<-VTL
+    {
+      "version": "2018-05-29",
+      "payload": $util.toJson($ctx.args)
+    }
+  VTL
+  response_template = "$util.toJson($ctx.result)"
+}
