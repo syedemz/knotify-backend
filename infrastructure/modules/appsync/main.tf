@@ -34,8 +34,9 @@ resource "aws_cloudwatch_log_group" "appsync" {
 #
 # Primary auth:   AMAZON_COGNITO_USER_POOLS
 #   - All client mutations, queries, and subscription requests carry a
-#     Cognito JWT. default_action = "DENY" means unauthenticated requests
-#     are rejected by AppSync before reaching any resolver.
+#     Cognito JWT. default_action = "ALLOW" is required because AWS rejects
+#     "DENY + additional_authentication_provider". Per-field @aws_iam and
+#     @aws_cognito_user_pools directives in schema.graphql enforce access.
 #
 # Secondary auth: AWS_IAM
 #   - Backend publisher Lambdas (room_state_publisher story 8.9a and
@@ -54,9 +55,12 @@ resource "aws_appsync_graphql_api" "knotify" {
   authentication_type = "AMAZON_COGNITO_USER_POOLS"
 
   user_pool_config {
-    user_pool_id   = var.user_pool_id
-    aws_region     = data.aws_region.current.region
-    default_action = "DENY"
+    user_pool_id = var.user_pool_id
+    aws_region   = data.aws_region.current.region
+    # ALLOW is required when additional_authentication_provider is set. AWS
+    # rejects (DENY + additional providers). Field-level @aws_iam /
+    # @aws_cognito_user_pools directives in schema.graphql govern access.
+    default_action = "ALLOW"
   }
 
   # AWS_IAM secondary — consumed by backend publisher Lambdas (8.9a, 8.9c)
