@@ -14,17 +14,17 @@ output "role_arns" {
     aurora_refresh_lambda         = aws_iam_role.aurora_refresh_lambda.arn
     chat_resolver                 = aws_iam_role.chat_resolver.arn
     # Story 8.1 — AppSync IAM roles
-    appsync_logs                  = aws_iam_role.appsync_logs.arn
-    appsync_chat_resolver_invoke  = aws_iam_role.appsync_chat_resolver_invoke.arn
+    appsync_logs                 = aws_iam_role.appsync_logs.arn
+    appsync_chat_resolver_invoke = aws_iam_role.appsync_chat_resolver_invoke.arn
     # Story 8.9a — room_state_publisher IAM role
-    room_state_publisher          = aws_iam_role.room_state_publisher.arn
+    room_state_publisher = aws_iam_role.room_state_publisher.arn
     # Story 8.9c — notifications_publisher IAM role
-    notifications_publisher       = aws_iam_role.notifications_publisher.arn
+    notifications_publisher = aws_iam_role.notifications_publisher.arn
     # Story 8.10 — push_fanout IAM role
-    push_fanout                   = aws_iam_role.push_fanout.arn
+    push_fanout = aws_iam_role.push_fanout.arn
     # Story 8.11 — push_tokens IAM role
-    push_tokens                   = aws_iam_role.push_tokens.arn
+    push_tokens = aws_iam_role.push_tokens.arn
     # Story 8.12 — stale_token_cleanup IAM role
-    stale_token_cleanup           = aws_iam_role.stale_token_cleanup.arn
+    stale_token_cleanup = aws_iam_role.stale_token_cleanup.arn
   }
 }

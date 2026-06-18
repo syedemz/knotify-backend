@@ -58,22 +58,22 @@ run "graphql_api_primary_auth_is_cognito" {
   command = plan
 
   variables {
-    environment        = "test"
-    user_pool_id       = "eu-central-1_TESTPOOL"
-    appsync_logs_role_arn     = "arn:aws:iam::123456789012:role/knotify-test-appsync-logs"
-    appsync_invoke_role_arn   = "arn:aws:iam::123456789012:role/knotify-test-appsync-invoke"
-    chat_resolver_lambda_arn  = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
-    chat_rooms_table_arn              = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms"
-    chat_room_membership_table_name   = "ChatRoomMembership"
-    chat_room_membership_table_arn    = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRoomMembership"
-    chat_messages_table_name          = "ChatMessages"
-    chat_messages_table_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages"
-    message_reads_table_name          = "MessageReads"
-    message_reads_table_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/MessageReads"
-    notifications_table_name          = "Notifications"
-    notifications_table_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications"
-    chat_rooms_table_name             = "ChatRooms"
-    dynamodb_role_arn                 = "arn:aws:iam::123456789012:role/knotify-test-ddb-role"
+    environment                     = "test"
+    user_pool_id                    = "eu-central-1_TESTPOOL"
+    appsync_logs_role_arn           = "arn:aws:iam::123456789012:role/knotify-test-appsync-logs"
+    appsync_invoke_role_arn         = "arn:aws:iam::123456789012:role/knotify-test-appsync-invoke"
+    chat_resolver_lambda_arn        = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
+    chat_rooms_table_arn            = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms"
+    chat_room_membership_table_name = "ChatRoomMembership"
+    chat_room_membership_table_arn  = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRoomMembership"
+    chat_messages_table_name        = "ChatMessages"
+    chat_messages_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages"
+    message_reads_table_name        = "MessageReads"
+    message_reads_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/MessageReads"
+    notifications_table_name        = "Notifications"
+    notifications_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications"
+    chat_rooms_table_name           = "ChatRooms"
+    dynamodb_role_arn               = "arn:aws:iam::123456789012:role/knotify-test-ddb-role"
   }
 
   assert {
@@ -91,22 +91,22 @@ run "graphql_api_secondary_auth_is_aws_iam" {
   command = plan
 
   variables {
-    environment        = "test"
-    user_pool_id       = "eu-central-1_TESTPOOL"
-    appsync_logs_role_arn     = "arn:aws:iam::123456789012:role/knotify-test-appsync-logs"
-    appsync_invoke_role_arn   = "arn:aws:iam::123456789012:role/knotify-test-appsync-invoke"
-    chat_resolver_lambda_arn  = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
-    chat_rooms_table_arn              = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms"
-    chat_room_membership_table_name   = "ChatRoomMembership"
-    chat_room_membership_table_arn    = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRoomMembership"
-    chat_messages_table_name          = "ChatMessages"
-    chat_messages_table_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages"
-    message_reads_table_name          = "MessageReads"
-    message_reads_table_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/MessageReads"
-    notifications_table_name          = "Notifications"
-    notifications_table_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications"
-    chat_rooms_table_name             = "ChatRooms"
-    dynamodb_role_arn                 = "arn:aws:iam::123456789012:role/knotify-test-ddb-role"
+    environment                     = "test"
+    user_pool_id                    = "eu-central-1_TESTPOOL"
+    appsync_logs_role_arn           = "arn:aws:iam::123456789012:role/knotify-test-appsync-logs"
+    appsync_invoke_role_arn         = "arn:aws:iam::123456789012:role/knotify-test-appsync-invoke"
+    chat_resolver_lambda_arn        = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
+    chat_rooms_table_arn            = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms"
+    chat_room_membership_table_name = "ChatRoomMembership"
+    chat_room_membership_table_arn  = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRoomMembership"
+    chat_messages_table_name        = "ChatMessages"
+    chat_messages_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages"
+    message_reads_table_name        = "MessageReads"
+    message_reads_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/MessageReads"
+    notifications_table_name        = "Notifications"
+    notifications_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications"
+    chat_rooms_table_name           = "ChatRooms"
+    dynamodb_role_arn               = "arn:aws:iam::123456789012:role/knotify-test-ddb-role"
   }
 
   assert {
@@ -129,22 +129,22 @@ run "cloudwatch_log_group_created_with_7_day_retention" {
   command = plan
 
   variables {
-    environment        = "test"
-    user_pool_id       = "eu-central-1_TESTPOOL"
-    appsync_logs_role_arn     = "arn:aws:iam::123456789012:role/knotify-test-appsync-logs"
-    appsync_invoke_role_arn   = "arn:aws:iam::123456789012:role/knotify-test-appsync-invoke"
-    chat_resolver_lambda_arn  = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
-    chat_rooms_table_arn              = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms"
-    chat_room_membership_table_name   = "ChatRoomMembership"
-    chat_room_membership_table_arn    = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRoomMembership"
-    chat_messages_table_name          = "ChatMessages"
-    chat_messages_table_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages"
-    message_reads_table_name          = "MessageReads"
-    message_reads_table_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/MessageReads"
-    notifications_table_name          = "Notifications"
-    notifications_table_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications"
-    chat_rooms_table_name             = "ChatRooms"
-    dynamodb_role_arn                 = "arn:aws:iam::123456789012:role/knotify-test-ddb-role"
+    environment                     = "test"
+    user_pool_id                    = "eu-central-1_TESTPOOL"
+    appsync_logs_role_arn           = "arn:aws:iam::123456789012:role/knotify-test-appsync-logs"
+    appsync_invoke_role_arn         = "arn:aws:iam::123456789012:role/knotify-test-appsync-invoke"
+    chat_resolver_lambda_arn        = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
+    chat_rooms_table_arn            = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms"
+    chat_room_membership_table_name = "ChatRoomMembership"
+    chat_room_membership_table_arn  = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRoomMembership"
+    chat_messages_table_name        = "ChatMessages"
+    chat_messages_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages"
+    message_reads_table_name        = "MessageReads"
+    message_reads_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/MessageReads"
+    notifications_table_name        = "Notifications"
+    notifications_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications"
+    chat_rooms_table_name           = "ChatRooms"
+    dynamodb_role_arn               = "arn:aws:iam::123456789012:role/knotify-test-ddb-role"
   }
 
   assert {
@@ -163,22 +163,22 @@ run "five_dynamodb_datasources_declared" {
   command = plan
 
   variables {
-    environment        = "test"
-    user_pool_id       = "eu-central-1_TESTPOOL"
-    appsync_logs_role_arn     = "arn:aws:iam::123456789012:role/knotify-test-appsync-logs"
-    appsync_invoke_role_arn   = "arn:aws:iam::123456789012:role/knotify-test-appsync-invoke"
-    chat_resolver_lambda_arn  = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
-    chat_rooms_table_arn              = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms"
-    chat_room_membership_table_name   = "ChatRoomMembership"
-    chat_room_membership_table_arn    = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRoomMembership"
-    chat_messages_table_name          = "ChatMessages"
-    chat_messages_table_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages"
-    message_reads_table_name          = "MessageReads"
-    message_reads_table_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/MessageReads"
-    notifications_table_name          = "Notifications"
-    notifications_table_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications"
-    chat_rooms_table_name             = "ChatRooms"
-    dynamodb_role_arn                 = "arn:aws:iam::123456789012:role/knotify-test-ddb-role"
+    environment                     = "test"
+    user_pool_id                    = "eu-central-1_TESTPOOL"
+    appsync_logs_role_arn           = "arn:aws:iam::123456789012:role/knotify-test-appsync-logs"
+    appsync_invoke_role_arn         = "arn:aws:iam::123456789012:role/knotify-test-appsync-invoke"
+    chat_resolver_lambda_arn        = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
+    chat_rooms_table_arn            = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms"
+    chat_room_membership_table_name = "ChatRoomMembership"
+    chat_room_membership_table_arn  = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRoomMembership"
+    chat_messages_table_name        = "ChatMessages"
+    chat_messages_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages"
+    message_reads_table_name        = "MessageReads"
+    message_reads_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/MessageReads"
+    notifications_table_name        = "Notifications"
+    notifications_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications"
+    chat_rooms_table_name           = "ChatRooms"
+    dynamodb_role_arn               = "arn:aws:iam::123456789012:role/knotify-test-ddb-role"
   }
 
   assert {
@@ -216,22 +216,22 @@ run "lambda_datasource_chat_resolver_ds_is_aws_lambda" {
   command = plan
 
   variables {
-    environment        = "test"
-    user_pool_id       = "eu-central-1_TESTPOOL"
-    appsync_logs_role_arn     = "arn:aws:iam::123456789012:role/knotify-test-appsync-logs"
-    appsync_invoke_role_arn   = "arn:aws:iam::123456789012:role/knotify-test-appsync-invoke"
-    chat_resolver_lambda_arn  = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
-    chat_rooms_table_arn              = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms"
-    chat_room_membership_table_name   = "ChatRoomMembership"
-    chat_room_membership_table_arn    = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRoomMembership"
-    chat_messages_table_name          = "ChatMessages"
-    chat_messages_table_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages"
-    message_reads_table_name          = "MessageReads"
-    message_reads_table_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/MessageReads"
-    notifications_table_name          = "Notifications"
-    notifications_table_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications"
-    chat_rooms_table_name             = "ChatRooms"
-    dynamodb_role_arn                 = "arn:aws:iam::123456789012:role/knotify-test-ddb-role"
+    environment                     = "test"
+    user_pool_id                    = "eu-central-1_TESTPOOL"
+    appsync_logs_role_arn           = "arn:aws:iam::123456789012:role/knotify-test-appsync-logs"
+    appsync_invoke_role_arn         = "arn:aws:iam::123456789012:role/knotify-test-appsync-invoke"
+    chat_resolver_lambda_arn        = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
+    chat_rooms_table_arn            = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms"
+    chat_room_membership_table_name = "ChatRoomMembership"
+    chat_room_membership_table_arn  = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRoomMembership"
+    chat_messages_table_name        = "ChatMessages"
+    chat_messages_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages"
+    message_reads_table_name        = "MessageReads"
+    message_reads_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/MessageReads"
+    notifications_table_name        = "Notifications"
+    notifications_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications"
+    chat_rooms_table_name           = "ChatRooms"
+    dynamodb_role_arn               = "arn:aws:iam::123456789012:role/knotify-test-ddb-role"
   }
 
   assert {
@@ -256,29 +256,29 @@ run "module_outputs_include_required_keys" {
   command = plan
 
   variables {
-    environment        = "test"
-    user_pool_id       = "eu-central-1_TESTPOOL"
-    appsync_logs_role_arn     = "arn:aws:iam::123456789012:role/knotify-test-appsync-logs"
-    appsync_invoke_role_arn   = "arn:aws:iam::123456789012:role/knotify-test-appsync-invoke"
-    chat_resolver_lambda_arn  = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
-    chat_rooms_table_arn              = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms"
-    chat_room_membership_table_name   = "ChatRoomMembership"
-    chat_room_membership_table_arn    = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRoomMembership"
-    chat_messages_table_name          = "ChatMessages"
-    chat_messages_table_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages"
-    message_reads_table_name          = "MessageReads"
-    message_reads_table_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/MessageReads"
-    notifications_table_name          = "Notifications"
-    notifications_table_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications"
-    chat_rooms_table_name             = "ChatRooms"
-    dynamodb_role_arn                 = "arn:aws:iam::123456789012:role/knotify-test-ddb-role"
+    environment                     = "test"
+    user_pool_id                    = "eu-central-1_TESTPOOL"
+    appsync_logs_role_arn           = "arn:aws:iam::123456789012:role/knotify-test-appsync-logs"
+    appsync_invoke_role_arn         = "arn:aws:iam::123456789012:role/knotify-test-appsync-invoke"
+    chat_resolver_lambda_arn        = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
+    chat_rooms_table_arn            = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms"
+    chat_room_membership_table_name = "ChatRoomMembership"
+    chat_room_membership_table_arn  = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRoomMembership"
+    chat_messages_table_name        = "ChatMessages"
+    chat_messages_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages"
+    message_reads_table_name        = "MessageReads"
+    message_reads_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/MessageReads"
+    notifications_table_name        = "Notifications"
+    notifications_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications"
+    chat_rooms_table_name           = "ChatRooms"
+    dynamodb_role_arn               = "arn:aws:iam::123456789012:role/knotify-test-ddb-role"
   }
 
   override_resource {
     target = aws_appsync_graphql_api.knotify
     values = {
-      id          = "abc123appsyncid"
-      uris        = {
+      id = "abc123appsyncid"
+      uris = {
         GRAPHQL  = "https://abc123.appsync-api.eu-central-1.amazonaws.com/graphql"
         REALTIME = "wss://abc123.appsync-realtime-api.eu-central-1.amazonaws.com/graphql"
       }
@@ -320,22 +320,22 @@ run "chat_resolver_ds_uses_invoke_role_arn" {
   command = plan
 
   variables {
-    environment        = "test"
-    user_pool_id       = "eu-central-1_TESTPOOL"
-    appsync_logs_role_arn     = "arn:aws:iam::123456789012:role/knotify-test-appsync-logs"
-    appsync_invoke_role_arn   = "arn:aws:iam::123456789012:role/knotify-test-appsync-invoke"
-    chat_resolver_lambda_arn  = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
-    chat_rooms_table_arn              = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms"
-    chat_room_membership_table_name   = "ChatRoomMembership"
-    chat_room_membership_table_arn    = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRoomMembership"
-    chat_messages_table_name          = "ChatMessages"
-    chat_messages_table_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages"
-    message_reads_table_name          = "MessageReads"
-    message_reads_table_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/MessageReads"
-    notifications_table_name          = "Notifications"
-    notifications_table_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications"
-    chat_rooms_table_name             = "ChatRooms"
-    dynamodb_role_arn                 = "arn:aws:iam::123456789012:role/knotify-test-ddb-role"
+    environment                     = "test"
+    user_pool_id                    = "eu-central-1_TESTPOOL"
+    appsync_logs_role_arn           = "arn:aws:iam::123456789012:role/knotify-test-appsync-logs"
+    appsync_invoke_role_arn         = "arn:aws:iam::123456789012:role/knotify-test-appsync-invoke"
+    chat_resolver_lambda_arn        = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
+    chat_rooms_table_arn            = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms"
+    chat_room_membership_table_name = "ChatRoomMembership"
+    chat_room_membership_table_arn  = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRoomMembership"
+    chat_messages_table_name        = "ChatMessages"
+    chat_messages_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages"
+    message_reads_table_name        = "MessageReads"
+    message_reads_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/MessageReads"
+    notifications_table_name        = "Notifications"
+    notifications_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications"
+    chat_rooms_table_name           = "ChatRooms"
+    dynamodb_role_arn               = "arn:aws:iam::123456789012:role/knotify-test-ddb-role"
   }
 
   assert {
@@ -359,22 +359,22 @@ run "schema_loaded_from_file_contains_canonical_types" {
   command = plan
 
   variables {
-    environment        = "test"
-    user_pool_id       = "eu-central-1_TESTPOOL"
-    appsync_logs_role_arn     = "arn:aws:iam::123456789012:role/knotify-test-appsync-logs"
-    appsync_invoke_role_arn   = "arn:aws:iam::123456789012:role/knotify-test-appsync-invoke"
-    chat_resolver_lambda_arn  = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
-    chat_rooms_table_arn              = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms"
-    chat_room_membership_table_name   = "ChatRoomMembership"
-    chat_room_membership_table_arn    = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRoomMembership"
-    chat_messages_table_name          = "ChatMessages"
-    chat_messages_table_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages"
-    message_reads_table_name          = "MessageReads"
-    message_reads_table_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/MessageReads"
-    notifications_table_name          = "Notifications"
-    notifications_table_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications"
-    chat_rooms_table_name             = "ChatRooms"
-    dynamodb_role_arn                 = "arn:aws:iam::123456789012:role/knotify-test-ddb-role"
+    environment                     = "test"
+    user_pool_id                    = "eu-central-1_TESTPOOL"
+    appsync_logs_role_arn           = "arn:aws:iam::123456789012:role/knotify-test-appsync-logs"
+    appsync_invoke_role_arn         = "arn:aws:iam::123456789012:role/knotify-test-appsync-invoke"
+    chat_resolver_lambda_arn        = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
+    chat_rooms_table_arn            = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms"
+    chat_room_membership_table_name = "ChatRoomMembership"
+    chat_room_membership_table_arn  = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRoomMembership"
+    chat_messages_table_name        = "ChatMessages"
+    chat_messages_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages"
+    message_reads_table_name        = "MessageReads"
+    message_reads_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/MessageReads"
+    notifications_table_name        = "Notifications"
+    notifications_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications"
+    chat_rooms_table_name           = "ChatRooms"
+    dynamodb_role_arn               = "arn:aws:iam::123456789012:role/knotify-test-ddb-role"
   }
 
   assert {
@@ -1052,7 +1052,7 @@ run "api_arn_output_is_wired_to_appsync_api" {
   override_resource {
     target = aws_appsync_graphql_api.knotify
     values = {
-      arn  = "arn:aws:appsync:eu-central-1:123456789012:apis/TESTAPI"
+      arn = "arn:aws:appsync:eu-central-1:123456789012:apis/TESTAPI"
       uris = {
         GRAPHQL  = "https://TESTAPI.appsync-api.eu-central-1.amazonaws.com/graphql"
         REALTIME = "wss://TESTAPI.appsync-realtime-api.eu-central-1.amazonaws.com/graphql"

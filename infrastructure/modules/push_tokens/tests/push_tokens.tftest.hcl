@@ -42,10 +42,10 @@ run "lambda_created_with_correct_name" {
   command = plan
 
   variables {
-    environment  = "test"
-    function_name = "knotify-push-tokens-test"
-    filename     = "./tests/dummy.zip"
-    role_arn     = "arn:aws:iam::123456789012:role/knotify-test-push-tokens"
+    environment            = "test"
+    function_name          = "knotify-push-tokens-test"
+    filename               = "./tests/dummy.zip"
+    role_arn               = "arn:aws:iam::123456789012:role/knotify-test-push-tokens"
     table_push_tokens_name = "PushNotificationTokens"
   }
 
@@ -66,10 +66,10 @@ run "lambda_accepts_vpc_config_variable" {
   command = plan
 
   variables {
-    environment   = "test"
-    function_name = "knotify-push-tokens-test"
-    filename      = "./tests/dummy.zip"
-    role_arn      = "arn:aws:iam::123456789012:role/knotify-test-push-tokens"
+    environment            = "test"
+    function_name          = "knotify-push-tokens-test"
+    filename               = "./tests/dummy.zip"
+    role_arn               = "arn:aws:iam::123456789012:role/knotify-test-push-tokens"
     table_push_tokens_name = "PushNotificationTokens"
     vpc_config = {
       subnet_ids         = ["subnet-aaa111"]
@@ -92,10 +92,10 @@ run "lambda_carries_table_push_tokens_env_var" {
   command = plan
 
   variables {
-    environment   = "test"
-    function_name = "knotify-push-tokens-test"
-    filename      = "./tests/dummy.zip"
-    role_arn      = "arn:aws:iam::123456789012:role/knotify-test-push-tokens"
+    environment            = "test"
+    function_name          = "knotify-push-tokens-test"
+    filename               = "./tests/dummy.zip"
+    role_arn               = "arn:aws:iam::123456789012:role/knotify-test-push-tokens"
     table_push_tokens_name = "PushNotificationTokens"
   }
 
@@ -114,10 +114,10 @@ run "module_outputs_function_name" {
   command = plan
 
   variables {
-    environment   = "test"
-    function_name = "knotify-push-tokens-test"
-    filename      = "./tests/dummy.zip"
-    role_arn      = "arn:aws:iam::123456789012:role/knotify-test-push-tokens"
+    environment            = "test"
+    function_name          = "knotify-push-tokens-test"
+    filename               = "./tests/dummy.zip"
+    role_arn               = "arn:aws:iam::123456789012:role/knotify-test-push-tokens"
     table_push_tokens_name = "PushNotificationTokens"
   }
 
@@ -140,18 +140,18 @@ run "module_outputs_invoke_arn" {
   command = plan
 
   variables {
-    environment   = "test"
-    function_name = "knotify-push-tokens-test"
-    filename      = "./tests/dummy.zip"
-    role_arn      = "arn:aws:iam::123456789012:role/knotify-test-push-tokens"
+    environment            = "test"
+    function_name          = "knotify-push-tokens-test"
+    filename               = "./tests/dummy.zip"
+    role_arn               = "arn:aws:iam::123456789012:role/knotify-test-push-tokens"
     table_push_tokens_name = "PushNotificationTokens"
   }
 
   override_module {
     target = module.lambda
     outputs = {
-      invoke_arn   = "arn:aws:apigateway:eu-central-1:lambda:path/2015-03-31/functions/arn:aws:lambda:eu-central-1:123456789012:function:knotify-push-tokens-test:live/invocations"
-      alias_arn    = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-push-tokens-test:live"
+      invoke_arn    = "arn:aws:apigateway:eu-central-1:lambda:path/2015-03-31/functions/arn:aws:lambda:eu-central-1:123456789012:function:knotify-push-tokens-test:live/invocations"
+      alias_arn     = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-push-tokens-test:live"
       function_name = "knotify-push-tokens-test"
     }
   }
@@ -174,10 +174,10 @@ run "module_outputs_lambda_arn" {
   command = plan
 
   variables {
-    environment   = "test"
-    function_name = "knotify-push-tokens-test"
-    filename      = "./tests/dummy.zip"
-    role_arn      = "arn:aws:iam::123456789012:role/knotify-test-push-tokens"
+    environment            = "test"
+    function_name          = "knotify-push-tokens-test"
+    filename               = "./tests/dummy.zip"
+    role_arn               = "arn:aws:iam::123456789012:role/knotify-test-push-tokens"
     table_push_tokens_name = "PushNotificationTokens"
   }
 

@@ -385,10 +385,10 @@ resource "aws_appsync_function" "check_identity_match" {
 # ---------------------------------------------------------------------------
 
 resource "aws_appsync_resolver" "on_message_in_room" {
-  api_id    = aws_appsync_graphql_api.knotify.id
-  type      = "Subscription"
-  field     = "onMessageInRoom"
-  kind      = "PIPELINE"
+  api_id = aws_appsync_graphql_api.knotify.id
+  type   = "Subscription"
+  field  = "onMessageInRoom"
+  kind   = "PIPELINE"
 
   pipeline_config {
     functions = [aws_appsync_function.check_room_membership.function_id]
@@ -400,10 +400,10 @@ resource "aws_appsync_resolver" "on_message_in_room" {
 }
 
 resource "aws_appsync_resolver" "on_typing_in_room" {
-  api_id    = aws_appsync_graphql_api.knotify.id
-  type      = "Subscription"
-  field     = "onTypingInRoom"
-  kind      = "PIPELINE"
+  api_id = aws_appsync_graphql_api.knotify.id
+  type   = "Subscription"
+  field  = "onTypingInRoom"
+  kind   = "PIPELINE"
 
   pipeline_config {
     functions = [aws_appsync_function.check_room_membership.function_id]
@@ -414,10 +414,10 @@ resource "aws_appsync_resolver" "on_typing_in_room" {
 }
 
 resource "aws_appsync_resolver" "on_room_deactivated" {
-  api_id    = aws_appsync_graphql_api.knotify.id
-  type      = "Subscription"
-  field     = "onRoomDeactivated"
-  kind      = "PIPELINE"
+  api_id = aws_appsync_graphql_api.knotify.id
+  type   = "Subscription"
+  field  = "onRoomDeactivated"
+  kind   = "PIPELINE"
 
   pipeline_config {
     functions = [aws_appsync_function.check_room_membership.function_id]
@@ -428,10 +428,10 @@ resource "aws_appsync_resolver" "on_room_deactivated" {
 }
 
 resource "aws_appsync_resolver" "on_room_reactivated" {
-  api_id    = aws_appsync_graphql_api.knotify.id
-  type      = "Subscription"
-  field     = "onRoomReactivated"
-  kind      = "PIPELINE"
+  api_id = aws_appsync_graphql_api.knotify.id
+  type   = "Subscription"
+  field  = "onRoomReactivated"
+  kind   = "PIPELINE"
 
   pipeline_config {
     functions = [aws_appsync_function.check_room_membership.function_id]
@@ -442,10 +442,10 @@ resource "aws_appsync_resolver" "on_room_reactivated" {
 }
 
 resource "aws_appsync_resolver" "on_read_receipt" {
-  api_id    = aws_appsync_graphql_api.knotify.id
-  type      = "Subscription"
-  field     = "onReadReceipt"
-  kind      = "PIPELINE"
+  api_id = aws_appsync_graphql_api.knotify.id
+  type   = "Subscription"
+  field  = "onReadReceipt"
+  kind   = "PIPELINE"
 
   pipeline_config {
     functions = [aws_appsync_function.check_room_membership.function_id]
@@ -465,10 +465,10 @@ resource "aws_appsync_resolver" "on_read_receipt" {
 # ---------------------------------------------------------------------------
 
 resource "aws_appsync_resolver" "on_notification_for_me" {
-  api_id    = aws_appsync_graphql_api.knotify.id
-  type      = "Subscription"
-  field     = "onNotificationForMe"
-  kind      = "PIPELINE"
+  api_id = aws_appsync_graphql_api.knotify.id
+  type   = "Subscription"
+  field  = "onNotificationForMe"
+  kind   = "PIPELINE"
 
   pipeline_config {
     functions = [aws_appsync_function.check_identity_match.function_id]
@@ -479,10 +479,10 @@ resource "aws_appsync_resolver" "on_notification_for_me" {
 }
 
 resource "aws_appsync_resolver" "on_friend_request_updated" {
-  api_id    = aws_appsync_graphql_api.knotify.id
-  type      = "Subscription"
-  field     = "onFriendRequestUpdated"
-  kind      = "PIPELINE"
+  api_id = aws_appsync_graphql_api.knotify.id
+  type   = "Subscription"
+  field  = "onFriendRequestUpdated"
+  kind   = "PIPELINE"
 
   pipeline_config {
     functions = [aws_appsync_function.check_identity_match.function_id]

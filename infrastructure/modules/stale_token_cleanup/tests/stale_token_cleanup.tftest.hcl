@@ -39,10 +39,10 @@ mock_provider "aws" {
 # ---------------------------------------------------------------------------
 
 variables {
-  environment   = "test"
-  function_name = "knotify-stale-token-cleanup-test"
-  filename      = "./tests/dummy.zip"
-  role_arn      = "arn:aws:iam::123456789012:role/knotify-test-stale-token-cleanup"
+  environment            = "test"
+  function_name          = "knotify-stale-token-cleanup-test"
+  filename               = "./tests/dummy.zip"
+  role_arn               = "arn:aws:iam::123456789012:role/knotify-test-stale-token-cleanup"
   table_push_tokens_name = "PushNotificationTokens"
 }
 
@@ -120,8 +120,8 @@ run "eventbridge_target_wires_rule_to_lambda" {
   override_module {
     target = module.lambda
     outputs = {
-      alias_arn    = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-stale-token-cleanup-test:live"
-      invoke_arn   = "arn:aws:apigateway:eu-central-1:lambda:path/2015-03-31/functions/arn:aws:lambda:eu-central-1:123456789012:function:knotify-stale-token-cleanup-test:live/invocations"
+      alias_arn     = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-stale-token-cleanup-test:live"
+      invoke_arn    = "arn:aws:apigateway:eu-central-1:lambda:path/2015-03-31/functions/arn:aws:lambda:eu-central-1:123456789012:function:knotify-stale-token-cleanup-test:live/invocations"
       function_name = "knotify-stale-token-cleanup-test"
     }
   }

@@ -793,7 +793,7 @@ data "aws_iam_policy_document" "room_state_publisher_appsync" {
     resources = var.appsync_api_arn != "" ? [
       "${var.appsync_api_arn}/types/Mutation/fields/_publishRoomDeactivated",
       "${var.appsync_api_arn}/types/Mutation/fields/_publishRoomReactivated",
-    ] : [
+      ] : [
       "arn:aws:appsync:*:*:apis/*/types/Mutation/fields/_publishRoomDeactivated",
       "arn:aws:appsync:*:*:apis/*/types/Mutation/fields/_publishRoomReactivated",
     ]
@@ -879,7 +879,7 @@ data "aws_iam_policy_document" "notifications_publisher_appsync" {
     resources = var.appsync_api_arn != "" ? [
       "${var.appsync_api_arn}/types/Mutation/fields/publishNotification",
       "${var.appsync_api_arn}/types/Mutation/fields/_publishFriendRequestUpdated",
-    ] : [
+      ] : [
       "arn:aws:appsync:*:*:apis/*/types/Mutation/fields/publishNotification",
       "arn:aws:appsync:*:*:apis/*/types/Mutation/fields/_publishFriendRequestUpdated",
     ]

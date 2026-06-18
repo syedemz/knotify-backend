@@ -40,12 +40,12 @@ run "lambda_created_with_arm64_architecture" {
   command = plan
 
   variables {
-    environment                 = "test"
-    function_name               = "knotify-notifications-publisher-test"
-    filename                    = "./tests/dummy.zip"
-    role_arn                    = "arn:aws:iam::123456789012:role/knotify-test-notifications-publisher"
-    notifications_stream_arn    = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications/stream/2026-06-18T00:00:00.000"
-    appsync_graphql_url         = "https://TESTAPI.appsync-api.eu-central-1.amazonaws.com/graphql"
+    environment              = "test"
+    function_name            = "knotify-notifications-publisher-test"
+    filename                 = "./tests/dummy.zip"
+    role_arn                 = "arn:aws:iam::123456789012:role/knotify-test-notifications-publisher"
+    notifications_stream_arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications/stream/2026-06-18T00:00:00.000"
+    appsync_graphql_url      = "https://TESTAPI.appsync-api.eu-central-1.amazonaws.com/graphql"
   }
 
   assert {
@@ -65,12 +65,12 @@ run "lambda_has_no_vpc_config_variable" {
   command = plan
 
   variables {
-    environment                 = "test"
-    function_name               = "knotify-notifications-publisher-test"
-    filename                    = "./tests/dummy.zip"
-    role_arn                    = "arn:aws:iam::123456789012:role/knotify-test-notifications-publisher"
-    notifications_stream_arn    = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications/stream/2026-06-18T00:00:00.000"
-    appsync_graphql_url         = "https://TESTAPI.appsync-api.eu-central-1.amazonaws.com/graphql"
+    environment              = "test"
+    function_name            = "knotify-notifications-publisher-test"
+    filename                 = "./tests/dummy.zip"
+    role_arn                 = "arn:aws:iam::123456789012:role/knotify-test-notifications-publisher"
+    notifications_stream_arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications/stream/2026-06-18T00:00:00.000"
+    appsync_graphql_url      = "https://TESTAPI.appsync-api.eu-central-1.amazonaws.com/graphql"
   }
 
   # The underlying lambda module is called without vpc_config.
@@ -90,12 +90,12 @@ run "lambda_carries_appsync_graphql_url_env_var" {
   command = plan
 
   variables {
-    environment                 = "test"
-    function_name               = "knotify-notifications-publisher-test"
-    filename                    = "./tests/dummy.zip"
-    role_arn                    = "arn:aws:iam::123456789012:role/knotify-test-notifications-publisher"
-    notifications_stream_arn    = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications/stream/2026-06-18T00:00:00.000"
-    appsync_graphql_url         = "https://TESTAPI.appsync-api.eu-central-1.amazonaws.com/graphql"
+    environment              = "test"
+    function_name            = "knotify-notifications-publisher-test"
+    filename                 = "./tests/dummy.zip"
+    role_arn                 = "arn:aws:iam::123456789012:role/knotify-test-notifications-publisher"
+    notifications_stream_arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications/stream/2026-06-18T00:00:00.000"
+    appsync_graphql_url      = "https://TESTAPI.appsync-api.eu-central-1.amazonaws.com/graphql"
   }
 
   assert {
@@ -114,12 +114,12 @@ run "event_source_mapping_wired_to_notifications_stream" {
   command = plan
 
   variables {
-    environment                 = "test"
-    function_name               = "knotify-notifications-publisher-test"
-    filename                    = "./tests/dummy.zip"
-    role_arn                    = "arn:aws:iam::123456789012:role/knotify-test-notifications-publisher"
-    notifications_stream_arn    = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications/stream/2026-06-18T00:00:00.000"
-    appsync_graphql_url         = "https://TESTAPI.appsync-api.eu-central-1.amazonaws.com/graphql"
+    environment              = "test"
+    function_name            = "knotify-notifications-publisher-test"
+    filename                 = "./tests/dummy.zip"
+    role_arn                 = "arn:aws:iam::123456789012:role/knotify-test-notifications-publisher"
+    notifications_stream_arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications/stream/2026-06-18T00:00:00.000"
+    appsync_graphql_url      = "https://TESTAPI.appsync-api.eu-central-1.amazonaws.com/graphql"
   }
 
   assert {
@@ -145,12 +145,12 @@ run "module_outputs_function_name" {
   command = plan
 
   variables {
-    environment                 = "test"
-    function_name               = "knotify-notifications-publisher-test"
-    filename                    = "./tests/dummy.zip"
-    role_arn                    = "arn:aws:iam::123456789012:role/knotify-test-notifications-publisher"
-    notifications_stream_arn    = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications/stream/2026-06-18T00:00:00.000"
-    appsync_graphql_url         = "https://TESTAPI.appsync-api.eu-central-1.amazonaws.com/graphql"
+    environment              = "test"
+    function_name            = "knotify-notifications-publisher-test"
+    filename                 = "./tests/dummy.zip"
+    role_arn                 = "arn:aws:iam::123456789012:role/knotify-test-notifications-publisher"
+    notifications_stream_arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications/stream/2026-06-18T00:00:00.000"
+    appsync_graphql_url      = "https://TESTAPI.appsync-api.eu-central-1.amazonaws.com/graphql"
   }
 
   assert {

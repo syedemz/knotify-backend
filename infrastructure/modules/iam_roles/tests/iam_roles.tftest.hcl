@@ -1005,10 +1005,10 @@ run "push_fanout_role_exists_with_lambda_trust_policy" {
   command = plan
 
   variables {
-    environment                       = "test"
-    aurora_master_user_secret_arn     = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
-    chat_messages_stream_arn          = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages/stream/2026-06-18T00:00:00.000"
-    notifications_stream_arn          = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications/stream/2026-06-18T00:00:00.000"
+    environment                        = "test"
+    aurora_master_user_secret_arn      = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    chat_messages_stream_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages/stream/2026-06-18T00:00:00.000"
+    notifications_stream_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications/stream/2026-06-18T00:00:00.000"
     push_notification_tokens_table_arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/PushNotificationTokens"
   }
 
@@ -1027,10 +1027,10 @@ run "push_fanout_dynamodb_streams_inline_policy_exists" {
   command = plan
 
   variables {
-    environment                       = "test"
-    aurora_master_user_secret_arn     = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
-    chat_messages_stream_arn          = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages/stream/2026-06-18T00:00:00.000"
-    notifications_stream_arn          = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications/stream/2026-06-18T00:00:00.000"
+    environment                        = "test"
+    aurora_master_user_secret_arn      = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    chat_messages_stream_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages/stream/2026-06-18T00:00:00.000"
+    notifications_stream_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications/stream/2026-06-18T00:00:00.000"
     push_notification_tokens_table_arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/PushNotificationTokens"
   }
 
@@ -1055,10 +1055,10 @@ run "push_fanout_dynamodb_tables_inline_policy_exists" {
   command = plan
 
   variables {
-    environment                       = "test"
-    aurora_master_user_secret_arn     = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
-    chat_messages_stream_arn          = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages/stream/2026-06-18T00:00:00.000"
-    notifications_stream_arn          = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications/stream/2026-06-18T00:00:00.000"
+    environment                        = "test"
+    aurora_master_user_secret_arn      = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    chat_messages_stream_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages/stream/2026-06-18T00:00:00.000"
+    notifications_stream_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications/stream/2026-06-18T00:00:00.000"
     push_notification_tokens_table_arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/PushNotificationTokens"
   }
 
@@ -1083,10 +1083,10 @@ run "role_arns_output_contains_push_fanout" {
   command = plan
 
   variables {
-    environment                       = "test"
-    aurora_master_user_secret_arn     = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
-    chat_messages_stream_arn          = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages/stream/2026-06-18T00:00:00.000"
-    notifications_stream_arn          = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications/stream/2026-06-18T00:00:00.000"
+    environment                        = "test"
+    aurora_master_user_secret_arn      = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    chat_messages_stream_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages/stream/2026-06-18T00:00:00.000"
+    notifications_stream_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications/stream/2026-06-18T00:00:00.000"
     push_notification_tokens_table_arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/PushNotificationTokens"
   }
 
