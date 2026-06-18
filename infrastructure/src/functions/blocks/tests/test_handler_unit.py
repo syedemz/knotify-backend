@@ -427,6 +427,58 @@ class TestPostBlocks:
         cond = update_kwargs["ConditionExpression"]
         assert "attribute_exists" in cond
 
+    # ---------------------------------------------------------------------------
+    # Story 8.9 additions — friendship_active flag management
+    # ---------------------------------------------------------------------------
+
+    def test_given_friends_when_post_then_dynamo_sets_friendship_active_false(self):
+        """
+        story 8.9 AC-1 (block path): the DynamoDB UpdateItem on POST /v1/blocks
+        MUST set friendship_active=false so that sendMessage returns RoomReadOnly
+        (not RoomDeactivated) after an unblock.  Without this flag the sendMessage
+        resolver sees an active room with no friendship and allows writes incorrectly.
+        """
+        mod = _import_handler()
+        conn, cur = _make_conn()
+        cur.fetchone.return_value = (1,)
+
+        dynamo = _make_dynamo_client()
+        event = _make_event("POST", "/v1/blocks", body={"userId": _USER_B}, user_sub=_USER_A)
+
+        with (
+            patch.object(mod, "_get_conn", return_value=conn),
+            patch.object(mod, "_get_dynamo", return_value=dynamo),
+            patch.dict(os.environ, {"EDGE_SECRET": _EDGE_SECRET, "DB_SECRET_NAME": "x",
+                                    "TABLE_CHAT_ROOMS": "ChatRooms"}),
+        ):
+            mod.handler(event, None)
+
+        update_kwargs = dynamo.update_item.call_args[1]
+        update_expr = update_kwargs.get("UpdateExpression", "")
+        expr_values = update_kwargs.get("ExpressionAttributeValues", {})
+        expr_names = update_kwargs.get("ExpressionAttributeNames", {})
+
+        # friendship_active must appear in the UpdateExpression (via placeholder or literal)
+        fa_in_expr = (
+            "friendship_active" in update_expr
+            or any("friendship_active" in v for v in expr_names.values())
+        )
+        assert fa_in_expr, (
+            f"UpdateExpression or ExpressionAttributeNames must reference "
+            f"friendship_active; got update_expr={update_expr!r}, "
+            f"expr_names={expr_names!r}"
+        )
+
+        # The value bound to friendship_active must be BOOL false
+        bool_false_values = [
+            v for v in expr_values.values()
+            if isinstance(v, dict) and v.get("BOOL") is False
+        ]
+        assert bool_false_values, (
+            f"ExpressionAttributeValues must contain {{BOOL: false}} for "
+            f"friendship_active; got expr_values={expr_values!r}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Area C: DELETE /v1/blocks/{userId}
@@ -541,6 +593,47 @@ class TestDeleteBlocks:
         assert "ConditionExpression" in update_kwargs
         cond = update_kwargs["ConditionExpression"]
         assert "deactivated_reason" in cond
+
+    def test_given_unblock_when_delete_then_dynamo_does_not_set_friendship_active(self):
+        """
+        story 8.9 AC-1 (unblock path): the reactivation UpdateExpression must NOT
+        set or modify friendship_active.  Only a subsequent friend-request accept
+        (story 8.9b) flips the flag to true.  If unblock incorrectly set
+        friendship_active=true the room would become writable before re-friending.
+        """
+        mod = _import_handler()
+        conn, cur = _make_conn()
+        dynamo = _make_dynamo_client()
+
+        event = _make_event(
+            "DELETE",
+            f"/v1/blocks/{_USER_B}",
+            path_params={"userId": _USER_B},
+            user_sub=_USER_A,
+        )
+
+        with (
+            patch.object(mod, "_get_conn", return_value=conn),
+            patch.object(mod, "_get_dynamo", return_value=dynamo),
+            patch.dict(os.environ, {"EDGE_SECRET": _EDGE_SECRET, "DB_SECRET_NAME": "x",
+                                    "TABLE_CHAT_ROOMS": "ChatRooms"}),
+        ):
+            mod.handler(event, None)
+
+        update_kwargs = dynamo.update_item.call_args[1]
+        update_expr = update_kwargs.get("UpdateExpression", "")
+        expr_names = update_kwargs.get("ExpressionAttributeNames", {})
+
+        # friendship_active must NOT appear in the unblock UpdateExpression
+        fa_in_expr = (
+            "friendship_active" in update_expr
+            or any("friendship_active" in v for v in expr_names.values())
+        )
+        assert not fa_in_expr, (
+            f"Unblock UpdateExpression must NOT reference friendship_active "
+            f"(story 8.9b handles that); got update_expr={update_expr!r}, "
+            f"expr_names={expr_names!r}"
+        )
 
     def test_given_missing_userId_path_param_when_delete_then_returns_400(self):
         mod = _import_handler()

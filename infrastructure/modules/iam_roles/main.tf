@@ -323,6 +323,9 @@ resource "aws_iam_role_policy" "blocks_writer_app_user_credential" {
 
 # Allow DynamoDB UpdateItem on the ChatRooms table ONLY.
 # No other DynamoDB actions and no other tables — least-privilege per codingprinciples.md.
+# Table ARN sourced from var.chat_rooms_table_arn (story 8.9 AC-2: must not be
+# hardcoded; default wildcard fallback is used only in isolated unit tests where
+# the dynamodb module is not wired).
 data "aws_iam_policy_document" "blocks_writer_dynamodb" {
   statement {
     sid    = "ChatRoomsUpdateItem"
@@ -331,7 +334,7 @@ data "aws_iam_policy_document" "blocks_writer_dynamodb" {
       "dynamodb:UpdateItem",
     ]
     resources = [
-      "arn:aws:dynamodb:*:*:table/ChatRooms",
+      var.chat_rooms_table_arn != "" ? var.chat_rooms_table_arn : "arn:aws:dynamodb:*:*:table/ChatRooms",
     ]
   }
 }

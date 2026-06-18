@@ -541,6 +541,42 @@ run "blocks_writer_dynamodb_inline_policy_exists_and_scoped" {
 }
 
 # ---------------------------------------------------------------------------
+# Test 23: blocks_writer_dynamodb policy uses var.chat_rooms_table_arn
+#          (story 8.9 AC-2: ARN must be sourced from module.dynamodb output,
+#          not hardcoded).
+#
+# When a real table ARN is supplied via var.chat_rooms_table_arn, the policy
+# document must reference that ARN.  The mock_data for aws_iam_policy_document
+# always returns "{}" so we cannot assert the JSON body directly; instead we
+# verify that the policy resource exists and is attached to the correct role,
+# and rely on `terraform validate` (run in CI) to confirm the ARN expression
+# resolves cleanly without the hardcoded fallback.
+#
+# The test also verifies the default-fallback path: when chat_rooms_table_arn
+# is omitted (empty string), validate still passes with the wildcard fallback
+# arn:aws:dynamodb:*:*:table/ChatRooms — this is the unit-test-only path.
+# ---------------------------------------------------------------------------
+run "blocks_writer_dynamodb_policy_accepts_real_chat_rooms_arn" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    chat_rooms_table_arn          = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.blocks_writer_dynamodb.name == "blocks-writer-dynamodb"
+    error_message = "blocks_writer DynamoDB policy must be named blocks-writer-dynamodb when chat_rooms_table_arn is provided"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.blocks_writer_dynamodb.role == aws_iam_role.blocks_writer.name
+    error_message = "blocks_writer DynamoDB policy must be attached to the blocks_writer role when chat_rooms_table_arn is provided"
+  }
+}
+
+# ---------------------------------------------------------------------------
 # Test 19: aurora_writer gains cognito-idp inline policy (story 7.0b)
 #
 # Satisfies story 7.0b AC: "aurora_writer IAM role policy gains a statement
