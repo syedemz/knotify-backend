@@ -6,6 +6,7 @@ output "role_arns" {
     aurora_reader                 = aws_iam_role.aurora_reader.arn
     aurora_writer                 = aws_iam_role.aurora_writer.arn
     blocks_writer                 = aws_iam_role.blocks_writer.arn
+    friends_writer                = aws_iam_role.friends_writer.arn
     dynamodb_chat_writer          = aws_iam_role.dynamodb_chat_writer.arn
     dynamodb_notifications_writer = aws_iam_role.dynamodb_notifications_writer.arn
     stepfn_task                   = aws_iam_role.stepfn_task.arn

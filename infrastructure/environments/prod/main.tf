@@ -703,12 +703,15 @@ resource "aws_lambda_permission" "blocks_api_gateway" {
 }
 
 # ---------------------------------------------------------------------------
-# knotify-friends Lambda — story 6.2
+# knotify-friends Lambda — story 6.2, extended by story 8.9b
 #
 # PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
 # Mirrors the dev wiring exactly. Seven routes (GET/DELETE /v1/friends,
 # GET/POST /v1/friend-requests, POST accept/decline, DELETE request) with
 # JWT authorization.
+#
+# Role switched from aurora_writer to friends_writer (story 8.9b) to add
+# scoped DynamoDB UpdateItem on ChatRooms for friendship_active maintenance.
 # ---------------------------------------------------------------------------
 
 module "friends" {
@@ -723,7 +726,7 @@ module "friends" {
     module.db_layer.layer_arn,
   ]
 
-  role_arn = module.iam_roles.role_arns["aurora_writer"]
+  role_arn = module.iam_roles.role_arns["friends_writer"]
 
   vpc_config = {
     subnet_ids         = module.networking.private_subnet_ids
@@ -731,8 +734,9 @@ module "friends" {
   }
 
   environment_variables = {
-    DB_SECRET_NAME = "knotify-${var.environment}-app-user-credential"
-    EDGE_SECRET    = module.cloudfront.edge_secret
+    DB_SECRET_NAME   = "knotify-${var.environment}-app-user-credential"
+    EDGE_SECRET      = module.cloudfront.edge_secret
+    TABLE_CHAT_ROOMS = module.dynamodb.chat_rooms_table_name
 
     # Aurora connection endpoint params — see profile Lambda above for
     # rationale.

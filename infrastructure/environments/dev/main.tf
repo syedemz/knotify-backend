@@ -809,7 +809,7 @@ resource "aws_lambda_permission" "blocks_api_gateway" {
 }
 
 # ---------------------------------------------------------------------------
-# knotify-friends Lambda — story 6.2
+# knotify-friends Lambda — story 6.2, extended by story 8.9b
 #
 # Handles seven routes:
 #   GET    /v1/friends                          — block-filtered friend list
@@ -820,8 +820,8 @@ resource "aws_lambda_permission" "blocks_api_gateway" {
 #   POST   /v1/friend-requests/{id}/decline     — decline a pending request
 #   DELETE /v1/friend-requests/{id}             — cancel an outgoing request
 #
-# Uses the aurora_writer IAM role (Aurora rights via app_user credential;
-# no DynamoDB access needed — friends operations are Aurora-only).
+# Uses the friends_writer IAM role (Aurora app_user credential + DynamoDB
+# UpdateItem on ChatRooms to maintain friendship_active flag — story 8.9b).
 # EDGE_SECRET is injected so the @with_edge_secret decorator validates all
 # traffic arrived via CloudFront.
 # ---------------------------------------------------------------------------
@@ -838,7 +838,7 @@ module "friends" {
     module.db_layer.layer_arn,
   ]
 
-  role_arn = module.iam_roles.role_arns["aurora_writer"]
+  role_arn = module.iam_roles.role_arns["friends_writer"]
 
   vpc_config = {
     subnet_ids         = module.networking.private_subnet_ids
@@ -846,8 +846,9 @@ module "friends" {
   }
 
   environment_variables = {
-    DB_SECRET_NAME = "knotify-${var.environment}-app-user-credential"
-    EDGE_SECRET    = module.cloudfront.edge_secret
+    DB_SECRET_NAME   = "knotify-${var.environment}-app-user-credential"
+    EDGE_SECRET      = module.cloudfront.edge_secret
+    TABLE_CHAT_ROOMS = module.dynamodb.chat_rooms_table_name
 
     # Aurora connection endpoint params — see profile Lambda above for
     # rationale.

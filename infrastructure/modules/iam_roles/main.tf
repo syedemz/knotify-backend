@@ -346,6 +346,70 @@ resource "aws_iam_role_policy" "blocks_writer_dynamodb" {
 }
 
 # ===========================================================================
+# Role: friends_writer
+#
+# For the knotify-friends Lambda (phase 6 story 6.2, extended by story 8.9b).
+# Needs Aurora app-user access (same as aurora_writer) PLUS DynamoDB UpdateItem
+# on the ChatRooms table to flip friendship_active on accept and unfriend.
+# The DynamoDB action is scoped to the ChatRooms table only — no other tables.
+# Mirrors the blocks_writer pattern exactly (story 8.9 precedent).
+# ===========================================================================
+
+resource "aws_iam_role" "friends_writer" {
+  name               = "knotify-${var.environment}-friends-writer"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+resource "aws_iam_role_policy_attachment" "friends_writer_vpc_access" {
+  role       = aws_iam_role.friends_writer.name
+  policy_arn = local.vpc_access_policy_arn
+}
+
+# Allow reading the app_user credential so the friends Lambda can connect to Aurora.
+data "aws_iam_policy_document" "friends_writer_app_user_credential" {
+  statement {
+    sid    = "ReadAppUserCredential"
+    effect = "Allow"
+    actions = [
+      "secretsmanager:GetSecretValue",
+    ]
+    resources = [
+      "${local.sm_arn_prefix}:secret:knotify-${var.environment}-app-user-credential-*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "friends_writer_app_user_credential" {
+  name   = "friends-writer-app-user-credential"
+  role   = aws_iam_role.friends_writer.name
+  policy = data.aws_iam_policy_document.friends_writer_app_user_credential.json
+}
+
+# Allow DynamoDB UpdateItem on the ChatRooms table ONLY.
+# No other DynamoDB actions and no other tables — least-privilege per codingprinciples.md.
+# Table ARN sourced from var.chat_rooms_table_arn (story 8.9b AC-2: must not be
+# hardcoded; default wildcard fallback is used only in isolated unit tests where
+# the dynamodb module is not wired).
+data "aws_iam_policy_document" "friends_writer_dynamodb" {
+  statement {
+    sid    = "ChatRoomsUpdateItem"
+    effect = "Allow"
+    actions = [
+      "dynamodb:UpdateItem",
+    ]
+    resources = [
+      var.chat_rooms_table_arn != "" ? var.chat_rooms_table_arn : "arn:aws:dynamodb:*:*:table/ChatRooms",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "friends_writer_dynamodb" {
+  name   = "friends-writer-dynamodb"
+  role   = aws_iam_role.friends_writer.name
+  policy = data.aws_iam_policy_document.friends_writer_dynamodb.json
+}
+
+# ===========================================================================
 # Role: stepfn_task
 #
 # For Step Functions state machine tasks (phase 8–9 orchestration flows).

@@ -51,7 +51,7 @@ from typing import Any
 
 import psycopg2.errors
 import knotify_db
-from knotify_obs import block_filter, init_logger, is_blocked, require_profile_complete, with_edge_secret
+from knotify_obs import block_filter, chat_room_id, init_logger, is_blocked, require_profile_complete, with_edge_secret
 
 # ---------------------------------------------------------------------------
 # Module-level singletons (cold-start optimization)
@@ -60,8 +60,10 @@ from knotify_obs import block_filter, init_logger, is_blocked, require_profile_c
 logger = init_logger("knotify_friends")
 
 _DB_SECRET_NAME: str = os.environ.get("DB_SECRET_NAME", "")
+_TABLE_CHAT_ROOMS: str = os.environ.get("TABLE_CHAT_ROOMS", "ChatRooms")
 
 _conn = None
+_dynamo = None
 
 
 def _get_conn():
@@ -76,6 +78,15 @@ def _get_conn():
     if _conn is None or _conn.closed:
         _conn = knotify_db.get_connection(_DB_SECRET_NAME)
     return _conn
+
+
+def _get_dynamo():
+    """Return a (possibly cached) boto3 DynamoDB client."""
+    global _dynamo
+    if _dynamo is None:
+        import boto3  # deferred — not available in local test environments
+        _dynamo = boto3.client("dynamodb")
+    return _dynamo
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +241,115 @@ def _canonical_pair(id_a: str, id_b: str) -> tuple[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# DynamoDB helpers
+# ---------------------------------------------------------------------------
+
+
+def _set_friendship_active(user_id_a: str, user_id_b: str) -> bool:
+    """
+    Call DynamoDB UpdateItem to set friendship_active=true on the ChatRooms row.
+
+    Used on friend-request accept (story 8.9b): after the Aurora INSERT INTO
+    friendships commits, flip the flag so sendMessage is unblocked.
+
+    ConditionExpression guards on attribute_exists(room_id) — if no chat room
+    has ever been created for this pair, the update silently no-ops
+    (ConditionalCheckFailedException).  The next createOrGetRoom will set the
+    flag to true at row-creation time (story 8.3).
+
+    Returns True when the update succeeded or was a ConditionalCheckFailed no-op.
+    Returns False on any other DynamoDB error, which the caller surfaces as
+    chat_room_update_pending: true in the HTTP response.  The Aurora commit is
+    never rolled back.
+    """
+    table = os.environ.get("TABLE_CHAT_ROOMS", _TABLE_CHAT_ROOMS)
+    room_id = chat_room_id(user_id_a, user_id_b)
+
+    try:
+        _get_dynamo().update_item(
+            TableName=table,
+            Key={"room_id": {"S": room_id}},
+            UpdateExpression="SET #fa = :true",
+            ConditionExpression="attribute_exists(room_id)",
+            ExpressionAttributeNames={"#fa": "friendship_active"},
+            ExpressionAttributeValues={":true": {"BOOL": True}},
+        )
+        return True
+    except Exception as exc:
+        # Duck-type botocore.exceptions.ClientError via .response attribute so
+        # this module does not require a top-level botocore import (boto3 is a
+        # layer dependency, not locally installed in test environments).
+        error_response = getattr(exc, "response", None)
+        if error_response is None:
+            raise
+        code = error_response.get("Error", {}).get("Code", "")
+        if code == "ConditionalCheckFailedException":
+            logger.info(
+                "accept: chat-room friendship_active no-op (room does not exist yet)",
+                extra={"user_id_a": user_id_a, "user_id_b": user_id_b},
+            )
+            return True
+        logger.error(
+            "accept: DynamoDB friendship_active update failed",
+            extra={
+                "user_id_a": user_id_a,
+                "user_id_b": user_id_b,
+                "dynamo_error_code": code,
+            },
+        )
+        return False
+
+
+def _clear_friendship_active(user_id_a: str, user_id_b: str) -> bool:
+    """
+    Call DynamoDB UpdateItem to set friendship_active=false on the ChatRooms row.
+
+    Used on unfriend (story 8.9b): after the Aurora DELETE FROM friendships
+    commits, flip the flag so sendMessage returns RoomReadOnly.  The room's
+    status stays 'active' — deactivation is the blocks Lambda's job (story 8.9).
+
+    Same attribute_exists(room_id) condition as _set_friendship_active — silent
+    no-op when no chat room ever existed.
+
+    Returns True on success or ConditionalCheckFailed no-op.
+    Returns False on any other DynamoDB error.
+    """
+    table = os.environ.get("TABLE_CHAT_ROOMS", _TABLE_CHAT_ROOMS)
+    room_id = chat_room_id(user_id_a, user_id_b)
+
+    try:
+        _get_dynamo().update_item(
+            TableName=table,
+            Key={"room_id": {"S": room_id}},
+            UpdateExpression="SET #fa = :false",
+            ConditionExpression="attribute_exists(room_id)",
+            ExpressionAttributeNames={"#fa": "friendship_active"},
+            ExpressionAttributeValues={":false": {"BOOL": False}},
+        )
+        return True
+    except Exception as exc:
+        error_response = getattr(exc, "response", None)
+        if error_response is None:
+            raise
+        code = error_response.get("Error", {}).get("Code", "")
+        if code == "ConditionalCheckFailedException":
+            logger.info(
+                "unfriend: chat-room friendship_active no-op (room does not exist)",
+                extra={"user_id_a": user_id_a, "user_id_b": user_id_b},
+            )
+            return True
+        logger.error(
+            "unfriend: DynamoDB friendship_active update failed",
+            extra={
+                "user_id_a": user_id_a,
+                "user_id_b": user_id_b,
+                "dynamo_error_code": code,
+            },
+        )
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Sub-handlers
 # ---------------------------------------------------------------------------
 
@@ -274,6 +394,11 @@ def _handle_delete_friend(event: dict, user_id: str, user_sex: str) -> dict:
 
     Uses canonical pair ordering for the DELETE; returns 200 even when no row
     was deleted (idempotent).
+
+    AFTER the Aurora DELETE commits, calls DynamoDB to set friendship_active=false
+    on the ChatRooms row (story 8.9b).  ConditionalCheckFailed → no-op (no room
+    ever existed).  Other DynamoDB errors → 200 with chat_room_update_pending: true
+    (Aurora commit is never rolled back).
     """
     path_params = event.get("pathParameters") or {}
     target_user_id = path_params.get("userId", "").strip()
@@ -296,7 +421,15 @@ def _handle_delete_friend(event: dict, user_id: str, user_sex: str) -> dict:
         _conn = None
         raise
 
-    return _json_response(200, {"deleted": True})
+    # Aurora transaction has committed at this point.
+    # Now call DynamoDB — NEVER roll back Aurora if this fails.
+    dynamo_ok = _clear_friendship_active(user_id, target_user_id)
+
+    response_body: dict = {"deleted": True}
+    if not dynamo_ok:
+        response_body["chat_room_update_pending"] = True
+
+    return _json_response(200, response_body)
 
 
 def _handle_get_friend_requests(event: dict, user_id: str, user_sex: str) -> dict:
@@ -416,8 +549,15 @@ def _handle_accept_friend_request(
         UPDATE friend_requests SET status = 'accepted'
         INSERT INTO friendships using lex-min/max canonical ordering
       COMMIT → 200
+
+    AFTER the Aurora transaction commits, calls DynamoDB to set friendship_active=true
+    on the ChatRooms row (story 8.9b).  ConditionalCheckFailed → no-op (no room yet;
+    the next createOrGetRoom sets the flag at creation time).  Other DynamoDB errors
+    → 200 with chat_room_update_pending: true (Aurora commit is never rolled back).
     """
     conn = _get_conn()
+    from_user_id: str = ""
+    to_user_id: str = ""
     try:
         with knotify_db.rls_context(conn, user_id, user_sex):
             with conn.cursor() as cur:
@@ -442,7 +582,15 @@ def _handle_accept_friend_request(
         _conn = None
         raise
 
-    return _json_response(200, {"accepted": True, "request_id": request_id})
+    # Aurora transaction has committed at this point.
+    # Now call DynamoDB — NEVER roll back Aurora if this fails.
+    dynamo_ok = _set_friendship_active(from_user_id, to_user_id)
+
+    response_body: dict = {"accepted": True, "request_id": request_id}
+    if not dynamo_ok:
+        response_body["chat_room_update_pending"] = True
+
+    return _json_response(200, response_body)
 
 
 def _handle_decline_friend_request(
