@@ -1,6 +1,6 @@
 phase: 8
 title: Chat (AppSync + DynamoDB Streams + push fan-out)
-last_updated: 2026-06-17 # story 8.2 done
+last_updated: 2026-06-17 # story 8.3 done
 
 context_summary: |
   Delivers the full chat capability in a single phase per the owner's resolved Option A: the AppSync GraphQL API with a hand-written schema (no Amplify auto-generation, no auto-CRUD subscriptions), Lambda resolvers that enforce membership and block checks against Aurora before establishing subscriptions, the deterministic-room-id creation flow from §5.4.1, DynamoDB Streams from ChatMessages and Notifications wired to a PushFanout Lambda that targets Expo Push (per the §13 #7 resolution in v1.6), the POST /v1/push-tokens REST endpoint for token registration, and the stale-token cleanup scheduled Lambda. This phase intentionally ships data plane and API plane together because the GraphQL schema and the DynamoDB key design are tightly coupled. After this phase only account deletion, observability consolidation, hardening, and S3 photos remain.
@@ -87,7 +87,7 @@ stories:
     title: createOrGetRoom resolver (idempotent room creation)
     agent: backenddeveloper
     tracking_issue: 113
-    done: false
+    done: true
     depends_on: [8.0, 8.1, 8.2]
     acceptance_criteria:
       - chat_resolver dispatcher routes (Mutation, createOrGetRoom) to a handler implementing the §5.4.1 flow: verifies caller != other user; queries Aurora for friendship (both directions) via knotify_db; queries Aurora for blocks (both directions) via knotify_db.is_blocked / block_filter helper; computes room_id = sha256(canonical_pair(caller, other)) via knotify_obs.chat_room_id
@@ -98,7 +98,7 @@ stories:
       - Integration test: A and C are not friends → returns Unauthorized with reason NOT_FRIENDS
       - Integration test: A has blocked B → returns Unauthorized with reason BLOCKED
       - Integration test: caller without custom:profile_complete claim → returns Unauthorized with reason PROFILE_INCOMPLETE
-    notes: ""
+    notes: "Completed 2026-06-17. _handle_create_or_get_room in handler.py; 16 unit tests pass; 4 integration tests authored + skip-gated (IT-8.3-4 passes without live env)."
 
   - id: 8.4
     title: sendMessage resolver (with idempotency + friendship-active gate)
