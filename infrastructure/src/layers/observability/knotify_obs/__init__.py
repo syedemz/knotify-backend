@@ -27,6 +27,13 @@ Public API (as specified in story 7.0b):
                                     when custom:profile_complete JWT claim != "true";
                                     fail-closed when claim is absent
 
+Public API (as specified in story 8.0):
+  require_profile_complete_appsync → decorator: returns AppSync Unauthorized error
+                                     when custom:profile_complete != "true";
+                                     reads from event["identity"]["claims"] (AppSync path,
+                                     not event["requestContext"]["authorizer"]["jwt"]["claims"]);
+                                     fail-closed when claim is absent
+
 NOTE: verify_cognito_jwt is rarely used in v1.  The HTTP API Cognito JWT
 authorizer (phase 5) handles routine validation natively — business Lambdas
 read claims from event.requestContext.authorizer.jwt.claims.  This helper
@@ -41,6 +48,7 @@ from knotify_obs._edge_secret import EdgeSecretRequired, require_edge_secret, wi
 from knotify_obs._chat_room_id import chat_room_id
 from knotify_obs._blocks import block_filter, is_blocked
 from knotify_obs._profile_complete import require_profile_complete
+from knotify_obs._profile_complete_appsync import require_profile_complete_appsync
 
 __all__ = [
     "init_logger",
@@ -53,4 +61,5 @@ __all__ = [
     "block_filter",
     "is_blocked",
     "require_profile_complete",
+    "require_profile_complete_appsync",
 ]

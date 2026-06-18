@@ -119,6 +119,18 @@ package-all:
 	$(MAKE) package FUNC=match
 	@echo "[package-all] Building refresh_deck_view function ..."
 	$(MAKE) package FUNC=refresh_deck_view
+	@echo "[package-all] Building chat_resolver function ..."
+	$(MAKE) package FUNC=chat_resolver
+	@echo "[package-all] Building room_state_publisher function ..."
+	$(MAKE) package FUNC=room_state_publisher
+	@echo "[package-all] Building notifications_publisher function ..."
+	$(MAKE) package FUNC=notifications_publisher
+	@echo "[package-all] Building push_fanout function ..."
+	$(MAKE) package FUNC=push_fanout
+	@echo "[package-all] Building push_tokens function ..."
+	$(MAKE) package FUNC=push_tokens
+	@echo "[package-all] Building stale_token_cleanup function ..."
+	$(MAKE) package FUNC=stale_token_cleanup
 	@echo "[package-all] Done — all artifacts in $(BUILD_DIR)/"
 
 # ---------------------------------------------------------------------------

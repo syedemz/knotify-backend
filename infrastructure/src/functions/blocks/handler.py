@@ -190,19 +190,21 @@ def _deactivate_chat_room(blocker_id: str, blocked_id: str) -> bool:
             Key={"room_id": {"S": room_id}},
             UpdateExpression=(
                 "SET #status = :deactivated, deactivated_reason = :blocked, "
-                "deactivated_by = :blocker, deactivated_at = :now"
+                "deactivated_by = :blocker, deactivated_at = :now, "
+                "#fa = :false"
             ),
             ConditionExpression=(
                 "attribute_exists(room_id) AND "
                 "(attribute_not_exists(#status) OR #status = :active)"
             ),
-            ExpressionAttributeNames={"#status": "status"},
+            ExpressionAttributeNames={"#status": "status", "#fa": "friendship_active"},
             ExpressionAttributeValues={
                 ":deactivated": {"S": "deactivated"},
                 ":blocked": {"S": "blocked"},
                 ":blocker": {"S": blocker_id},
                 ":now": {"S": now},
                 ":active": {"S": "active"},
+                ":false": {"BOOL": False},
             },
         )
         return True

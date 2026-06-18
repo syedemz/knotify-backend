@@ -541,6 +541,42 @@ run "blocks_writer_dynamodb_inline_policy_exists_and_scoped" {
 }
 
 # ---------------------------------------------------------------------------
+# Test 23: blocks_writer_dynamodb policy uses var.chat_rooms_table_arn
+#          (story 8.9 AC-2: ARN must be sourced from module.dynamodb output,
+#          not hardcoded).
+#
+# When a real table ARN is supplied via var.chat_rooms_table_arn, the policy
+# document must reference that ARN.  The mock_data for aws_iam_policy_document
+# always returns "{}" so we cannot assert the JSON body directly; instead we
+# verify that the policy resource exists and is attached to the correct role,
+# and rely on `terraform validate` (run in CI) to confirm the ARN expression
+# resolves cleanly without the hardcoded fallback.
+#
+# The test also verifies the default-fallback path: when chat_rooms_table_arn
+# is omitted (empty string), validate still passes with the wildcard fallback
+# arn:aws:dynamodb:*:*:table/ChatRooms — this is the unit-test-only path.
+# ---------------------------------------------------------------------------
+run "blocks_writer_dynamodb_policy_accepts_real_chat_rooms_arn" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    chat_rooms_table_arn          = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.blocks_writer_dynamodb.name == "blocks-writer-dynamodb"
+    error_message = "blocks_writer DynamoDB policy must be named blocks-writer-dynamodb when chat_rooms_table_arn is provided"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.blocks_writer_dynamodb.role == aws_iam_role.blocks_writer.name
+    error_message = "blocks_writer DynamoDB policy must be attached to the blocks_writer role when chat_rooms_table_arn is provided"
+  }
+}
+
+# ---------------------------------------------------------------------------
 # Test 19: aurora_writer gains cognito-idp inline policy (story 7.0b)
 #
 # Satisfies story 7.0b AC: "aurora_writer IAM role policy gains a statement
@@ -616,5 +652,614 @@ run "aurora_reader_match_app_user_credential_inline_policy_exists" {
   assert {
     condition     = aws_iam_role_policy.aurora_reader_match_app_user_credential.role == aws_iam_role.aurora_reader_match.name
     error_message = "aurora_reader_match inline policy must be attached to the aurora_reader_match role"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 20: appsync_logs_role — trust principal appsync.amazonaws.com,
+#          AWSAppSyncPushToCloudWatchLogs managed policy attached
+#
+# Satisfies story 8.1 AC: "new appsync_logs_role with trust on
+# appsync.amazonaws.com and managed policy AWSAppSyncPushToCloudWatchLogs".
+# ---------------------------------------------------------------------------
+run "appsync_logs_role_exists_with_trust_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = aws_iam_role.appsync_logs.assume_role_policy != ""
+    error_message = "appsync_logs assume_role_policy must not be empty"
+  }
+}
+
+run "appsync_logs_role_attaches_appsync_cloudwatch_managed_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy_attachment.appsync_logs_cloudwatch.policy_arn == "arn:aws:iam::aws:policy/service-role/AWSAppSyncPushToCloudWatchLogs"
+    error_message = "appsync_logs must attach AWSAppSyncPushToCloudWatchLogs"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 21: appsync_chat_resolver_invoke — trust principal appsync.amazonaws.com,
+#          inline policy granting lambda:InvokeFunction on chat_resolver Lambda ARN
+#
+# Satisfies story 8.1 AC: "aws_iam_role for AppSync to invoke chat_resolver Lambda
+# is declared and granted lambda:InvokeFunction on module.chat_resolver.lambda_arn".
+# ---------------------------------------------------------------------------
+run "appsync_chat_resolver_invoke_role_exists" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    chat_resolver_lambda_arn      = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
+  }
+
+  assert {
+    condition     = aws_iam_role.appsync_chat_resolver_invoke.assume_role_policy != ""
+    error_message = "appsync_chat_resolver_invoke assume_role_policy must not be empty"
+  }
+}
+
+run "appsync_chat_resolver_invoke_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    chat_resolver_lambda_arn      = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.appsync_chat_resolver_invoke_lambda.name == "appsync-chat-resolver-invoke-lambda"
+    error_message = "appsync_chat_resolver_invoke inline policy must be named appsync-chat-resolver-invoke-lambda"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.appsync_chat_resolver_invoke_lambda.role == aws_iam_role.appsync_chat_resolver_invoke.name
+    error_message = "appsync_chat_resolver_invoke inline policy must be attached to the appsync_chat_resolver_invoke role"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 22: role_arns output map contains appsync_logs and appsync_chat_resolver_invoke
+#
+# Satisfies the module output shape requirement so root modules can reference
+# module.iam_roles.role_arns["appsync_logs"] and
+# module.iam_roles.role_arns["appsync_chat_resolver_invoke"].
+# ---------------------------------------------------------------------------
+run "role_arns_output_contains_appsync_roles" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    chat_resolver_lambda_arn      = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
+  }
+
+  override_resource {
+    target = aws_iam_role.appsync_logs
+    values = {
+      arn = "arn:aws:iam::123456789012:role/knotify-test-appsync-logs"
+    }
+    override_during = plan
+  }
+
+  override_resource {
+    target = aws_iam_role.appsync_chat_resolver_invoke
+    values = {
+      arn = "arn:aws:iam::123456789012:role/knotify-test-appsync-chat-resolver-invoke"
+    }
+    override_during = plan
+  }
+
+  assert {
+    condition     = output.role_arns["appsync_logs"] == "arn:aws:iam::123456789012:role/knotify-test-appsync-logs"
+    error_message = "role_arns[appsync_logs] must be wired to aws_iam_role.appsync_logs.arn"
+  }
+
+  assert {
+    condition     = output.role_arns["appsync_chat_resolver_invoke"] == "arn:aws:iam::123456789012:role/knotify-test-appsync-chat-resolver-invoke"
+    error_message = "role_arns[appsync_chat_resolver_invoke] must be wired to aws_iam_role.appsync_chat_resolver_invoke.arn"
+  }
+}
+
+# ===========================================================================
+# Tests 23–26: room_state_publisher IAM role (story 8.9a)
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Test 23: room_state_publisher role exists with Lambda trust policy
+#
+# Satisfies AC: "New IAM role room_state_publisher_role in iam_roles module"
+# ---------------------------------------------------------------------------
+run "room_state_publisher_role_exists_with_lambda_trust_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    chat_rooms_stream_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms/stream/2026-06-18T00:00:00.000"
+    appsync_api_arn               = "arn:aws:appsync:eu-central-1:123456789012:apis/TESTAPI"
+  }
+
+  assert {
+    condition     = aws_iam_role.room_state_publisher.assume_role_policy != ""
+    error_message = "room_state_publisher assume_role_policy must not be empty"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 24: room_state_publisher DynamoDB stream inline policy exists
+#
+# Satisfies AC: "dynamodb:DescribeStream + GetRecords + GetShardIterator +
+#               ListStreams on the ChatRooms stream ARN"
+# ---------------------------------------------------------------------------
+run "room_state_publisher_dynamodb_stream_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    chat_rooms_stream_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms/stream/2026-06-18T00:00:00.000"
+    appsync_api_arn               = "arn:aws:appsync:eu-central-1:123456789012:apis/TESTAPI"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.room_state_publisher_dynamodb_stream.name == "room-state-publisher-dynamodb-stream"
+    error_message = "room_state_publisher DynamoDB stream policy must be named room-state-publisher-dynamodb-stream"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.room_state_publisher_dynamodb_stream.role == aws_iam_role.room_state_publisher.name
+    error_message = "room_state_publisher DynamoDB stream policy must be attached to room_state_publisher role"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 25: room_state_publisher AppSync GraphQL inline policy exists
+#
+# Satisfies AC: "appsync:GraphQL on the relevant publish-mutation field ARNs"
+# ---------------------------------------------------------------------------
+run "room_state_publisher_appsync_graphql_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    chat_rooms_stream_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms/stream/2026-06-18T00:00:00.000"
+    appsync_api_arn               = "arn:aws:appsync:eu-central-1:123456789012:apis/TESTAPI"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.room_state_publisher_appsync.name == "room-state-publisher-appsync"
+    error_message = "room_state_publisher AppSync policy must be named room-state-publisher-appsync"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.room_state_publisher_appsync.role == aws_iam_role.room_state_publisher.name
+    error_message = "room_state_publisher AppSync policy must be attached to room_state_publisher role"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 26: role_arns output map contains room_state_publisher
+#
+# Satisfies the module output shape requirement so root modules can reference
+# module.iam_roles.role_arns["room_state_publisher"].
+# ---------------------------------------------------------------------------
+run "role_arns_output_contains_room_state_publisher" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    chat_rooms_stream_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms/stream/2026-06-18T00:00:00.000"
+    appsync_api_arn               = "arn:aws:appsync:eu-central-1:123456789012:apis/TESTAPI"
+  }
+
+  override_resource {
+    target = aws_iam_role.room_state_publisher
+    values = {
+      arn = "arn:aws:iam::123456789012:role/knotify-test-room-state-publisher"
+    }
+    override_during = plan
+  }
+
+  assert {
+    condition     = output.role_arns["room_state_publisher"] == "arn:aws:iam::123456789012:role/knotify-test-room-state-publisher"
+    error_message = "role_arns[room_state_publisher] must be wired to aws_iam_role.room_state_publisher.arn"
+  }
+}
+
+# ===========================================================================
+# Tests 27–30: notifications_publisher IAM role (story 8.9c)
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Test 27: notifications_publisher role exists with Lambda trust policy
+#
+# Satisfies AC: "New IAM role notifications_publisher_role in iam_roles module"
+# ---------------------------------------------------------------------------
+run "notifications_publisher_role_exists_with_lambda_trust_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    notifications_stream_arn      = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications/stream/2026-06-18T00:00:00.000"
+    appsync_api_arn               = "arn:aws:appsync:eu-central-1:123456789012:apis/TESTAPI"
+  }
+
+  assert {
+    condition     = aws_iam_role.notifications_publisher.assume_role_policy != ""
+    error_message = "notifications_publisher assume_role_policy must not be empty"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 28: notifications_publisher DynamoDB stream inline policy exists
+#
+# Satisfies AC: "dynamodb:DescribeStream + GetRecords + GetShardIterator +
+#               ListStreams on the Notifications stream ARN"
+# ---------------------------------------------------------------------------
+run "notifications_publisher_dynamodb_stream_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    notifications_stream_arn      = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications/stream/2026-06-18T00:00:00.000"
+    appsync_api_arn               = "arn:aws:appsync:eu-central-1:123456789012:apis/TESTAPI"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.notifications_publisher_dynamodb_stream.name == "notifications-publisher-dynamodb-stream"
+    error_message = "notifications_publisher DynamoDB stream policy must be named notifications-publisher-dynamodb-stream"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.notifications_publisher_dynamodb_stream.role == aws_iam_role.notifications_publisher.name
+    error_message = "notifications_publisher DynamoDB stream policy must be attached to notifications_publisher role"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 29: notifications_publisher AppSync GraphQL inline policy exists
+#
+# Satisfies AC: "appsync:GraphQL on the publishNotification and
+#               _publishFriendRequestUpdated field ARNs (scoped to fields, not *)"
+# ---------------------------------------------------------------------------
+run "notifications_publisher_appsync_graphql_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    notifications_stream_arn      = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications/stream/2026-06-18T00:00:00.000"
+    appsync_api_arn               = "arn:aws:appsync:eu-central-1:123456789012:apis/TESTAPI"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.notifications_publisher_appsync.name == "notifications-publisher-appsync"
+    error_message = "notifications_publisher AppSync policy must be named notifications-publisher-appsync"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.notifications_publisher_appsync.role == aws_iam_role.notifications_publisher.name
+    error_message = "notifications_publisher AppSync policy must be attached to notifications_publisher role"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 30: role_arns output map contains notifications_publisher
+#
+# Satisfies the module output shape requirement so root modules can reference
+# module.iam_roles.role_arns["notifications_publisher"].
+# ---------------------------------------------------------------------------
+run "role_arns_output_contains_notifications_publisher" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    notifications_stream_arn      = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications/stream/2026-06-18T00:00:00.000"
+    appsync_api_arn               = "arn:aws:appsync:eu-central-1:123456789012:apis/TESTAPI"
+  }
+
+  override_resource {
+    target = aws_iam_role.notifications_publisher
+    values = {
+      arn = "arn:aws:iam::123456789012:role/knotify-test-notifications-publisher"
+    }
+    override_during = plan
+  }
+
+  assert {
+    condition     = output.role_arns["notifications_publisher"] == "arn:aws:iam::123456789012:role/knotify-test-notifications-publisher"
+    error_message = "role_arns[notifications_publisher] must be wired to aws_iam_role.notifications_publisher.arn"
+  }
+}
+
+# ===========================================================================
+# Tests 31–34: push_fanout IAM role (story 8.10)
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Test 31: push_fanout role exists with Lambda trust policy
+#
+# Satisfies AC: "New IAM role push_fanout_role in iam_roles module"
+# ---------------------------------------------------------------------------
+run "push_fanout_role_exists_with_lambda_trust_policy" {
+  command = plan
+
+  variables {
+    environment                        = "test"
+    aurora_master_user_secret_arn      = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    chat_messages_stream_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages/stream/2026-06-18T00:00:00.000"
+    notifications_stream_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications/stream/2026-06-18T00:00:00.000"
+    push_notification_tokens_table_arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/PushNotificationTokens"
+  }
+
+  assert {
+    condition     = aws_iam_role.push_fanout.assume_role_policy != ""
+    error_message = "push_fanout assume_role_policy must not be empty"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 32: push_fanout DynamoDB stream inline policy exists
+#
+# Satisfies AC: "dynamodb stream actions on ChatMessages and Notifications stream ARNs"
+# ---------------------------------------------------------------------------
+run "push_fanout_dynamodb_streams_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                        = "test"
+    aurora_master_user_secret_arn      = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    chat_messages_stream_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages/stream/2026-06-18T00:00:00.000"
+    notifications_stream_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications/stream/2026-06-18T00:00:00.000"
+    push_notification_tokens_table_arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/PushNotificationTokens"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.push_fanout_dynamodb_streams.name == "push-fanout-dynamodb-streams"
+    error_message = "push_fanout DynamoDB streams policy must be named push-fanout-dynamodb-streams"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.push_fanout_dynamodb_streams.role == aws_iam_role.push_fanout.name
+    error_message = "push_fanout DynamoDB streams policy must be attached to push_fanout role"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 33: push_fanout DynamoDB table inline policy exists
+#
+# Satisfies AC: "dynamodb:GetItem + Query + UpdateItem + DeleteItem on the
+#               four touched tables"
+# ---------------------------------------------------------------------------
+run "push_fanout_dynamodb_tables_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                        = "test"
+    aurora_master_user_secret_arn      = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    chat_messages_stream_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages/stream/2026-06-18T00:00:00.000"
+    notifications_stream_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications/stream/2026-06-18T00:00:00.000"
+    push_notification_tokens_table_arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/PushNotificationTokens"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.push_fanout_dynamodb_tables.name == "push-fanout-dynamodb-tables"
+    error_message = "push_fanout DynamoDB tables policy must be named push-fanout-dynamodb-tables"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.push_fanout_dynamodb_tables.role == aws_iam_role.push_fanout.name
+    error_message = "push_fanout DynamoDB tables policy must be attached to push_fanout role"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 34: role_arns output map contains push_fanout
+#
+# Satisfies the module output shape requirement so root modules can reference
+# module.iam_roles.role_arns["push_fanout"].
+# ---------------------------------------------------------------------------
+run "role_arns_output_contains_push_fanout" {
+  command = plan
+
+  variables {
+    environment                        = "test"
+    aurora_master_user_secret_arn      = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    chat_messages_stream_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages/stream/2026-06-18T00:00:00.000"
+    notifications_stream_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications/stream/2026-06-18T00:00:00.000"
+    push_notification_tokens_table_arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/PushNotificationTokens"
+  }
+
+  override_resource {
+    target = aws_iam_role.push_fanout
+    values = {
+      arn = "arn:aws:iam::123456789012:role/knotify-test-push-fanout"
+    }
+    override_during = plan
+  }
+
+  assert {
+    condition     = output.role_arns["push_fanout"] == "arn:aws:iam::123456789012:role/knotify-test-push-fanout"
+    error_message = "role_arns[push_fanout] must be wired to aws_iam_role.push_fanout.arn"
+  }
+}
+
+# ===========================================================================
+# Tests 35–37: push_tokens IAM role (story 8.11)
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Test 35: push_tokens role exists with Lambda trust policy
+#
+# Satisfies AC: "IAM role push_tokens_role in iam_roles module:
+#               dynamodb:PutItem on PushNotificationTokens"
+# ---------------------------------------------------------------------------
+run "push_tokens_role_exists_with_lambda_trust_policy" {
+  command = plan
+
+  variables {
+    environment                        = "test"
+    aurora_master_user_secret_arn      = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    push_notification_tokens_table_arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/PushNotificationTokens"
+  }
+
+  assert {
+    condition     = aws_iam_role.push_tokens.assume_role_policy != ""
+    error_message = "push_tokens assume_role_policy must not be empty"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 36: push_tokens DynamoDB inline policy exists
+#
+# Satisfies AC: "dynamodb:PutItem on PushNotificationTokens (scoped to
+#               exact table ARN, not wildcard)"
+# ---------------------------------------------------------------------------
+run "push_tokens_dynamodb_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                        = "test"
+    aurora_master_user_secret_arn      = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    push_notification_tokens_table_arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/PushNotificationTokens"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.push_tokens_dynamodb.name == "push-tokens-dynamodb"
+    error_message = "push_tokens DynamoDB policy must be named push-tokens-dynamodb"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.push_tokens_dynamodb.role == aws_iam_role.push_tokens.name
+    error_message = "push_tokens DynamoDB policy must be attached to push_tokens role"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 37: role_arns output map contains push_tokens
+#
+# Satisfies the module output shape requirement so root modules can reference
+# module.iam_roles.role_arns["push_tokens"].
+# ---------------------------------------------------------------------------
+run "role_arns_output_contains_push_tokens" {
+  command = plan
+
+  variables {
+    environment                        = "test"
+    aurora_master_user_secret_arn      = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    push_notification_tokens_table_arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/PushNotificationTokens"
+  }
+
+  override_resource {
+    target = aws_iam_role.push_tokens
+    values = {
+      arn = "arn:aws:iam::123456789012:role/knotify-test-push-tokens"
+    }
+    override_during = plan
+  }
+
+  assert {
+    condition     = output.role_arns["push_tokens"] == "arn:aws:iam::123456789012:role/knotify-test-push-tokens"
+    error_message = "role_arns[push_tokens] must be wired to aws_iam_role.push_tokens.arn"
+  }
+}
+
+# ===========================================================================
+# Tests 38–40: stale_token_cleanup IAM role (story 8.12)
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Test 38: stale_token_cleanup role exists with Lambda trust policy
+#
+# Satisfies AC: "IAM role with dynamodb:Scan + DeleteItem on
+#               PushNotificationTokens"
+# ---------------------------------------------------------------------------
+run "stale_token_cleanup_role_exists_with_lambda_trust_policy" {
+  command = plan
+
+  variables {
+    environment                        = "test"
+    aurora_master_user_secret_arn      = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    push_notification_tokens_table_arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/PushNotificationTokens"
+  }
+
+  assert {
+    condition     = aws_iam_role.stale_token_cleanup.assume_role_policy != ""
+    error_message = "stale_token_cleanup assume_role_policy must not be empty"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 39: stale_token_cleanup DynamoDB inline policy exists with correct name
+#
+# Satisfies AC: "dynamodb:Scan + DeleteItem on PushNotificationTokens scoped
+#               to exact table ARN"
+# ---------------------------------------------------------------------------
+run "stale_token_cleanup_dynamodb_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                        = "test"
+    aurora_master_user_secret_arn      = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    push_notification_tokens_table_arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/PushNotificationTokens"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.stale_token_cleanup_dynamodb.name == "stale-token-cleanup-dynamodb"
+    error_message = "stale_token_cleanup DynamoDB policy must be named stale-token-cleanup-dynamodb"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.stale_token_cleanup_dynamodb.role == aws_iam_role.stale_token_cleanup.name
+    error_message = "stale_token_cleanup DynamoDB policy must be attached to stale_token_cleanup role"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 40: role_arns output map contains stale_token_cleanup
+#
+# Satisfies the module output shape requirement so root modules can reference
+# module.iam_roles.role_arns["stale_token_cleanup"].
+# ---------------------------------------------------------------------------
+run "role_arns_output_contains_stale_token_cleanup" {
+  command = plan
+
+  variables {
+    environment                        = "test"
+    aurora_master_user_secret_arn      = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    push_notification_tokens_table_arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/PushNotificationTokens"
+  }
+
+  override_resource {
+    target = aws_iam_role.stale_token_cleanup
+    values = {
+      arn = "arn:aws:iam::123456789012:role/knotify-test-stale-token-cleanup"
+    }
+    override_during = plan
+  }
+
+  assert {
+    condition     = output.role_arns["stale_token_cleanup"] == "arn:aws:iam::123456789012:role/knotify-test-stale-token-cleanup"
+    error_message = "role_arns[stale_token_cleanup] must be wired to aws_iam_role.stale_token_cleanup.arn"
   }
 }

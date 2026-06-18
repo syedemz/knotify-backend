@@ -323,6 +323,9 @@ resource "aws_iam_role_policy" "blocks_writer_app_user_credential" {
 
 # Allow DynamoDB UpdateItem on the ChatRooms table ONLY.
 # No other DynamoDB actions and no other tables — least-privilege per codingprinciples.md.
+# Table ARN sourced from var.chat_rooms_table_arn (story 8.9 AC-2: must not be
+# hardcoded; default wildcard fallback is used only in isolated unit tests where
+# the dynamodb module is not wired).
 data "aws_iam_policy_document" "blocks_writer_dynamodb" {
   statement {
     sid    = "ChatRoomsUpdateItem"
@@ -331,7 +334,7 @@ data "aws_iam_policy_document" "blocks_writer_dynamodb" {
       "dynamodb:UpdateItem",
     ]
     resources = [
-      "arn:aws:dynamodb:*:*:table/ChatRooms",
+      var.chat_rooms_table_arn != "" ? var.chat_rooms_table_arn : "arn:aws:dynamodb:*:*:table/ChatRooms",
     ]
   }
 }
@@ -340,6 +343,70 @@ resource "aws_iam_role_policy" "blocks_writer_dynamodb" {
   name   = "blocks-writer-dynamodb"
   role   = aws_iam_role.blocks_writer.name
   policy = data.aws_iam_policy_document.blocks_writer_dynamodb.json
+}
+
+# ===========================================================================
+# Role: friends_writer
+#
+# For the knotify-friends Lambda (phase 6 story 6.2, extended by story 8.9b).
+# Needs Aurora app-user access (same as aurora_writer) PLUS DynamoDB UpdateItem
+# on the ChatRooms table to flip friendship_active on accept and unfriend.
+# The DynamoDB action is scoped to the ChatRooms table only — no other tables.
+# Mirrors the blocks_writer pattern exactly (story 8.9 precedent).
+# ===========================================================================
+
+resource "aws_iam_role" "friends_writer" {
+  name               = "knotify-${var.environment}-friends-writer"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+resource "aws_iam_role_policy_attachment" "friends_writer_vpc_access" {
+  role       = aws_iam_role.friends_writer.name
+  policy_arn = local.vpc_access_policy_arn
+}
+
+# Allow reading the app_user credential so the friends Lambda can connect to Aurora.
+data "aws_iam_policy_document" "friends_writer_app_user_credential" {
+  statement {
+    sid    = "ReadAppUserCredential"
+    effect = "Allow"
+    actions = [
+      "secretsmanager:GetSecretValue",
+    ]
+    resources = [
+      "${local.sm_arn_prefix}:secret:knotify-${var.environment}-app-user-credential-*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "friends_writer_app_user_credential" {
+  name   = "friends-writer-app-user-credential"
+  role   = aws_iam_role.friends_writer.name
+  policy = data.aws_iam_policy_document.friends_writer_app_user_credential.json
+}
+
+# Allow DynamoDB UpdateItem on the ChatRooms table ONLY.
+# No other DynamoDB actions and no other tables — least-privilege per codingprinciples.md.
+# Table ARN sourced from var.chat_rooms_table_arn (story 8.9b AC-2: must not be
+# hardcoded; default wildcard fallback is used only in isolated unit tests where
+# the dynamodb module is not wired).
+data "aws_iam_policy_document" "friends_writer_dynamodb" {
+  statement {
+    sid    = "ChatRoomsUpdateItem"
+    effect = "Allow"
+    actions = [
+      "dynamodb:UpdateItem",
+    ]
+    resources = [
+      var.chat_rooms_table_arn != "" ? var.chat_rooms_table_arn : "arn:aws:dynamodb:*:*:table/ChatRooms",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "friends_writer_dynamodb" {
+  name   = "friends-writer-dynamodb"
+  role   = aws_iam_role.friends_writer.name
+  policy = data.aws_iam_policy_document.friends_writer_dynamodb.json
 }
 
 # ===========================================================================
@@ -499,4 +566,580 @@ resource "aws_iam_role_policy" "db_migrator_aurora_refresh_credential" {
   name   = "db-migrator-aurora-refresh-credential"
   role   = aws_iam_role.db_migrator.name
   policy = data.aws_iam_policy_document.db_migrator_aurora_refresh_credential.json
+}
+
+# ===========================================================================
+# Role: chat_resolver
+#
+# For the knotify-chat-resolver AppSync Lambda resolver (phase 8 story 8.0).
+# Connects to Aurora as app_user via the app_user_credential.
+# Has scoped DynamoDB permissions on the five chat domain tables:
+#   ChatRooms, ChatRoomMembership, ChatMessages, MessageReads, Notifications.
+# Table ARNs are sourced from module.dynamodb outputs; default "" is used in
+# unit tests (dynamodb module not yet created).
+#
+# Actions granted match the chat resolver's access pattern:
+#   GetItem        — membership checks, room lookups, read-receipt reads
+#   PutItem        — new chat room creation, new message creation
+#   UpdateItem     — last_message_* on ChatRooms, MessageReads upsert
+#   Query          — messages-by-room, membership-by-user pagination
+#   BatchGetItem   — bulk room fetch (listMyRooms)
+#   TransactWriteItems — atomic multi-table writes (createOrGetRoom, sendMessage)
+# ===========================================================================
+
+resource "aws_iam_role" "chat_resolver" {
+  name               = "knotify-${var.environment}-chat-resolver"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+resource "aws_iam_role_policy_attachment" "chat_resolver_vpc_access" {
+  role       = aws_iam_role.chat_resolver.name
+  policy_arn = local.vpc_access_policy_arn
+}
+
+# Allow reading the app_user credential so the chat resolver can connect to Aurora.
+# Scoped to the knotify-<env>-app-user-credential wildcard (matches the
+# Secrets Manager secret name pattern used by the db_migrator on first run).
+data "aws_iam_policy_document" "chat_resolver_app_user_credential" {
+  statement {
+    sid    = "ReadAppUserCredential"
+    effect = "Allow"
+    actions = [
+      "secretsmanager:GetSecretValue",
+    ]
+    resources = [
+      "${local.sm_arn_prefix}:secret:knotify-${var.environment}-app-user-credential-*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "chat_resolver_app_user_credential" {
+  name   = "chat-resolver-app-user-credential"
+  role   = aws_iam_role.chat_resolver.name
+  policy = data.aws_iam_policy_document.chat_resolver_app_user_credential.json
+}
+
+# Scoped DynamoDB permissions on the five chat domain tables.
+# Table ARNs sourced from module.dynamodb outputs (var.*_table_arn) so the
+# policy is portable across environments and avoids hardcoded ARN strings.
+# Default "" fallback is a wildcard pattern used only in IAM unit tests.
+data "aws_iam_policy_document" "chat_resolver_dynamodb" {
+  statement {
+    sid    = "ChatTableReadWrite"
+    effect = "Allow"
+    actions = [
+      "dynamodb:GetItem",
+      "dynamodb:PutItem",
+      "dynamodb:UpdateItem",
+      "dynamodb:Query",
+      "dynamodb:BatchGetItem",
+      "dynamodb:TransactWriteItems",
+    ]
+    resources = [
+      var.chat_rooms_table_arn != "" ? var.chat_rooms_table_arn : "arn:aws:dynamodb:*:*:table/ChatRooms",
+      var.chat_room_membership_table_arn != "" ? var.chat_room_membership_table_arn : "arn:aws:dynamodb:*:*:table/ChatRoomMembership",
+      var.chat_messages_table_arn != "" ? var.chat_messages_table_arn : "arn:aws:dynamodb:*:*:table/ChatMessages",
+      var.message_reads_table_arn != "" ? var.message_reads_table_arn : "arn:aws:dynamodb:*:*:table/MessageReads",
+      var.notifications_table_arn != "" ? var.notifications_table_arn : "arn:aws:dynamodb:*:*:table/Notifications",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "chat_resolver_dynamodb" {
+  name   = "chat-resolver-dynamodb"
+  role   = aws_iam_role.chat_resolver.name
+  policy = data.aws_iam_policy_document.chat_resolver_dynamodb.json
+}
+
+# ===========================================================================
+# Role: appsync_logs
+#
+# Grants AppSync the permission to push execution logs to CloudWatch Logs.
+# Trust principal is appsync.amazonaws.com (not lambda.amazonaws.com).
+# Managed policy AWSAppSyncPushToCloudWatchLogs is the AWS-published policy
+# for this purpose — no custom inline policy needed.
+# This role ARN is passed into aws_appsync_graphql_api.log_config
+# .cloudwatch_logs_role_arn in the appsync module (story 8.1).
+# ===========================================================================
+
+data "aws_iam_policy_document" "appsync_assume_role" {
+  statement {
+    sid     = "AppSyncAssumeRole"
+    effect  = "Allow"
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["appsync.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "appsync_logs" {
+  name               = "knotify-${var.environment}-appsync-logs"
+  assume_role_policy = data.aws_iam_policy_document.appsync_assume_role.json
+}
+
+resource "aws_iam_role_policy_attachment" "appsync_logs_cloudwatch" {
+  role       = aws_iam_role.appsync_logs.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSAppSyncPushToCloudWatchLogs"
+}
+
+# ===========================================================================
+# Role: appsync_chat_resolver_invoke
+#
+# Grants AppSync the permission to invoke the chat_resolver Lambda function.
+# Trust principal is appsync.amazonaws.com.
+# Inline policy grants lambda:InvokeFunction scoped to the exact Lambda ARN
+# supplied from module.chat_resolver.lambda_arn in the root modules.
+# This role is registered as the service_role_arn on the chat_resolver_ds
+# AWS_LAMBDA datasource in the appsync module (story 8.1).
+# Default "" ARN value is used in IAM unit tests (chat_resolver module not
+# yet wired when running isolated module tests).
+# ===========================================================================
+
+resource "aws_iam_role" "appsync_chat_resolver_invoke" {
+  name               = "knotify-${var.environment}-appsync-chat-resolver-invoke"
+  assume_role_policy = data.aws_iam_policy_document.appsync_assume_role.json
+}
+
+data "aws_iam_policy_document" "appsync_chat_resolver_invoke_lambda" {
+  statement {
+    sid    = "InvokeChatResolverLambda"
+    effect = "Allow"
+    actions = [
+      "lambda:InvokeFunction",
+    ]
+    resources = [
+      var.chat_resolver_lambda_arn != "" ? var.chat_resolver_lambda_arn : "arn:aws:lambda:*:*:function:knotify-chat-resolver-*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "appsync_chat_resolver_invoke_lambda" {
+  name   = "appsync-chat-resolver-invoke-lambda"
+  role   = aws_iam_role.appsync_chat_resolver_invoke.name
+  policy = data.aws_iam_policy_document.appsync_chat_resolver_invoke_lambda.json
+}
+
+# ===========================================================================
+# Role: room_state_publisher
+#
+# For the room_state_publisher Lambda (story 8.9a).
+# Consumes the ChatRooms DynamoDB Stream and publishes AppSync mutations via
+# SigV4 (IAM auth mode).
+#
+# OUTSIDE the VPC: AppSync HTTPS is reachable via public DNS; no VPC endpoint
+# or ENI attachment needed (same rationale as hotfix #106 lesson).
+# No VPC access policy attached — this role does NOT run in a VPC.
+#
+# DynamoDB stream actions scoped to the ChatRooms stream ARN only:
+#   dynamodb:DescribeStream + GetRecords + GetShardIterator + ListStreams
+#
+# AppSync actions scoped to the exact publish-mutation field ARNs:
+#   appsync:GraphQL on ${appsync_api_arn}/types/Mutation/fields/_publishRoomDeactivated
+#   appsync:GraphQL on ${appsync_api_arn}/types/Mutation/fields/_publishRoomReactivated
+#   NOT a wildcard on the entire API — least-privilege per codingprinciples.md.
+# ===========================================================================
+
+resource "aws_iam_role" "room_state_publisher" {
+  name               = "knotify-${var.environment}-room-state-publisher"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+# Basic Lambda execution — creates log group and can write CloudWatch logs.
+# The managed AWSLambdaBasicExecutionRole is used instead of VPC access because
+# this Lambda runs OUTSIDE the VPC (no ENI attachment needed).
+resource "aws_iam_role_policy_attachment" "room_state_publisher_basic_execution" {
+  role       = aws_iam_role.room_state_publisher.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# DynamoDB stream read actions — scoped to the ChatRooms stream ARN.
+# These four actions are exactly what a Lambda ESM consumer needs to read
+# a DynamoDB stream: DescribeStream + GetRecords + GetShardIterator + ListStreams.
+data "aws_iam_policy_document" "room_state_publisher_dynamodb_stream" {
+  statement {
+    sid    = "ChatRoomsStreamRead"
+    effect = "Allow"
+    actions = [
+      "dynamodb:DescribeStream",
+      "dynamodb:GetRecords",
+      "dynamodb:GetShardIterator",
+      "dynamodb:ListStreams",
+    ]
+    resources = [
+      var.chat_rooms_stream_arn != "" ? var.chat_rooms_stream_arn : "arn:aws:dynamodb:*:*:table/ChatRooms/stream/*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "room_state_publisher_dynamodb_stream" {
+  name   = "room-state-publisher-dynamodb-stream"
+  role   = aws_iam_role.room_state_publisher.name
+  policy = data.aws_iam_policy_document.room_state_publisher_dynamodb_stream.json
+}
+
+# AppSync GraphQL publish — scoped to the two backend-only publish mutation
+# field ARNs.  NOT a wildcard on ${appsync_api_arn}/* — codingprinciples.md
+# forbids wildcard Resource on any committed IAM policy.
+# Field ARN format: ${api_arn}/types/Mutation/fields/${field_name}
+data "aws_iam_policy_document" "room_state_publisher_appsync" {
+  statement {
+    sid    = "AppSyncPublishRoomState"
+    effect = "Allow"
+    actions = [
+      "appsync:GraphQL",
+    ]
+    resources = var.appsync_api_arn != "" ? [
+      "${var.appsync_api_arn}/types/Mutation/fields/_publishRoomDeactivated",
+      "${var.appsync_api_arn}/types/Mutation/fields/_publishRoomReactivated",
+      ] : [
+      "arn:aws:appsync:*:*:apis/*/types/Mutation/fields/_publishRoomDeactivated",
+      "arn:aws:appsync:*:*:apis/*/types/Mutation/fields/_publishRoomReactivated",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "room_state_publisher_appsync" {
+  name   = "room-state-publisher-appsync"
+  role   = aws_iam_role.room_state_publisher.name
+  policy = data.aws_iam_policy_document.room_state_publisher_appsync.json
+}
+
+# ===========================================================================
+# Role: notifications_publisher
+#
+# For the notifications_publisher Lambda (story 8.9c).
+# Consumes the Notifications DynamoDB Stream and publishes AppSync mutations
+# via SigV4 (IAM auth mode).
+#
+# OUTSIDE the VPC: AppSync HTTPS is reachable via public DNS; no VPC endpoint
+# or ENI attachment needed (same rationale as room_state_publisher hotfix #106
+# lesson).
+# No VPC access policy attached — this role does NOT run in a VPC.
+#
+# DynamoDB stream actions scoped to the Notifications stream ARN only:
+#   dynamodb:DescribeStream + GetRecords + GetShardIterator + ListStreams
+#
+# AppSync actions scoped to the exact publish-mutation field ARNs:
+#   appsync:GraphQL on ${appsync_api_arn}/types/Mutation/fields/publishNotification
+#   appsync:GraphQL on ${appsync_api_arn}/types/Mutation/fields/_publishFriendRequestUpdated
+#   NOT a wildcard on the entire API — least-privilege per codingprinciples.md.
+# ===========================================================================
+
+resource "aws_iam_role" "notifications_publisher" {
+  name               = "knotify-${var.environment}-notifications-publisher"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+# Basic Lambda execution — creates log group and can write CloudWatch logs.
+# The managed AWSLambdaBasicExecutionRole is used instead of VPC access because
+# this Lambda runs OUTSIDE the VPC (no ENI attachment needed).
+resource "aws_iam_role_policy_attachment" "notifications_publisher_basic_execution" {
+  role       = aws_iam_role.notifications_publisher.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# DynamoDB stream read actions — scoped to the Notifications stream ARN.
+# These four actions are exactly what a Lambda ESM consumer needs to read
+# a DynamoDB stream: DescribeStream + GetRecords + GetShardIterator + ListStreams.
+data "aws_iam_policy_document" "notifications_publisher_dynamodb_stream" {
+  statement {
+    sid    = "NotificationsStreamRead"
+    effect = "Allow"
+    actions = [
+      "dynamodb:DescribeStream",
+      "dynamodb:GetRecords",
+      "dynamodb:GetShardIterator",
+      "dynamodb:ListStreams",
+    ]
+    resources = [
+      var.notifications_stream_arn != "" ? var.notifications_stream_arn : "arn:aws:dynamodb:*:*:table/Notifications/stream/*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "notifications_publisher_dynamodb_stream" {
+  name   = "notifications-publisher-dynamodb-stream"
+  role   = aws_iam_role.notifications_publisher.name
+  policy = data.aws_iam_policy_document.notifications_publisher_dynamodb_stream.json
+}
+
+# AppSync GraphQL publish — scoped to the two backend-only publish mutation
+# field ARNs.  NOT a wildcard on ${appsync_api_arn}/* — codingprinciples.md
+# forbids wildcard Resource on any committed IAM policy.
+# Field ARN format: ${api_arn}/types/Mutation/fields/${field_name}
+data "aws_iam_policy_document" "notifications_publisher_appsync" {
+  statement {
+    sid    = "AppSyncPublishNotifications"
+    effect = "Allow"
+    actions = [
+      "appsync:GraphQL",
+    ]
+    resources = var.appsync_api_arn != "" ? [
+      "${var.appsync_api_arn}/types/Mutation/fields/publishNotification",
+      "${var.appsync_api_arn}/types/Mutation/fields/_publishFriendRequestUpdated",
+      ] : [
+      "arn:aws:appsync:*:*:apis/*/types/Mutation/fields/publishNotification",
+      "arn:aws:appsync:*:*:apis/*/types/Mutation/fields/_publishFriendRequestUpdated",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "notifications_publisher_appsync" {
+  name   = "notifications-publisher-appsync"
+  role   = aws_iam_role.notifications_publisher.name
+  policy = data.aws_iam_policy_document.notifications_publisher_appsync.json
+}
+
+# ===========================================================================
+# Role: push_fanout
+#
+# For the push_fanout Lambda (story 8.10).
+# Consumes BOTH ChatMessages and Notifications DynamoDB Streams and sends
+# push notifications via the Expo Push API.
+#
+# OUTSIDE the VPC: only touches DynamoDB and Expo (open internet); no VPC
+# endpoint or ENI attachment needed.  Avoids hotfix #106 blackhole trap.
+# No VPC access policy attached — this role does NOT run in a VPC.
+#
+# DynamoDB data-plane actions on four tables:
+#   ChatRooms            — GetItem (find recipient from user_a/user_b)
+#   ChatRoomMembership   — GetItem (check notifications_muted, cached_other_name)
+#   Notifications        — UpdateItem (SET delivered=true on HTTP 200)
+#   PushNotificationTokens — Query (get tokens for recipient),
+#                            DeleteItem (purge DeviceNotRegistered tokens)
+#
+# DynamoDB stream read actions on BOTH stream ARNs:
+#   ChatMessages stream  — DescribeStream + GetRecords + GetShardIterator + ListStreams
+#   Notifications stream — same four actions
+#
+# Secrets Manager (prod only):
+#   GetSecretValue on knotify-prod-expo-push-credential
+#   Conditional on var.expo_push_secret_arn != "" so dev keeps a wildcard fallback.
+# ===========================================================================
+
+resource "aws_iam_role" "push_fanout" {
+  name               = "knotify-${var.environment}-push-fanout"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+# Basic Lambda execution — creates log group and can write CloudWatch logs.
+# AWSLambdaBasicExecutionRole instead of VPC access because this Lambda runs
+# OUTSIDE the VPC (no ENI attachment needed).
+resource "aws_iam_role_policy_attachment" "push_fanout_basic_execution" {
+  role       = aws_iam_role.push_fanout.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# DynamoDB stream read actions on ChatMessages and Notifications stream ARNs.
+# Both stream ARNs in a single statement — same four actions required for each.
+data "aws_iam_policy_document" "push_fanout_dynamodb_streams" {
+  statement {
+    sid    = "ChatMessagesStreamRead"
+    effect = "Allow"
+    actions = [
+      "dynamodb:DescribeStream",
+      "dynamodb:GetRecords",
+      "dynamodb:GetShardIterator",
+      "dynamodb:ListStreams",
+    ]
+    resources = [
+      var.chat_messages_stream_arn != "" ? var.chat_messages_stream_arn : "arn:aws:dynamodb:*:*:table/ChatMessages/stream/*",
+    ]
+  }
+
+  statement {
+    sid    = "NotificationsStreamRead"
+    effect = "Allow"
+    actions = [
+      "dynamodb:DescribeStream",
+      "dynamodb:GetRecords",
+      "dynamodb:GetShardIterator",
+      "dynamodb:ListStreams",
+    ]
+    resources = [
+      var.notifications_stream_arn != "" ? var.notifications_stream_arn : "arn:aws:dynamodb:*:*:table/Notifications/stream/*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "push_fanout_dynamodb_streams" {
+  name   = "push-fanout-dynamodb-streams"
+  role   = aws_iam_role.push_fanout.name
+  policy = data.aws_iam_policy_document.push_fanout_dynamodb_streams.json
+}
+
+# DynamoDB data-plane permissions on the four tables the handler touches.
+# Scoped to exact table ARNs — no wildcard Resource per codingprinciples.md.
+# Default fallback patterns are used only in isolated IAM unit tests.
+data "aws_iam_policy_document" "push_fanout_dynamodb_tables" {
+  statement {
+    sid    = "ChatRoomsAndMembershipRead"
+    effect = "Allow"
+    actions = [
+      "dynamodb:GetItem",
+    ]
+    resources = [
+      var.chat_rooms_table_arn != "" ? var.chat_rooms_table_arn : "arn:aws:dynamodb:*:*:table/ChatRooms",
+      var.chat_room_membership_table_arn != "" ? var.chat_room_membership_table_arn : "arn:aws:dynamodb:*:*:table/ChatRoomMembership",
+    ]
+  }
+
+  statement {
+    sid    = "NotificationsMarkDelivered"
+    effect = "Allow"
+    actions = [
+      "dynamodb:UpdateItem",
+    ]
+    resources = [
+      var.notifications_table_arn != "" ? var.notifications_table_arn : "arn:aws:dynamodb:*:*:table/Notifications",
+    ]
+  }
+
+  statement {
+    sid    = "PushTokensQueryAndDelete"
+    effect = "Allow"
+    actions = [
+      "dynamodb:Query",
+      "dynamodb:DeleteItem",
+    ]
+    resources = [
+      var.push_notification_tokens_table_arn != "" ? var.push_notification_tokens_table_arn : "arn:aws:dynamodb:*:*:table/PushNotificationTokens",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "push_fanout_dynamodb_tables" {
+  name   = "push-fanout-dynamodb-tables"
+  role   = aws_iam_role.push_fanout.name
+  policy = data.aws_iam_policy_document.push_fanout_dynamodb_tables.json
+}
+
+# Secrets Manager — GetSecretValue on the Expo prod credential.
+# Only provisioned when expo_push_secret_arn is non-empty (prod root module
+# passes the real ARN; dev omits it so the policy uses a wildcard fallback that
+# still validates but won't match any real secret in the dev account).
+data "aws_iam_policy_document" "push_fanout_secrets" {
+  statement {
+    sid    = "ReadExpoPushCredential"
+    effect = "Allow"
+    actions = [
+      "secretsmanager:GetSecretValue",
+    ]
+    resources = [
+      var.expo_push_secret_arn != "" ? var.expo_push_secret_arn : "${local.sm_arn_prefix}:secret:knotify-prod-expo-push-credential-*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "push_fanout_secrets" {
+  name   = "push-fanout-secrets"
+  role   = aws_iam_role.push_fanout.name
+  policy = data.aws_iam_policy_document.push_fanout_secrets.json
+}
+
+# ===========================================================================
+# Role: push_tokens
+#
+# For the push_tokens Lambda (story 8.11 — POST /v1/push-tokens).
+# Registers or refreshes device push notification tokens via a single
+# DynamoDB PutItem (unconditional upsert) on PushNotificationTokens.
+#
+# Inside the VPC: the Lambda is placed in private subnets (same pattern as
+# other REST handlers) so it can reach the DynamoDB VPC endpoint.
+# AWSLambdaVPCAccessExecutionRole is attached for ENI attachment capability.
+#
+# NOT decorated with @require_profile_complete — token registration happens
+# at first app launch before onboarding completes.
+#
+# DynamoDB permission:
+#   dynamodb:PutItem on PushNotificationTokens only — no read, no delete,
+#   no other tables.  Least-privilege per codingprinciples.md.
+# ===========================================================================
+
+resource "aws_iam_role" "push_tokens" {
+  name               = "knotify-${var.environment}-push-tokens"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+# VPC access — Lambda runs inside the VPC (private subnets + lambda SG)
+# to reach the DynamoDB VPC endpoint. Consistent with other REST handlers.
+resource "aws_iam_role_policy_attachment" "push_tokens_vpc_access" {
+  role       = aws_iam_role.push_tokens.name
+  policy_arn = local.vpc_access_policy_arn
+}
+
+# DynamoDB PutItem on PushNotificationTokens — scoped to exact table ARN.
+# Default wildcard fallback is used only in isolated IAM unit tests.
+data "aws_iam_policy_document" "push_tokens_dynamodb" {
+  statement {
+    sid    = "PushTokensPutItem"
+    effect = "Allow"
+    actions = [
+      "dynamodb:PutItem",
+    ]
+    resources = [
+      var.push_notification_tokens_table_arn != "" ? var.push_notification_tokens_table_arn : "arn:aws:dynamodb:*:*:table/PushNotificationTokens",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "push_tokens_dynamodb" {
+  name   = "push-tokens-dynamodb"
+  role   = aws_iam_role.push_tokens.name
+  policy = data.aws_iam_policy_document.push_tokens_dynamodb.json
+}
+
+# ===========================================================================
+# Role: stale_token_cleanup
+#
+# For the stale_token_cleanup Lambda (story 8.12 — daily EventBridge cron).
+# Scans PushNotificationTokens and deletes rows whose last_seen is older
+# than 60 days.
+#
+# OUTSIDE the VPC: only touches DynamoDB (no Aurora, no external HTTP).
+# AWSLambdaBasicExecutionRole is sufficient — no ENI attachment needed.
+# Consistent with push_fanout and room_state_publisher placement strategy
+# (hotfix #106 lesson: private subnets without NAT cannot reach DynamoDB
+# service endpoints when placed outside a VPC endpoint; running outside the
+# VPC is simpler for DynamoDB-only Lambdas).
+#
+# DynamoDB permissions (PushNotificationTokens only — least privilege):
+#   dynamodb:Scan   — paginated full-table scan to find stale items.
+#   dynamodb:DeleteItem — remove each stale row by (user_id, device_id).
+# ===========================================================================
+
+resource "aws_iam_role" "stale_token_cleanup" {
+  name               = "knotify-${var.environment}-stale-token-cleanup"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+# Basic Lambda execution — CloudWatch Logs only.
+# No VPC access policy: this Lambda runs OUTSIDE the VPC.
+resource "aws_iam_role_policy_attachment" "stale_token_cleanup_basic_execution" {
+  role       = aws_iam_role.stale_token_cleanup.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# DynamoDB Scan + DeleteItem on PushNotificationTokens — scoped to exact ARN.
+# Default wildcard fallback is used only in isolated IAM unit tests.
+data "aws_iam_policy_document" "stale_token_cleanup_dynamodb" {
+  statement {
+    sid    = "PushTokensScanAndDelete"
+    effect = "Allow"
+    actions = [
+      "dynamodb:Scan",
+      "dynamodb:DeleteItem",
+    ]
+    resources = [
+      var.push_notification_tokens_table_arn != "" ? var.push_notification_tokens_table_arn : "arn:aws:dynamodb:*:*:table/PushNotificationTokens",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "stale_token_cleanup_dynamodb" {
+  name   = "stale-token-cleanup-dynamodb"
+  role   = aws_iam_role.stale_token_cleanup.name
+  policy = data.aws_iam_policy_document.stale_token_cleanup_dynamodb.json
 }

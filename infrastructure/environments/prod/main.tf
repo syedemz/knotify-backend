@@ -137,6 +137,35 @@ module "iam_roles" {
   # only (story 7.4). Terraform resolves the forward reference from the
   # refresh_deck_view module declared later in this file.
   refresh_lambda_arn = module.refresh_deck_view.function_arn
+
+  # Scope chat_resolver DynamoDB permissions to exact table ARNs (story 8.0).
+  # Sourced from the dynamodb module outputs added in story 8.0.
+
+  # Scope appsync_chat_resolver_invoke's lambda:InvokeFunction to the exact
+  # chat_resolver Lambda ARN (story 8.1). Forward reference resolved by Terraform.
+  chat_resolver_lambda_arn = module.chat_resolver.lambda_arn
+
+  # Scope room_state_publisher DynamoDB stream actions to ChatRooms stream ARN
+  # (story 8.9a). Stream ARN now output by the dynamodb module.
+  chat_rooms_stream_arn = module.dynamodb.chat_rooms_stream_arn
+
+  # Scope room_state_publisher AppSync publish permissions to the exact
+  # publish-mutation field ARNs (story 8.9a). API ARN sourced from appsync module.
+  appsync_api_arn = module.appsync.api_arn
+
+  # Scope notifications_publisher DynamoDB stream actions to Notifications stream ARN
+  # (story 8.9c). Stream ARN sourced from dynamodb module outputs.tf:61.
+  notifications_stream_arn = module.dynamodb.notifications_stream_arn
+
+  # Scope push_fanout DynamoDB stream actions to ChatMessages stream ARN (story 8.10).
+  chat_messages_stream_arn = module.dynamodb.chat_messages_stream_arn
+
+  # Scope push_fanout DynamoDB data-plane permissions on PushNotificationTokens (story 8.10).
+  push_notification_tokens_table_arn = module.dynamodb.push_notification_tokens_arn
+
+  # Scope push_fanout Secrets Manager permission to the prod Expo push credential ARN.
+  # Forward reference — Terraform resolves this after the secret resource below is declared.
+  expo_push_secret_arn = aws_secretsmanager_secret.expo_push_credential.arn
 }
 
 # ---------------------------------------------------------------------------
@@ -683,12 +712,15 @@ resource "aws_lambda_permission" "blocks_api_gateway" {
 }
 
 # ---------------------------------------------------------------------------
-# knotify-friends Lambda — story 6.2
+# knotify-friends Lambda — story 6.2, extended by story 8.9b
 #
 # PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
 # Mirrors the dev wiring exactly. Seven routes (GET/DELETE /v1/friends,
 # GET/POST /v1/friend-requests, POST accept/decline, DELETE request) with
 # JWT authorization.
+#
+# Role switched from aurora_writer to friends_writer (story 8.9b) to add
+# scoped DynamoDB UpdateItem on ChatRooms for friendship_active maintenance.
 # ---------------------------------------------------------------------------
 
 module "friends" {
@@ -703,7 +735,7 @@ module "friends" {
     module.db_layer.layer_arn,
   ]
 
-  role_arn = module.iam_roles.role_arns["aurora_writer"]
+  role_arn = module.iam_roles.role_arns["friends_writer"]
 
   vpc_config = {
     subnet_ids         = module.networking.private_subnet_ids
@@ -711,8 +743,9 @@ module "friends" {
   }
 
   environment_variables = {
-    DB_SECRET_NAME = "knotify-${var.environment}-app-user-credential"
-    EDGE_SECRET    = module.cloudfront.edge_secret
+    DB_SECRET_NAME   = "knotify-${var.environment}-app-user-credential"
+    EDGE_SECRET      = module.cloudfront.edge_secret
+    TABLE_CHAT_ROOMS = module.dynamodb.chat_rooms_table_name
 
     # Aurora connection endpoint params — see profile Lambda above for
     # rationale.
@@ -974,6 +1007,81 @@ resource "aws_lambda_permission" "match_api_gateway" {
 }
 
 # ---------------------------------------------------------------------------
+# knotify-chat-resolver Lambda — story 8.0 scaffold
+#
+# AppSync Lambda resolver for all chat domain fields.  Story 8.0 ships an
+# empty dispatcher; subsequent stories extend handler.py.
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+# Mirrors the dev wiring exactly.  No API Gateway integration.
+# ---------------------------------------------------------------------------
+
+module "chat_resolver" {
+  source = "../../modules/chat_resolver"
+
+  function_name = "knotify-chat-resolver-${var.environment}"
+  filename      = "${path.module}/../../../build/chat_resolver.zip"
+  role_arn      = module.iam_roles.role_arns["chat_resolver"]
+
+  layers = [
+    module.observability_layer.layer_arn,
+    module.db_layer.layer_arn,
+  ]
+
+  vpc_config = {
+    subnet_ids         = module.networking.private_subnet_ids
+    security_group_ids = [module.networking.lambda_security_group_id]
+  }
+
+  db_secret_name = "knotify-${var.environment}-app-user-credential"
+  aurora_host    = module.aurora.cluster_endpoint
+  aurora_port    = tostring(module.aurora.port)
+  aurora_dbname  = module.aurora.database_name
+}
+
+# ---------------------------------------------------------------------------
+# AppSync GraphQL API — story 8.1
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+# Mirrors the dev wiring exactly.
+#
+# Provisions the knotify chat AppSync API with:
+#   - Primary auth: AMAZON_COGNITO_USER_POOLS (Cognito JWT for client access)
+#   - Secondary auth: AWS_IAM (backend publisher Lambdas: 8.9a, 8.9c)
+#   - Five DynamoDB datasources (five chat domain tables)
+#   - One Lambda datasource (chat_resolver_ds → chat_resolver Lambda)
+#   - log_config at ALL field-level detail to CloudWatch (7-day retention)
+#
+# Schema is a placeholder until story 8.2 ships the full hand-written SDL.
+# ---------------------------------------------------------------------------
+
+module "appsync" {
+  source = "../../modules/appsync"
+
+  environment = var.environment
+
+  # Cognito User Pool — primary auth mode
+  user_pool_id = module.cognito.user_pool_id
+
+  # IAM roles from iam_roles module (story 8.1)
+  appsync_logs_role_arn   = module.iam_roles.role_arns["appsync_logs"]
+  appsync_invoke_role_arn = module.iam_roles.role_arns["appsync_chat_resolver_invoke"]
+
+  # chat_resolver Lambda datasource
+  chat_resolver_lambda_arn = module.chat_resolver.lambda_arn
+
+  # Five chat domain DynamoDB datasources
+  chat_rooms_table_name           = module.dynamodb.chat_rooms_table_name
+  chat_room_membership_table_name = module.dynamodb.chat_room_membership_table_name
+  chat_messages_table_name        = module.dynamodb.chat_messages_table_name
+  message_reads_table_name        = module.dynamodb.message_reads_table_name
+  notifications_table_name        = module.dynamodb.notifications_table_name
+
+  # DynamoDB service role — the chat_resolver IAM role grants DDB access (story 8.0)
+  dynamodb_role_arn = module.iam_roles.role_arns["chat_resolver"]
+}
+
+# ---------------------------------------------------------------------------
 # knotify-refresh-deck-view Lambda — story 7.4
 #
 # PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
@@ -1009,4 +1117,202 @@ module "refresh_deck_view" {
 
   # EventBridge schedule: every 15 minutes.
   schedule_expression = "rate(15 minutes)"
+}
+
+# ---------------------------------------------------------------------------
+# room_state_publisher Lambda — story 8.9a
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+# Mirrors the dev wiring exactly.
+#
+# Placement: OUTSIDE the VPC — AppSync HTTPS reachable via public DNS.
+# No Aurora access — DynamoDB stream only.
+# ---------------------------------------------------------------------------
+
+module "room_state_publisher" {
+  source = "../../modules/room_state_publisher"
+
+  function_name         = "knotify-room-state-publisher-${var.environment}"
+  filename              = "${path.module}/../../../build/room_state_publisher.zip"
+  role_arn              = module.iam_roles.role_arns["room_state_publisher"]
+  chat_rooms_stream_arn = module.dynamodb.chat_rooms_stream_arn
+  appsync_graphql_url   = module.appsync.graphql_url
+}
+
+# ---------------------------------------------------------------------------
+# notifications_publisher Lambda — story 8.9c
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+# Mirrors the dev wiring exactly.
+#
+# Placement: OUTSIDE the VPC — AppSync HTTPS reachable via public DNS.
+# No Aurora access — Notifications DynamoDB stream only.
+# ---------------------------------------------------------------------------
+
+module "notifications_publisher" {
+  source = "../../modules/notifications_publisher"
+
+  function_name            = "knotify-notifications-publisher-${var.environment}"
+  filename                 = "${path.module}/../../../build/notifications_publisher.zip"
+  role_arn                 = module.iam_roles.role_arns["notifications_publisher"]
+  notifications_stream_arn = module.dynamodb.notifications_stream_arn
+  appsync_graphql_url      = module.appsync.graphql_url
+}
+
+# ---------------------------------------------------------------------------
+# Expo push credential — Secrets Manager secret (prod only)
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+#
+# The actual secret value (the Expo access token) is placed manually by an
+# operator via the AWS Console or CLI. Terraform creates the secret resource
+# without a value on first apply; subsequent plans respect the
+# lifecycle.ignore_changes = [secret_string] annotation so Terraform never
+# overwrites an operator-set value.
+#
+# The push_fanout Lambda reads this secret on cold start when EXPO_AUTH_MODE=bearer.
+# Secret name matches the hardcoded constant in handler.py: knotify-prod-expo-push-credential.
+# ---------------------------------------------------------------------------
+
+resource "aws_secretsmanager_secret" "expo_push_credential" {
+  name        = "knotify-prod-expo-push-credential"
+  description = "Expo Push API access token for knotify prod push notifications (story 8.10). Value set manually by operator."
+
+  # Recovery window of 7 days — allows accidental deletion to be undone.
+  recovery_window_in_days = 7
+}
+
+resource "aws_secretsmanager_secret_version" "expo_push_credential" {
+  secret_id     = aws_secretsmanager_secret.expo_push_credential.id
+  secret_string = "placeholder-replace-with-real-expo-token"
+
+  lifecycle {
+    # Operator sets the real token value manually; Terraform must never overwrite it.
+    ignore_changes = [secret_string]
+  }
+}
+
+# ---------------------------------------------------------------------------
+# push_fanout Lambda — story 8.10
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+# Mirrors the dev wiring with EXPO_AUTH_MODE=bearer (Secrets Manager token).
+#
+# Placement: OUTSIDE the VPC — only touches DynamoDB and Expo (open internet).
+#
+# CONSUMER LIMIT: Notifications stream now has 2 ESM consumers
+# (notifications_publisher + push_fanout), which is the AWS default limit.
+# ---------------------------------------------------------------------------
+
+module "push_fanout" {
+  source = "../../modules/push_fanout"
+
+  function_name            = "knotify-push-fanout-${var.environment}"
+  filename                 = "${path.module}/../../../build/push_fanout.zip"
+  role_arn                 = module.iam_roles.role_arns["push_fanout"]
+  chat_messages_stream_arn = module.dynamodb.chat_messages_stream_arn
+  notifications_stream_arn = module.dynamodb.notifications_stream_arn
+  expo_push_url            = "https://exp.host/--/api/v2/push/send"
+  expo_auth_mode           = "bearer"
+}
+
+# ---------------------------------------------------------------------------
+# knotify-push-tokens Lambda — story 8.11
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+# Mirrors the dev wiring (identical role, module, and route wiring).
+#
+# Handles one route:
+#   POST /v1/push-tokens — register or refresh a device push notification token
+#
+# NOT gated by @require_profile_complete — token registration happens at first
+# app launch before onboarding completes.
+# JWT authorizer is enforced by the HTTP API Cognito authorizer (API Gateway).
+#
+# Uses the push_tokens IAM role (dynamodb:PutItem on PushNotificationTokens only).
+# Placed in the VPC (private subnets + lambda SG) to reach the DynamoDB VPC
+# endpoint, consistent with other REST Lambdas.
+# ---------------------------------------------------------------------------
+
+module "push_tokens" {
+  source = "../../modules/push_tokens"
+
+  function_name = "knotify-push-tokens-${var.environment}"
+  filename      = "${path.module}/../../../build/push_tokens.zip"
+  role_arn      = module.iam_roles.role_arns["push_tokens"]
+
+  layers = [
+    module.observability_layer.layer_arn,
+  ]
+
+  vpc_config = {
+    subnet_ids         = module.networking.private_subnet_ids
+    security_group_ids = [module.networking.lambda_security_group_id]
+  }
+
+  table_push_tokens_name = module.dynamodb.push_tokens_table_name
+}
+
+# ---------------------------------------------------------------------------
+# API Gateway wiring — story 8.11 (prod mirror)
+#
+# One integration + one route + one Lambda permission.
+# Route uses JWT authorization (Cognito User Pool, same authorizer as all
+# other routes in the HTTP API).
+#
+# Lambda permission source_arn MUST use api_execution_arn (not default_stage_arn).
+# Per hotfix #86: using default_stage_arn causes 5xx with no Lambda invocation
+# log entry because it is the management ARN, not the execute-api principal ARN.
+# ---------------------------------------------------------------------------
+
+resource "aws_apigatewayv2_integration" "push_tokens" {
+  api_id                 = module.api_gateway.api_id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = module.push_tokens.invoke_arn
+  payload_format_version = "2.0"
+}
+
+resource "aws_apigatewayv2_route" "post_push_tokens" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "POST /v1/push-tokens"
+  target             = "integrations/${aws_apigatewayv2_integration.push_tokens.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+# Lambda permission — scoped to the push-tokens route on this API.
+# source_arn uses api_execution_arn (execute-api ARN) per hotfix #86 lesson.
+resource "aws_lambda_permission" "push_tokens_api_gateway" {
+  statement_id  = "AllowPushTokensAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = module.push_tokens.function_name
+  qualifier     = "live"
+  principal     = "apigateway.amazonaws.com"
+  # Scoped to POST /v1/push-tokens via the execute-api ARN.
+  # source_arn = api_execution_arn (NOT default_stage_arn) per hotfix #86.
+  source_arn = "${module.api_gateway.api_execution_arn}/*/*/v1/push-tokens"
+}
+
+# ---------------------------------------------------------------------------
+# stale_token_cleanup Lambda — story 8.12 (prod mirror)
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+# Mirrors the dev wiring (identical role, module configuration).
+#
+# Daily EventBridge cron: scan PushNotificationTokens, delete rows whose
+# last_seen is older than 60 days.
+#
+# Placement: OUTSIDE the VPC — only touches DynamoDB (no Aurora, no external
+# HTTP).  Running outside the VPC avoids the hotfix #106 blackhole trap.
+#
+# No layers required: this Lambda only needs boto3 (bundled in the runtime).
+# ---------------------------------------------------------------------------
+
+module "stale_token_cleanup" {
+  source = "../../modules/stale_token_cleanup"
+
+  function_name          = "knotify-stale-token-cleanup-${var.environment}"
+  filename               = "${path.module}/../../../build/stale_token_cleanup.zip"
+  role_arn               = module.iam_roles.role_arns["stale_token_cleanup"]
+  table_push_tokens_name = module.dynamodb.push_tokens_table_name
 }

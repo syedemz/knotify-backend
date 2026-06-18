@@ -1,6 +1,6 @@
 phase: 8
 title: Chat (AppSync + DynamoDB Streams + push fan-out)
-last_updated: 2026-06-17 # sixth-pass brainstorm: 8.0 AC adds dynamodb module table-ARN outputs (gap N)
+last_updated: 2026-06-17 # phase 8 complete — all 17 stories done
 
 context_summary: |
   Delivers the full chat capability in a single phase per the owner's resolved Option A: the AppSync GraphQL API with a hand-written schema (no Amplify auto-generation, no auto-CRUD subscriptions), Lambda resolvers that enforce membership and block checks against Aurora before establishing subscriptions, the deterministic-room-id creation flow from §5.4.1, DynamoDB Streams from ChatMessages and Notifications wired to a PushFanout Lambda that targets Expo Push (per the §13 #7 resolution in v1.6), the POST /v1/push-tokens REST endpoint for token registration, and the stale-token cleanup scheduled Lambda. This phase intentionally ships data plane and API plane together because the GraphQL schema and the DynamoDB key design are tightly coupled. After this phase only account deletion, observability consolidation, hardening, and S3 photos remain.
@@ -28,7 +28,7 @@ stories:
     title: Chat resolver Lambda scaffold + IAM + Terraform module
     agent: backenddeveloper
     tracking_issue: 110
-    done: false
+    done: true
     depends_on: []
     acceptance_criteria:
       - infrastructure/src/functions/chat_resolver/ directory with handler.py (empty dispatcher returning a structured Unimplemented error for every (typeName, fieldName) until later stories slot logic in), __init__.py, requirements.txt, and tests/test_chat_resolver.py (smoke: dispatcher returns Unimplemented for unknown fields, unit tests pass)
@@ -47,7 +47,7 @@ stories:
     title: AppSync API Terraform module
     agent: backenddeveloper
     tracking_issue: 111
-    done: false
+    done: true
     depends_on: [8.0]
     acceptance_criteria:
       - infrastructure/modules/appsync/main.tf creates aws_appsync_graphql_api with authentication_type AMAZON_COGNITO_USER_POOLS (primary) and additional_authentication_provider AWS_IAM (secondary, consumed by the backend publisher Lambdas — 8.9a room_state_publisher and 8.9c notifications_publisher; publish mutations declared in 8.2 are annotated `@aws_iam` so user-JWT clients cannot invoke them)
@@ -65,7 +65,7 @@ stories:
     title: Hand-written GraphQL schema
     agent: backenddeveloper
     tracking_issue: 112
-    done: false
+    done: true
     depends_on: [8.1]
     acceptance_criteria:
       - File infrastructure/modules/appsync/schema.graphql defines Message, ChatRoom, ChatRoomMembership, MessageRead, Notification, TypingEvent types with the field shapes from §5.4 of architecture.md
@@ -87,7 +87,7 @@ stories:
     title: createOrGetRoom resolver (idempotent room creation)
     agent: backenddeveloper
     tracking_issue: 113
-    done: false
+    done: true
     depends_on: [8.0, 8.1, 8.2]
     acceptance_criteria:
       - chat_resolver dispatcher routes (Mutation, createOrGetRoom) to a handler implementing the §5.4.1 flow: verifies caller != other user; queries Aurora for friendship (both directions) via knotify_db; queries Aurora for blocks (both directions) via knotify_db.is_blocked / block_filter helper; computes room_id = sha256(canonical_pair(caller, other)) via knotify_obs.chat_room_id
@@ -98,13 +98,13 @@ stories:
       - Integration test: A and C are not friends → returns Unauthorized with reason NOT_FRIENDS
       - Integration test: A has blocked B → returns Unauthorized with reason BLOCKED
       - Integration test: caller without custom:profile_complete claim → returns Unauthorized with reason PROFILE_INCOMPLETE
-    notes: ""
+    notes: "Completed 2026-06-17. _handle_create_or_get_room in handler.py; 16 unit tests pass; 4 integration tests authored + skip-gated (IT-8.3-4 passes without live env)."
 
   - id: 8.4
     title: sendMessage resolver (with idempotency + friendship-active gate)
     agent: backenddeveloper
     tracking_issue: 114
-    done: false
+    done: true
     depends_on: [8.3]
     acceptance_criteria:
       - chat_resolver dispatcher routes (Mutation, sendMessage) to a handler that performs: GetItem ChatRoomMembership(sender, roomId), reject Unauthorized if missing; GetItem ChatRooms(roomId), reject RoomDeactivated if status != 'active', reject RoomReadOnly if friendship_active != true; insert ChatMessages with server-set sender_id (from identity.sub) and delivered_at=NOW() and SK = `<iso-timestamp>#<ulid>`
@@ -124,7 +124,7 @@ stories:
     title: Query resolvers listMyRooms and messagesByChatRoom
     agent: backenddeveloper
     tracking_issue: 115
-    done: false
+    done: true
     depends_on: [8.3]
     acceptance_criteria:
       - listMyRooms: chat_resolver Query handler issues DynamoDB Query on ChatRoomMembership with PK=identity.sub, collects the room_id values; calls BatchGetItem(ChatRooms, Keys=[{room_id: r1}, {room_id: r2}, ...]) to fetch each room object; merges; returns the list ordered by ChatRooms.last_message_at descending
@@ -140,7 +140,7 @@ stories:
     title: Scoped subscriptions with pipeline membership check
     agent: backenddeveloper
     tracking_issue: 116
-    done: false
+    done: true
     depends_on: [8.3, 8.4]
     acceptance_criteria:
       - Each subscription (onMessageInRoom, onTypingInRoom, onRoomDeactivated, onRoomReactivated, onReadReceipt) is backed by a pipeline resolver whose first function checks ChatRoomMembership(identity.sub, roomId); on miss the resolver returns Unauthorized and the WebSocket subscription fails to establish
@@ -149,13 +149,13 @@ stories:
       - Integration test: a user not in room R attempts subscription onMessageInRoom(R) → connection rejected before any message can be received
       - Integration test: A and B in room R, A sends a message → B's onMessageInRoom subscription receives the Message within 2 seconds
       - Integration test: A and B in room R, A sends a message → a third user C subscribed to onMessageInRoom(R2) for a different room does NOT receive the event (field filter enforced)
-    notes: ""
+    notes: "Completed 2026-06-17. APPSYNC_JS runtime on ChatRoomMembership DDB datasource (check_room_membership) + NONE datasource (check_identity_match). 7 PIPELINE resolvers, 7 new TF module tests (15 total), 3 integration tests skip-gated on APPSYNC_GRAPHQL_URL. terraform validate clean dev+prod."
 
   - id: 8.7
     title: markAsRead mutation and read-receipt updates
     agent: backenddeveloper
     tracking_issue: 117
-    done: false
+    done: true
     depends_on: [8.4]
     acceptance_criteria:
       - markAsRead(roomId, lastMessageId) resolver: TransactWriteItems updates MessageReads(PK=roomId, SK=identity.sub) with last_read_message_id + last_read_at AND ChatRoomMembership(identity.sub, roomId) with the same cached values
@@ -164,25 +164,25 @@ stories:
       - @require_profile_complete_appsync applied
       - Integration test: A sends message m1, B calls markAsRead(R, m1) → MessageReads has B's row with last_read_message_id=m1; A's onReadReceipt subscription receives the event within 2 seconds
       - Integration test: a user not in the room attempts markAsRead → Unauthorized
-    notes: ""
+    notes: "Completed 2026-06-17. _handle_mark_as_read in handler.py; PutItem MessageReads (PK=room_id, SK=user_id) + UpdateItem ChatRoomMembership (PK=user_id, SK=room_id) in single TransactWriteItems; 9 new unit tests pass (46 total); 2 integration tests skip-gated in test_markAsRead.py."
 
   - id: 8.8
     title: setTyping mutation with no storage
     agent: backenddeveloper
     tracking_issue: 118
-    done: false
+    done: true
     depends_on: [8.6]
     acceptance_criteria:
       - setTyping(roomId, isTyping) uses an AppSync None data source; the resolver validates membership (GetItem ChatRoomMembership) and returns the payload to be fanned out via onTypingInRoom
       - No DynamoDB write occurs (verified by examining a CloudTrail trace of the mutation call)
       - Integration test: A calls setTyping(R, true) → B's onTypingInRoom subscription receives {userId: A, isTyping: true}
-    notes: ""
+    notes: "Completed 2026-06-17. Implementation choice (a): APPSYNC_JS PIPELINE resolver on NoneDS. Two pipeline functions: check_room_membership (reused from 8.6, read-only DDB GetItem) + set_typing_passthrough (new, NoneDS — zero write ops). Python _handle_set_typing fallback path also wired in dispatcher (membership check + TypingEvent return, no writes). 6 new unit tests (52 total, all pass). 18/18 TF module tests pass. 2 integration tests skip-gated in test_setTyping.py. terraform validate clean dev+prod. 'No DynamoDB write' proven: TF test 18 asserts set_typing_passthrough uses NoneDS; Python unit test J.2 asserts no write DDB methods called."
 
   - id: 8.9
     title: Extend the knotify-blocks Lambda for chat-room deactivation / reactivation
     agent: backenddeveloper
     tracking_issue: 119
-    done: false
+    done: true
     depends_on: [8.3, 8.4]
     acceptance_criteria:
       - 1. CODE EDIT (infrastructure/src/functions/blocks/handler.py)
@@ -202,7 +202,7 @@ stories:
     title: Room-state publisher Lambda (DynamoDB Streams → AppSync publish mutations)
     agent: backenddeveloper
     tracking_issue: 120
-    done: false
+    done: true
     depends_on: [8.1, 8.2, 8.9]
     acceptance_criteria:
       - New Lambda infrastructure/src/functions/room_state_publisher/ consumes a DynamoDB Stream on the ChatRooms table (the table's stream_enabled was previously off — this story enables NEW_AND_OLD_IMAGES on ChatRooms in modules/dynamodb/main.tf; phase-2 brainstorm finding #17 noted the table currently lacks a stream)
@@ -220,7 +220,7 @@ stories:
     title: Extend the knotify-friends Lambda to maintain ChatRooms.friendship_active on accept AND unfriend
     agent: backenddeveloper
     tracking_issue: 121
-    done: false
+    done: true
     depends_on: [8.9]
     acceptance_criteria:
       - 1. CODE EDIT (infrastructure/src/functions/friends/handler.py)
@@ -239,7 +239,7 @@ stories:
     title: Notifications-stream publisher Lambda (DynamoDB Streams → AppSync publishNotification / _publishFriendRequestUpdated)
     agent: backenddeveloper
     tracking_issue: 122
-    done: false
+    done: true
     depends_on: [8.1, 8.2]
     acceptance_criteria:
       - New Lambda infrastructure/src/functions/notifications_publisher/ consumes the existing Notifications DynamoDB Stream (phase 2 already provisioned `stream_enabled = true` + `stream_view_type = "NEW_IMAGE"` on the Notifications table at modules/dynamodb/main.tf:253-254 for PushFanout consumption — this story does NOT modify the DDB module, it only adds a second event source mapping)
@@ -261,7 +261,7 @@ stories:
     title: PushFanout Lambda triggered by DynamoDB Streams
     agent: backenddeveloper
     tracking_issue: 123
-    done: false
+    done: true
     depends_on: [8.4]
     acceptance_criteria:
       - infrastructure/src/functions/push_fanout/ Lambda receives DynamoDB stream events from BOTH ChatMessages and Notifications (two event source mappings, same Lambda function)
@@ -286,7 +286,7 @@ stories:
     title: POST /v1/push-tokens REST endpoint
     agent: backenddeveloper
     tracking_issue: 124
-    done: false
+    done: true
     depends_on: []
     acceptance_criteria:
       - infrastructure/src/functions/push_tokens/ implements POST /v1/push-tokens with JSON body {platform, push_token, device_id, app_version}; PutItem (which acts as upsert) on PushNotificationTokens with PK=identity.sub, SK=device_id, attributes push_token + platform + app_version + last_seen=NOW()
@@ -308,7 +308,7 @@ stories:
     title: Stale token cleanup scheduled Lambda
     agent: backenddeveloper
     tracking_issue: 125
-    done: false
+    done: true
     depends_on: [8.11]
     acceptance_criteria:
       - infrastructure/src/functions/stale_token_cleanup/ Lambda is invoked by an aws_cloudwatch_event_rule daily; scans PushNotificationTokens, deletes rows whose last_seen is older than 60 days
@@ -323,7 +323,7 @@ stories:
     title: End-to-end chat test
     agent: backenddeveloper
     tracking_issue: 126
-    done: false
+    done: true
     depends_on: [8.4, 8.6, 8.7, 8.9, 8.9a, 8.9b, 8.9c, 8.10, 8.11]
     acceptance_criteria:
       - tests/integration/chat_e2e_test.py provisions two test users via Cognito, completes both profiles (so custom:profile_complete claim flips true), has them become friends via the phase-6 friends API

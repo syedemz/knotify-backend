@@ -19,3 +19,95 @@ variable "refresh_lambda_arn" {
   type        = string
   default     = ""
 }
+
+# ---------------------------------------------------------------------------
+# Story 8.0 — chat_resolver IAM role DynamoDB scoping
+# ---------------------------------------------------------------------------
+
+variable "chat_rooms_table_arn" {
+  description = "ARN of the ChatRooms DynamoDB table. Used to scope chat_resolver IAM policy (story 8.0). Pass module.dynamodb.chat_rooms_arn from each environment root module."
+  type        = string
+  default     = ""
+}
+
+variable "chat_room_membership_table_arn" {
+  description = "ARN of the ChatRoomMembership DynamoDB table. Used to scope chat_resolver IAM policy (story 8.0). Pass module.dynamodb.chat_room_membership_arn from each environment root module."
+  type        = string
+  default     = ""
+}
+
+variable "chat_messages_table_arn" {
+  description = "ARN of the ChatMessages DynamoDB table. Used to scope chat_resolver IAM policy (story 8.0). Pass module.dynamodb.chat_messages_arn from each environment root module."
+  type        = string
+  default     = ""
+}
+
+variable "message_reads_table_arn" {
+  description = "ARN of the MessageReads DynamoDB table. Used to scope chat_resolver IAM policy (story 8.0). Pass module.dynamodb.message_reads_arn from each environment root module."
+  type        = string
+  default     = ""
+}
+
+variable "notifications_table_arn" {
+  description = "ARN of the Notifications DynamoDB table. Used to scope chat_resolver IAM policy (story 8.0). Pass module.dynamodb.notifications_arn from each environment root module."
+  type        = string
+  default     = ""
+}
+
+# ---------------------------------------------------------------------------
+# Story 8.1 — AppSync IAM roles
+# ---------------------------------------------------------------------------
+
+variable "chat_resolver_lambda_arn" {
+  description = "ARN of the chat_resolver Lambda live alias. Used to scope appsync_chat_resolver_invoke's lambda:InvokeFunction permission (story 8.1). Pass module.chat_resolver.lambda_arn from each environment root module."
+  type        = string
+  default     = ""
+}
+
+# ---------------------------------------------------------------------------
+# Story 8.9a — room_state_publisher IAM role scoping
+# ---------------------------------------------------------------------------
+
+variable "chat_rooms_stream_arn" {
+  description = "DynamoDB stream ARN for the ChatRooms table. Used to scope room_state_publisher_role's dynamodb stream read actions (story 8.9a). Pass module.dynamodb.chat_rooms_stream_arn from each environment root module."
+  type        = string
+  default     = ""
+}
+
+variable "appsync_api_arn" {
+  description = "ARN of the AppSync GraphQL API. Used to scope room_state_publisher_role's appsync:GraphQL permission to the exact _publishRoomDeactivated and _publishRoomReactivated field ARNs (story 8.9a), and notifications_publisher_role's appsync:GraphQL permission to publishNotification and _publishFriendRequestUpdated field ARNs (story 8.9c). Pass module.appsync.api_arn from each environment root module."
+  type        = string
+  default     = ""
+}
+
+# ---------------------------------------------------------------------------
+# Story 8.9c — notifications_publisher IAM role scoping
+# ---------------------------------------------------------------------------
+
+variable "notifications_stream_arn" {
+  description = "DynamoDB stream ARN for the Notifications table. Used to scope notifications_publisher_role's dynamodb stream read actions (story 8.9c). Pass module.dynamodb.notifications_stream_arn from each environment root module."
+  type        = string
+  default     = ""
+}
+
+# ---------------------------------------------------------------------------
+# Story 8.10 — push_fanout IAM role scoping
+# ---------------------------------------------------------------------------
+
+variable "chat_messages_stream_arn" {
+  description = "DynamoDB stream ARN for the ChatMessages table. Used to scope push_fanout_role's dynamodb stream read actions (story 8.10). Pass module.dynamodb.chat_messages_stream_arn from each environment root module."
+  type        = string
+  default     = ""
+}
+
+variable "push_notification_tokens_table_arn" {
+  description = "ARN of the PushNotificationTokens DynamoDB table. Used to scope push_fanout_role's DynamoDB data-plane permissions (story 8.10). Pass module.dynamodb.push_notification_tokens_arn from each environment root module."
+  type        = string
+  default     = ""
+}
+
+variable "expo_push_secret_arn" {
+  description = "ARN of the Expo push credential Secrets Manager secret (knotify-prod-expo-push-credential). Used to scope push_fanout_role's secretsmanager:GetSecretValue permission (prod only; empty in dev). Pass the aws_secretsmanager_secret ARN from the prod root module."
+  type        = string
+  default     = ""
+}

@@ -11,13 +11,16 @@ Run:
 
 Test areas:
   A. GET /v1/friends — block-filtered friend list
-  B. DELETE /v1/friends/{userId} — remove friendship
+  B. DELETE /v1/friends/{userId} — remove friendship + DynamoDB friendship_active=false
   C. GET /v1/friend-requests — block-filtered request list
   D. POST /v1/friend-requests — block check + already_pending guard
   E. POST /v1/friend-requests/{id}/accept — 404 when stale, lex-min/max insert
   F. POST /v1/friend-requests/{id}/decline — 404 when stale
   G. DELETE /v1/friend-requests/{id} — cancel outgoing request
   H. Route dispatch / edge-secret gate
+  I. Story 8.9b accept-path DynamoDB maintenance — friendship_active=true after Aurora INSERT
+  J. Story 8.9b unfriend-path DynamoDB maintenance — friendship_active=false after Aurora DELETE
+  K. Story 8.9b DynamoDB error paths — ConditionalCheckFailed no-op, other errors pending flag
 """
 
 from __future__ import annotations
@@ -132,6 +135,42 @@ def _make_conn(fetchone_side_effect=None, fetchone_return=None, fetchall_return=
     cur.description = []
 
     return conn, cur
+
+
+def _make_dynamo_client(update_side_effect=None):
+    """Build a minimal boto3 DynamoDB client stub."""
+    dynamo = MagicMock()
+    if update_side_effect is not None:
+        dynamo.update_item.side_effect = update_side_effect
+    else:
+        dynamo.update_item.return_value = {}
+    return dynamo
+
+
+class _FakeDynamoClientError(Exception):
+    """
+    Minimal stand-in for botocore.exceptions.ClientError.
+
+    The handler identifies DynamoDB errors by duck-typing the `.response`
+    attribute — same pattern as the blocks handler.  This stub replicates
+    that structure without requiring botocore in the test env.
+    """
+
+    def __init__(self, code: str, message: str = "") -> None:
+        self.response = {"Error": {"Code": code, "Message": message}}
+        super().__init__(f"An error occurred ({code}): {message}")
+
+
+def _conditional_check_failed_exc() -> _FakeDynamoClientError:
+    """Return a stub exception for ConditionalCheckFailedException."""
+    return _FakeDynamoClientError(
+        "ConditionalCheckFailedException", "The conditional request failed"
+    )
+
+
+def _other_dynamo_exc() -> _FakeDynamoClientError:
+    """Return a stub exception for a generic (non-conditional) DynamoDB error."""
+    return _FakeDynamoClientError("InternalServerError", "Internal server error")
 
 
 class _FakePsycopg2UniqueViolation(Exception):
@@ -1137,3 +1176,573 @@ class TestRouteDispatch:
             response = mod.handler(event, None)
 
         assert response["statusCode"] in (200, 201)
+
+
+# ---------------------------------------------------------------------------
+# Area I: Story 8.9b — accept-path DynamoDB maintenance (friendship_active=true)
+# ---------------------------------------------------------------------------
+
+
+class TestAcceptFriendRequestDynamoDB:
+    """
+    Story 8.9b AC-1 (accept path): after the Aurora INSERT INTO friendships
+    commits, the handler must call DynamoDB UpdateItem on ChatRooms setting
+    friendship_active=true, conditional on attribute_exists(room_id).
+
+    If no chat room exists (ConditionalCheckFailedException), the update is a
+    silent no-op — the next createOrGetRoom will set the flag to true.
+    """
+
+    def _make_accept_event(self, req_id: str) -> dict:
+        return _make_event(
+            "POST",
+            f"/v1/friend-requests/{req_id}/accept",
+            path_params={"id": req_id},
+            user_sub=_USER_B,
+        )
+
+    def _conn_with_request_row(self, req_id: str):
+        conn, cur = _make_conn()
+        cur.fetchone.return_value = (req_id, _USER_A, _USER_B, "pending", "2026-01-01")
+        cur.description = [
+            ("request_id",), ("from_user_id",), ("to_user_id",), ("status",), ("created_at",),
+        ]
+        return conn, cur
+
+    def test_given_valid_accept_when_accept_then_dynamo_update_called(self):
+        """
+        After the Aurora INSERT INTO friendships commits, DynamoDB UpdateItem
+        must be called exactly once on the ChatRooms table.
+        """
+        req_id = str(uuid.uuid4())
+        mod = _import_handler()
+        conn, cur = self._conn_with_request_row(req_id)
+        dynamo = _make_dynamo_client()
+        event = self._make_accept_event(req_id)
+
+        with (
+            patch.object(mod, "_get_conn", return_value=conn),
+            patch.object(mod, "_get_dynamo", return_value=dynamo),
+            patch.object(mod, "is_blocked", return_value=False),
+            patch.dict(os.environ, {**_ENV_DEFAULTS, "TABLE_CHAT_ROOMS": "ChatRooms"}),
+        ):
+            response = mod.handler(event, None)
+
+        assert response["statusCode"] == 200
+        dynamo.update_item.assert_called_once()
+
+    def test_given_valid_accept_when_accept_then_dynamo_sets_friendship_active_true(self):
+        """
+        The UpdateItem call must set friendship_active=true (BOOL: True).
+        """
+        req_id = str(uuid.uuid4())
+        mod = _import_handler()
+        conn, cur = self._conn_with_request_row(req_id)
+        dynamo = _make_dynamo_client()
+        event = self._make_accept_event(req_id)
+
+        with (
+            patch.object(mod, "_get_conn", return_value=conn),
+            patch.object(mod, "_get_dynamo", return_value=dynamo),
+            patch.object(mod, "is_blocked", return_value=False),
+            patch.dict(os.environ, {**_ENV_DEFAULTS, "TABLE_CHAT_ROOMS": "ChatRooms"}),
+        ):
+            mod.handler(event, None)
+
+        update_kwargs = dynamo.update_item.call_args[1]
+        update_expr = update_kwargs.get("UpdateExpression", "")
+        expr_values = update_kwargs.get("ExpressionAttributeValues", {})
+        expr_names = update_kwargs.get("ExpressionAttributeNames", {})
+
+        # friendship_active must appear in the UpdateExpression (via placeholder or literal)
+        fa_in_expr = (
+            "friendship_active" in update_expr
+            or any("friendship_active" in v for v in expr_names.values())
+        )
+        assert fa_in_expr, (
+            f"UpdateExpression or ExpressionAttributeNames must reference friendship_active; "
+            f"got update_expr={update_expr!r}, expr_names={expr_names!r}"
+        )
+
+        # The value bound to friendship_active must be BOOL True
+        bool_true_values = [
+            v for v in expr_values.values()
+            if isinstance(v, dict) and v.get("BOOL") is True
+        ]
+        assert bool_true_values, (
+            f"ExpressionAttributeValues must contain {{BOOL: true}} for friendship_active; "
+            f"got expr_values={expr_values!r}"
+        )
+
+    def test_given_valid_accept_when_accept_then_dynamo_condition_is_attribute_exists(self):
+        """
+        The ConditionExpression must guard on attribute_exists(room_id) so the
+        update is a silent no-op when the ChatRooms row does not exist yet.
+        """
+        req_id = str(uuid.uuid4())
+        mod = _import_handler()
+        conn, cur = self._conn_with_request_row(req_id)
+        dynamo = _make_dynamo_client()
+        event = self._make_accept_event(req_id)
+
+        with (
+            patch.object(mod, "_get_conn", return_value=conn),
+            patch.object(mod, "_get_dynamo", return_value=dynamo),
+            patch.object(mod, "is_blocked", return_value=False),
+            patch.dict(os.environ, {**_ENV_DEFAULTS, "TABLE_CHAT_ROOMS": "ChatRooms"}),
+        ):
+            mod.handler(event, None)
+
+        update_kwargs = dynamo.update_item.call_args[1]
+        assert "ConditionExpression" in update_kwargs
+        cond = update_kwargs["ConditionExpression"]
+        assert "attribute_exists" in cond
+
+    def test_given_valid_accept_when_accept_then_dynamo_uses_chat_rooms_table(self):
+        """
+        The UpdateItem call must target the TABLE_CHAT_ROOMS table name from
+        the environment variable, not a hardcoded string.
+        """
+        req_id = str(uuid.uuid4())
+        mod = _import_handler()
+        conn, cur = self._conn_with_request_row(req_id)
+        dynamo = _make_dynamo_client()
+        event = self._make_accept_event(req_id)
+
+        with (
+            patch.object(mod, "_get_conn", return_value=conn),
+            patch.object(mod, "_get_dynamo", return_value=dynamo),
+            patch.object(mod, "is_blocked", return_value=False),
+            patch.dict(os.environ, {**_ENV_DEFAULTS, "TABLE_CHAT_ROOMS": "ChatRooms"}),
+        ):
+            mod.handler(event, None)
+
+        call_kwargs = dynamo.update_item.call_args[1]
+        assert call_kwargs["TableName"] == "ChatRooms"
+
+    def test_given_valid_accept_when_accept_then_dynamo_called_after_aurora_commit(self):
+        """
+        DynamoDB must be called AFTER the Aurora INSERT INTO friendships, not
+        inside the Aurora transaction.  Aurora must not be rolled back when
+        DynamoDB fails.
+        """
+        req_id = str(uuid.uuid4())
+        mod = _import_handler()
+        conn, cur = self._conn_with_request_row(req_id)
+        dynamo = _make_dynamo_client()
+        event = self._make_accept_event(req_id)
+
+        with (
+            patch.object(mod, "_get_conn", return_value=conn),
+            patch.object(mod, "_get_dynamo", return_value=dynamo),
+            patch.object(mod, "is_blocked", return_value=False),
+            patch.dict(os.environ, {**_ENV_DEFAULTS, "TABLE_CHAT_ROOMS": "ChatRooms"}),
+        ):
+            mod.handler(event, None)
+
+        # Aurora INSERT must have executed
+        all_sql = " ".join(str(c) for c in cur.execute.call_args_list)
+        assert "INSERT INTO friendships" in all_sql
+
+        # DynamoDB must also have been called
+        dynamo.update_item.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Area J: Story 8.9b — unfriend-path DynamoDB maintenance (friendship_active=false)
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteFriendDynamoDB:
+    """
+    Story 8.9b AC-1 (unfriend path): after the Aurora DELETE FROM friendships
+    commits, the handler must call DynamoDB UpdateItem on ChatRooms setting
+    friendship_active=false, conditional on attribute_exists(room_id).
+
+    The room's status stays whatever it was — only the flag flips.
+    If no chat room exists (ConditionalCheckFailedException), the update is a
+    silent no-op.
+    """
+
+    def test_given_unfriend_when_delete_friend_then_dynamo_update_called(self):
+        """
+        After the Aurora DELETE FROM friendships commits, DynamoDB UpdateItem
+        must be called exactly once on the ChatRooms table.
+        """
+        mod = _import_handler()
+        conn, cur = _make_conn()
+        dynamo = _make_dynamo_client()
+
+        event = _make_event(
+            "DELETE",
+            f"/v1/friends/{_USER_B}",
+            path_params={"userId": _USER_B},
+            user_sub=_USER_A,
+        )
+
+        with (
+            patch.object(mod, "_get_conn", return_value=conn),
+            patch.object(mod, "_get_dynamo", return_value=dynamo),
+            patch.object(mod, "is_blocked", return_value=False),
+            patch.dict(os.environ, {**_ENV_DEFAULTS, "TABLE_CHAT_ROOMS": "ChatRooms"}),
+        ):
+            response = mod.handler(event, None)
+
+        assert response["statusCode"] == 200
+        dynamo.update_item.assert_called_once()
+
+    def test_given_unfriend_when_delete_friend_then_dynamo_sets_friendship_active_false(self):
+        """
+        The UpdateItem call must set friendship_active=false (BOOL: False).
+        """
+        mod = _import_handler()
+        conn, cur = _make_conn()
+        dynamo = _make_dynamo_client()
+
+        event = _make_event(
+            "DELETE",
+            f"/v1/friends/{_USER_B}",
+            path_params={"userId": _USER_B},
+            user_sub=_USER_A,
+        )
+
+        with (
+            patch.object(mod, "_get_conn", return_value=conn),
+            patch.object(mod, "_get_dynamo", return_value=dynamo),
+            patch.object(mod, "is_blocked", return_value=False),
+            patch.dict(os.environ, {**_ENV_DEFAULTS, "TABLE_CHAT_ROOMS": "ChatRooms"}),
+        ):
+            mod.handler(event, None)
+
+        update_kwargs = dynamo.update_item.call_args[1]
+        update_expr = update_kwargs.get("UpdateExpression", "")
+        expr_values = update_kwargs.get("ExpressionAttributeValues", {})
+        expr_names = update_kwargs.get("ExpressionAttributeNames", {})
+
+        # friendship_active must appear in the UpdateExpression (via placeholder or literal)
+        fa_in_expr = (
+            "friendship_active" in update_expr
+            or any("friendship_active" in v for v in expr_names.values())
+        )
+        assert fa_in_expr, (
+            f"UpdateExpression or ExpressionAttributeNames must reference friendship_active; "
+            f"got update_expr={update_expr!r}, expr_names={expr_names!r}"
+        )
+
+        # The value bound to friendship_active must be BOOL False
+        bool_false_values = [
+            v for v in expr_values.values()
+            if isinstance(v, dict) and v.get("BOOL") is False
+        ]
+        assert bool_false_values, (
+            f"ExpressionAttributeValues must contain {{BOOL: false}} for friendship_active; "
+            f"got expr_values={expr_values!r}"
+        )
+
+    def test_given_unfriend_when_delete_friend_then_dynamo_does_not_modify_status(self):
+        """
+        story 8.9b AC-1 (unfriend path): the UpdateExpression must NOT modify
+        the ChatRooms.status field.  Only friendship_active flips — the room
+        remains 'active' so it becomes read-only (not deactivated) via the
+        8.4 RoomReadOnly gate.  Deactivation is handled exclusively by the
+        blocks Lambda (story 8.9).
+        """
+        mod = _import_handler()
+        conn, cur = _make_conn()
+        dynamo = _make_dynamo_client()
+
+        event = _make_event(
+            "DELETE",
+            f"/v1/friends/{_USER_B}",
+            path_params={"userId": _USER_B},
+            user_sub=_USER_A,
+        )
+
+        with (
+            patch.object(mod, "_get_conn", return_value=conn),
+            patch.object(mod, "_get_dynamo", return_value=dynamo),
+            patch.object(mod, "is_blocked", return_value=False),
+            patch.dict(os.environ, {**_ENV_DEFAULTS, "TABLE_CHAT_ROOMS": "ChatRooms"}),
+        ):
+            mod.handler(event, None)
+
+        update_kwargs = dynamo.update_item.call_args[1]
+        update_expr = update_kwargs.get("UpdateExpression", "")
+        expr_names = update_kwargs.get("ExpressionAttributeNames", {})
+
+        # 'status' must NOT appear in the UpdateExpression (via placeholder or literal)
+        status_in_expr = (
+            "status" in update_expr
+            or any("status" in v for v in expr_names.values())
+        )
+        assert not status_in_expr, (
+            f"Unfriend UpdateExpression must NOT reference status — only friendship_active "
+            f"flips; got update_expr={update_expr!r}, expr_names={expr_names!r}"
+        )
+
+    def test_given_unfriend_when_delete_friend_then_dynamo_condition_is_attribute_exists(self):
+        """
+        The ConditionExpression must guard on attribute_exists(room_id) so the
+        update is a silent no-op when no chat room has ever been created.
+        """
+        mod = _import_handler()
+        conn, cur = _make_conn()
+        dynamo = _make_dynamo_client()
+
+        event = _make_event(
+            "DELETE",
+            f"/v1/friends/{_USER_B}",
+            path_params={"userId": _USER_B},
+            user_sub=_USER_A,
+        )
+
+        with (
+            patch.object(mod, "_get_conn", return_value=conn),
+            patch.object(mod, "_get_dynamo", return_value=dynamo),
+            patch.object(mod, "is_blocked", return_value=False),
+            patch.dict(os.environ, {**_ENV_DEFAULTS, "TABLE_CHAT_ROOMS": "ChatRooms"}),
+        ):
+            mod.handler(event, None)
+
+        update_kwargs = dynamo.update_item.call_args[1]
+        assert "ConditionExpression" in update_kwargs
+        cond = update_kwargs["ConditionExpression"]
+        assert "attribute_exists" in cond
+
+    def test_given_unfriend_when_delete_friend_then_aurora_commit_not_affected_by_dynamo(self):
+        """
+        DynamoDB must be called AFTER the Aurora DELETE FROM friendships commits.
+        Aurora must not be rolled back when DynamoDB raises.
+        """
+        mod = _import_handler()
+        conn, cur = _make_conn()
+        dynamo = _make_dynamo_client()
+
+        event = _make_event(
+            "DELETE",
+            f"/v1/friends/{_USER_B}",
+            path_params={"userId": _USER_B},
+            user_sub=_USER_A,
+        )
+
+        with (
+            patch.object(mod, "_get_conn", return_value=conn),
+            patch.object(mod, "_get_dynamo", return_value=dynamo),
+            patch.object(mod, "is_blocked", return_value=False),
+            patch.dict(os.environ, {**_ENV_DEFAULTS, "TABLE_CHAT_ROOMS": "ChatRooms"}),
+        ):
+            mod.handler(event, None)
+
+        all_sql = " ".join(str(c) for c in cur.execute.call_args_list)
+        assert "DELETE FROM friendships" in all_sql
+        dynamo.update_item.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Area K: Story 8.9b — DynamoDB error paths for friends Lambda
+# ---------------------------------------------------------------------------
+
+
+class TestFriendsDynamoDbErrorPaths:
+    """
+    ConditionalCheckFailedException is treated as a no-op (INFO log).
+    Any other DynamoDB error returns HTTP 200 with chat_room_update_pending: true.
+    The Aurora friendship mutation is NEVER rolled back when DynamoDB fails.
+    """
+
+    # --- Accept path ---
+
+    def test_given_conditional_check_failed_on_accept_then_still_returns_200(self):
+        """
+        ConditionalCheckFailedException during friendship_active update on accept
+        must be swallowed (room absent) — the accept still returns HTTP 200.
+        """
+        req_id = str(uuid.uuid4())
+        mod = _import_handler()
+        conn, cur = _make_conn()
+        cur.fetchone.return_value = (req_id, _USER_A, _USER_B, "pending", "2026-01-01")
+        cur.description = [
+            ("request_id",), ("from_user_id",), ("to_user_id",), ("status",), ("created_at",),
+        ]
+
+        dynamo = _make_dynamo_client(
+            update_side_effect=_conditional_check_failed_exc()
+        )
+        event = _make_event(
+            "POST",
+            f"/v1/friend-requests/{req_id}/accept",
+            path_params={"id": req_id},
+            user_sub=_USER_B,
+        )
+
+        with (
+            patch.object(mod, "_get_conn", return_value=conn),
+            patch.object(mod, "_get_dynamo", return_value=dynamo),
+            patch.object(mod, "is_blocked", return_value=False),
+            patch.dict(os.environ, {**_ENV_DEFAULTS, "TABLE_CHAT_ROOMS": "ChatRooms"}),
+        ):
+            response = mod.handler(event, None)
+
+        assert response["statusCode"] == 200
+        body = json.loads(response["body"])
+        # No pending flag for ConditionalCheckFailed (it's a no-op)
+        assert body.get("chat_room_update_pending") is not True
+
+    def test_given_other_dynamo_error_on_accept_then_returns_200_with_pending_flag(self):
+        """
+        A non-ConditionalCheckFailedException DynamoDB error on accept must return
+        HTTP 200 with chat_room_update_pending: true so the client knows the
+        Aurora accept succeeded but the DynamoDB flag update may lag.
+        """
+        req_id = str(uuid.uuid4())
+        mod = _import_handler()
+        conn, cur = _make_conn()
+        cur.fetchone.return_value = (req_id, _USER_A, _USER_B, "pending", "2026-01-01")
+        cur.description = [
+            ("request_id",), ("from_user_id",), ("to_user_id",), ("status",), ("created_at",),
+        ]
+
+        dynamo = _make_dynamo_client(
+            update_side_effect=_other_dynamo_exc()
+        )
+        event = _make_event(
+            "POST",
+            f"/v1/friend-requests/{req_id}/accept",
+            path_params={"id": req_id},
+            user_sub=_USER_B,
+        )
+
+        with (
+            patch.object(mod, "_get_conn", return_value=conn),
+            patch.object(mod, "_get_dynamo", return_value=dynamo),
+            patch.object(mod, "is_blocked", return_value=False),
+            patch.dict(os.environ, {**_ENV_DEFAULTS, "TABLE_CHAT_ROOMS": "ChatRooms"}),
+        ):
+            response = mod.handler(event, None)
+
+        assert response["statusCode"] == 200
+        body = json.loads(response["body"])
+        assert body.get("chat_room_update_pending") is True
+
+    def test_given_other_dynamo_error_on_accept_then_aurora_not_rolled_back(self):
+        """
+        When DynamoDB raises on accept, conn.rollback must not be called — the
+        Aurora INSERT INTO friendships must have already committed.
+        """
+        req_id = str(uuid.uuid4())
+        mod = _import_handler()
+        conn, cur = _make_conn()
+        cur.fetchone.return_value = (req_id, _USER_A, _USER_B, "pending", "2026-01-01")
+        cur.description = [
+            ("request_id",), ("from_user_id",), ("to_user_id",), ("status",), ("created_at",),
+        ]
+
+        dynamo = _make_dynamo_client(
+            update_side_effect=_other_dynamo_exc()
+        )
+        event = _make_event(
+            "POST",
+            f"/v1/friend-requests/{req_id}/accept",
+            path_params={"id": req_id},
+            user_sub=_USER_B,
+        )
+
+        with (
+            patch.object(mod, "_get_conn", return_value=conn),
+            patch.object(mod, "_get_dynamo", return_value=dynamo),
+            patch.object(mod, "is_blocked", return_value=False),
+            patch.dict(os.environ, {**_ENV_DEFAULTS, "TABLE_CHAT_ROOMS": "ChatRooms"}),
+        ):
+            mod.handler(event, None)
+
+        conn.rollback.assert_not_called()
+
+    # --- Unfriend path ---
+
+    def test_given_conditional_check_failed_on_unfriend_then_still_returns_200(self):
+        """
+        ConditionalCheckFailedException during friendship_active=false update on
+        unfriend must be swallowed — the unfriend still returns HTTP 200.
+        """
+        mod = _import_handler()
+        conn, cur = _make_conn()
+        dynamo = _make_dynamo_client(
+            update_side_effect=_conditional_check_failed_exc()
+        )
+
+        event = _make_event(
+            "DELETE",
+            f"/v1/friends/{_USER_B}",
+            path_params={"userId": _USER_B},
+            user_sub=_USER_A,
+        )
+
+        with (
+            patch.object(mod, "_get_conn", return_value=conn),
+            patch.object(mod, "_get_dynamo", return_value=dynamo),
+            patch.object(mod, "is_blocked", return_value=False),
+            patch.dict(os.environ, {**_ENV_DEFAULTS, "TABLE_CHAT_ROOMS": "ChatRooms"}),
+        ):
+            response = mod.handler(event, None)
+
+        assert response["statusCode"] == 200
+        body = json.loads(response["body"])
+        assert body.get("chat_room_update_pending") is not True
+
+    def test_given_other_dynamo_error_on_unfriend_then_returns_200_with_pending_flag(self):
+        """
+        A non-ConditionalCheckFailedException DynamoDB error on unfriend must
+        return HTTP 200 with chat_room_update_pending: true.
+        """
+        mod = _import_handler()
+        conn, cur = _make_conn()
+        dynamo = _make_dynamo_client(
+            update_side_effect=_other_dynamo_exc()
+        )
+
+        event = _make_event(
+            "DELETE",
+            f"/v1/friends/{_USER_B}",
+            path_params={"userId": _USER_B},
+            user_sub=_USER_A,
+        )
+
+        with (
+            patch.object(mod, "_get_conn", return_value=conn),
+            patch.object(mod, "_get_dynamo", return_value=dynamo),
+            patch.object(mod, "is_blocked", return_value=False),
+            patch.dict(os.environ, {**_ENV_DEFAULTS, "TABLE_CHAT_ROOMS": "ChatRooms"}),
+        ):
+            response = mod.handler(event, None)
+
+        assert response["statusCode"] == 200
+        body = json.loads(response["body"])
+        assert body.get("chat_room_update_pending") is True
+
+    def test_given_other_dynamo_error_on_unfriend_then_aurora_not_rolled_back(self):
+        """
+        When DynamoDB raises on unfriend, the Aurora DELETE FROM friendships must
+        have already committed — conn.rollback must not be called.
+        """
+        mod = _import_handler()
+        conn, cur = _make_conn()
+        dynamo = _make_dynamo_client(
+            update_side_effect=_other_dynamo_exc()
+        )
+
+        event = _make_event(
+            "DELETE",
+            f"/v1/friends/{_USER_B}",
+            path_params={"userId": _USER_B},
+            user_sub=_USER_A,
+        )
+
+        with (
+            patch.object(mod, "_get_conn", return_value=conn),
+            patch.object(mod, "_get_dynamo", return_value=dynamo),
+            patch.object(mod, "is_blocked", return_value=False),
+            patch.dict(os.environ, {**_ENV_DEFAULTS, "TABLE_CHAT_ROOMS": "ChatRooms"}),
+        ):
+            mod.handler(event, None)
+
+        conn.rollback.assert_not_called()

@@ -1,0 +1,3 @@
+# No additional dependencies beyond the Lambda runtime boto3.
+# This Lambda does not use knotify_obs or knotify_db layers — it only
+# calls DynamoDB Scan + DeleteItem and runs OUTSIDE the VPC.

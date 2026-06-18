@@ -130,6 +130,36 @@ module "iam_roles" {
   # only (story 7.4). Terraform resolves the forward reference from the
   # refresh_deck_view module declared later in this file.
   refresh_lambda_arn = module.refresh_deck_view.function_arn
+
+  # Scope chat_resolver DynamoDB permissions to exact table ARNs (story 8.0).
+  # Sourced from the dynamodb module outputs added in story 8.0.
+
+  # Scope appsync_chat_resolver_invoke's lambda:InvokeFunction to the exact
+  # chat_resolver Lambda ARN (story 8.1). Forward reference — Terraform
+  # resolves this after the chat_resolver module is declared below.
+  chat_resolver_lambda_arn = module.chat_resolver.lambda_arn
+
+  # Scope room_state_publisher DynamoDB stream actions to ChatRooms stream ARN
+  # (story 8.9a). Stream ARN is now output by the dynamodb module.
+  chat_rooms_stream_arn = module.dynamodb.chat_rooms_stream_arn
+
+  # Scope room_state_publisher AppSync publish permissions to the exact
+  # publish-mutation field ARNs (story 8.9a). API ARN sourced from appsync module.
+  appsync_api_arn = module.appsync.api_arn
+
+  # Scope notifications_publisher DynamoDB stream actions to Notifications stream ARN
+  # (story 8.9c). Stream ARN sourced from dynamodb module outputs.tf:61.
+  notifications_stream_arn = module.dynamodb.notifications_stream_arn
+
+  # Scope push_fanout DynamoDB stream actions to ChatMessages stream ARN (story 8.10).
+  chat_messages_stream_arn = module.dynamodb.chat_messages_stream_arn
+
+  # Scope push_fanout DynamoDB data-plane permissions on PushNotificationTokens (story 8.10).
+  push_notification_tokens_table_arn = module.dynamodb.push_notification_tokens_arn
+
+  # expo_push_secret_arn is intentionally omitted in dev (no Expo prod credential).
+  # The IAM policy uses a wildcard fallback pattern that validates but won't match
+  # any real secret in the dev account.
 }
 
 # ---------------------------------------------------------------------------
@@ -788,7 +818,7 @@ resource "aws_lambda_permission" "blocks_api_gateway" {
 }
 
 # ---------------------------------------------------------------------------
-# knotify-friends Lambda — story 6.2
+# knotify-friends Lambda — story 6.2, extended by story 8.9b
 #
 # Handles seven routes:
 #   GET    /v1/friends                          — block-filtered friend list
@@ -799,8 +829,8 @@ resource "aws_lambda_permission" "blocks_api_gateway" {
 #   POST   /v1/friend-requests/{id}/decline     — decline a pending request
 #   DELETE /v1/friend-requests/{id}             — cancel an outgoing request
 #
-# Uses the aurora_writer IAM role (Aurora rights via app_user credential;
-# no DynamoDB access needed — friends operations are Aurora-only).
+# Uses the friends_writer IAM role (Aurora app_user credential + DynamoDB
+# UpdateItem on ChatRooms to maintain friendship_active flag — story 8.9b).
 # EDGE_SECRET is injected so the @with_edge_secret decorator validates all
 # traffic arrived via CloudFront.
 # ---------------------------------------------------------------------------
@@ -817,7 +847,7 @@ module "friends" {
     module.db_layer.layer_arn,
   ]
 
-  role_arn = module.iam_roles.role_arns["aurora_writer"]
+  role_arn = module.iam_roles.role_arns["friends_writer"]
 
   vpc_config = {
     subnet_ids         = module.networking.private_subnet_ids
@@ -825,8 +855,9 @@ module "friends" {
   }
 
   environment_variables = {
-    DB_SECRET_NAME = "knotify-${var.environment}-app-user-credential"
-    EDGE_SECRET    = module.cloudfront.edge_secret
+    DB_SECRET_NAME   = "knotify-${var.environment}-app-user-credential"
+    EDGE_SECRET      = module.cloudfront.edge_secret
+    TABLE_CHAT_ROOMS = module.dynamodb.chat_rooms_table_name
 
     # Aurora connection endpoint params — see profile Lambda above for
     # rationale.
@@ -1109,6 +1140,87 @@ resource "aws_lambda_permission" "match_api_gateway" {
 }
 
 # ---------------------------------------------------------------------------
+# knotify-chat-resolver Lambda — story 8.0 scaffold
+#
+# AppSync Lambda resolver for all chat domain fields (Query, Mutation, and
+# Subscription types).  Story 8.0 ships an empty dispatcher; subsequent
+# stories (8.3, 8.4, 8.5, 8.7, 8.8) extend handler.py with concrete
+# (typeName, fieldName) implementations.
+#
+# Placement: inside the VPC (private subnets) to reach Aurora on the private
+# endpoint. DynamoDB is accessed via the VPC endpoint (networking module).
+#
+# The module output lambda_arn is consumed by the AppSync module in story 8.1
+# to register the Lambda data source.
+# ---------------------------------------------------------------------------
+
+module "chat_resolver" {
+  source = "../../modules/chat_resolver"
+
+  function_name = "knotify-chat-resolver-${var.environment}"
+  filename      = "${path.module}/../../../build/chat_resolver.zip"
+  role_arn      = module.iam_roles.role_arns["chat_resolver"]
+
+  layers = [
+    module.observability_layer.layer_arn,
+    module.db_layer.layer_arn,
+  ]
+
+  vpc_config = {
+    subnet_ids         = module.networking.private_subnet_ids
+    security_group_ids = [module.networking.lambda_security_group_id]
+  }
+
+  db_secret_name = "knotify-${var.environment}-app-user-credential"
+  aurora_host    = module.aurora.cluster_endpoint
+  aurora_port    = tostring(module.aurora.port)
+  aurora_dbname  = module.aurora.database_name
+}
+
+# ---------------------------------------------------------------------------
+# AppSync GraphQL API — story 8.1
+#
+# Provisions the knotify chat AppSync API with:
+#   - Primary auth: AMAZON_COGNITO_USER_POOLS (Cognito JWT for client access)
+#   - Secondary auth: AWS_IAM (backend publisher Lambdas: 8.9a, 8.9c)
+#   - Five DynamoDB datasources (five chat domain tables)
+#   - One Lambda datasource (chat_resolver_ds → chat_resolver Lambda)
+#   - log_config at ALL field-level detail to CloudWatch (7-day retention)
+#
+# Schema is a placeholder ("type Query { _placeholder: String }") until
+# story 8.2 ships the full hand-written SDL. The appsync module's main.tf
+# carries a "# Schema body lands in story 8.2" comment marking the swap point.
+# ---------------------------------------------------------------------------
+
+module "appsync" {
+  source = "../../modules/appsync"
+
+  environment = var.environment
+
+  # Cognito User Pool — primary auth mode
+  user_pool_id = module.cognito.user_pool_id
+
+  # IAM roles from iam_roles module (story 8.1)
+  appsync_logs_role_arn   = module.iam_roles.role_arns["appsync_logs"]
+  appsync_invoke_role_arn = module.iam_roles.role_arns["appsync_chat_resolver_invoke"]
+
+  # chat_resolver Lambda datasource
+  chat_resolver_lambda_arn = module.chat_resolver.lambda_arn
+
+  # Five chat domain DynamoDB datasources
+  chat_rooms_table_name           = module.dynamodb.chat_rooms_table_name
+  chat_room_membership_table_name = module.dynamodb.chat_room_membership_table_name
+  chat_messages_table_name        = module.dynamodb.chat_messages_table_name
+  message_reads_table_name        = module.dynamodb.message_reads_table_name
+  notifications_table_name        = module.dynamodb.notifications_table_name
+
+  # DynamoDB service role — the chat_resolver IAM role already has
+  # dynamodb:GetItem / PutItem / Query / etc. on the five chat tables (story 8.0)
+  # and is the natural service role for DDB datasources used by pipeline resolvers.
+  dynamodb_role_arn = module.iam_roles.role_arns["chat_resolver"]
+}
+
+# ---------------------------------------------------------------------------
 # knotify-refresh-deck-view Lambda — story 7.4
 #
 # Dedicated Lambda for refreshing the deck_view materialized view.
@@ -1155,4 +1267,179 @@ module "refresh_deck_view" {
   # Override here for visibility; changing to rate(5 minutes) in a future
   # phase requires only this field.
   schedule_expression = "rate(15 minutes)"
+}
+
+# ---------------------------------------------------------------------------
+# room_state_publisher Lambda — story 8.9a
+#
+# Consumes the ChatRooms DynamoDB Stream (NEW_AND_OLD_IMAGES) and publishes
+# AppSync mutations when room status transitions occur:
+#   active→deactivated : _publishRoomDeactivated(roomId, payload)
+#   deactivated→active : _publishRoomReactivated(roomId, payload)
+#
+# Placement: OUTSIDE the VPC — AppSync HTTPS is reachable via public DNS.
+# No Aurora access — DynamoDB-only (no db layer, no app_user credential needed).
+# SigV4 signing handled by botocore at runtime using the Lambda execution role.
+# ---------------------------------------------------------------------------
+
+module "room_state_publisher" {
+  source = "../../modules/room_state_publisher"
+
+  function_name         = "knotify-room-state-publisher-${var.environment}"
+  filename              = "${path.module}/../../../build/room_state_publisher.zip"
+  role_arn              = module.iam_roles.role_arns["room_state_publisher"]
+  chat_rooms_stream_arn = module.dynamodb.chat_rooms_stream_arn
+  appsync_graphql_url   = module.appsync.graphql_url
+}
+
+# ---------------------------------------------------------------------------
+# notifications_publisher Lambda — story 8.9c
+#
+# Consumes the Notifications DynamoDB Stream (NEW_IMAGE) and publishes AppSync
+# mutations when new notification rows are inserted:
+#   Generic types (friend_request_received, bookmark, match, ...)
+#       → publishNotification(notification: <payload>) via SigV4 (IAM auth mode)
+#   friend_request_accepted
+#       → _publishFriendRequestUpdated(payload: <payload>) via SigV4 (IAM auth mode)
+#
+# Placement: OUTSIDE the VPC — AppSync HTTPS reachable via public DNS.
+# No Aurora access — Notifications DynamoDB stream only.
+# SigV4 signing handled by botocore at runtime using the Lambda execution role.
+#
+# CONSUMER LIMIT: with this ESM the Notifications stream has 2 ESM consumers
+# (notifications_publisher + push_fanout from 8.10), which is the AWS default
+# limit of 2 simultaneous consumers per DynamoDB stream.
+# ---------------------------------------------------------------------------
+
+module "notifications_publisher" {
+  source = "../../modules/notifications_publisher"
+
+  function_name            = "knotify-notifications-publisher-${var.environment}"
+  filename                 = "${path.module}/../../../build/notifications_publisher.zip"
+  role_arn                 = module.iam_roles.role_arns["notifications_publisher"]
+  notifications_stream_arn = module.dynamodb.notifications_stream_arn
+  appsync_graphql_url      = module.appsync.graphql_url
+}
+
+# ---------------------------------------------------------------------------
+# push_fanout Lambda — story 8.10
+#
+# Receives DynamoDB stream events from BOTH ChatMessages and Notifications and
+# fans out push notifications to the Expo Push API.
+#
+# Placement: OUTSIDE the VPC — only touches DynamoDB and Expo (open internet).
+#
+# EXPO_AUTH_MODE=none: dev uses unauthenticated Expo push (acceptable for dev
+# rate limits). No Expo access token secret is provisioned in dev.
+#
+# CONSUMER LIMIT: Notifications stream now has 2 ESM consumers
+# (notifications_publisher + push_fanout), which is the AWS default limit.
+# ---------------------------------------------------------------------------
+
+module "push_fanout" {
+  source = "../../modules/push_fanout"
+
+  function_name            = "knotify-push-fanout-${var.environment}"
+  filename                 = "${path.module}/../../../build/push_fanout.zip"
+  role_arn                 = module.iam_roles.role_arns["push_fanout"]
+  chat_messages_stream_arn = module.dynamodb.chat_messages_stream_arn
+  notifications_stream_arn = module.dynamodb.notifications_stream_arn
+  expo_push_url            = "https://exp.host/--/api/v2/push/send"
+  expo_auth_mode           = "none"
+}
+
+# ---------------------------------------------------------------------------
+# knotify-push-tokens Lambda — story 8.11
+#
+# Handles one route:
+#   POST /v1/push-tokens — register or refresh a device push notification token
+#
+# NOT gated by @require_profile_complete — token registration happens at first
+# app launch before onboarding completes.
+# JWT authorizer is enforced by the HTTP API Cognito authorizer (API Gateway).
+#
+# Uses the push_tokens IAM role (dynamodb:PutItem on PushNotificationTokens only).
+# Placed in the VPC (private subnets + lambda SG) to reach the DynamoDB VPC
+# endpoint, consistent with other REST Lambdas.
+# ---------------------------------------------------------------------------
+
+module "push_tokens" {
+  source = "../../modules/push_tokens"
+
+  function_name = "knotify-push-tokens-${var.environment}"
+  filename      = "${path.module}/../../../build/push_tokens.zip"
+  role_arn      = module.iam_roles.role_arns["push_tokens"]
+
+  layers = [
+    module.observability_layer.layer_arn,
+  ]
+
+  vpc_config = {
+    subnet_ids         = module.networking.private_subnet_ids
+    security_group_ids = [module.networking.lambda_security_group_id]
+  }
+
+  table_push_tokens_name = module.dynamodb.push_tokens_table_name
+}
+
+# ---------------------------------------------------------------------------
+# API Gateway wiring — story 8.11
+#
+# One integration + one route + one Lambda permission.
+# Route uses JWT authorization (Cognito User Pool, same authorizer as all
+# other routes in the HTTP API).
+#
+# Lambda permission source_arn MUST use api_execution_arn (not default_stage_arn).
+# Per hotfix #86: using default_stage_arn causes 5xx with no Lambda invocation
+# log entry because it is the management ARN, not the execute-api principal ARN.
+# ---------------------------------------------------------------------------
+
+resource "aws_apigatewayv2_integration" "push_tokens" {
+  api_id                 = module.api_gateway.api_id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = module.push_tokens.invoke_arn
+  payload_format_version = "2.0"
+}
+
+resource "aws_apigatewayv2_route" "post_push_tokens" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "POST /v1/push-tokens"
+  target             = "integrations/${aws_apigatewayv2_integration.push_tokens.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+# Lambda permission — scoped to the push-tokens route on this API.
+# source_arn uses api_execution_arn (execute-api ARN) per hotfix #86 lesson.
+resource "aws_lambda_permission" "push_tokens_api_gateway" {
+  statement_id  = "AllowPushTokensAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = module.push_tokens.function_name
+  qualifier     = "live"
+  principal     = "apigateway.amazonaws.com"
+  # Scoped to POST /v1/push-tokens via the execute-api ARN.
+  # source_arn = api_execution_arn (NOT default_stage_arn) per hotfix #86.
+  source_arn = "${module.api_gateway.api_execution_arn}/*/*/v1/push-tokens"
+}
+
+# ---------------------------------------------------------------------------
+# stale_token_cleanup Lambda — story 8.12
+#
+# Daily EventBridge cron: scan PushNotificationTokens, delete rows whose
+# last_seen is older than 60 days.
+#
+# Placement: OUTSIDE the VPC — only touches DynamoDB (no Aurora, no external
+# HTTP).  Running outside the VPC avoids the hotfix #106 blackhole trap.
+#
+# No layers required: this Lambda only needs boto3 (bundled in the runtime).
+# It does NOT connect to Aurora and does NOT need knotify_obs or knotify_db.
+# ---------------------------------------------------------------------------
+
+module "stale_token_cleanup" {
+  source = "../../modules/stale_token_cleanup"
+
+  function_name          = "knotify-stale-token-cleanup-${var.environment}"
+  filename               = "${path.module}/../../../build/stale_token_cleanup.zip"
+  role_arn               = module.iam_roles.role_arns["stale_token_cleanup"]
+  table_push_tokens_name = module.dynamodb.push_tokens_table_name
 }

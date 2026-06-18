@@ -35,6 +35,16 @@ resource "aws_dynamodb_table" "chat_rooms" {
     type = "S"
   }
 
+  # DynamoDB Stream — NEW_AND_OLD_IMAGES so the room_state_publisher Lambda
+  # (story 8.9a) can inspect both the old and new status values on MODIFY events
+  # and fire _publishRoomDeactivated / _publishRoomReactivated only when status
+  # actually transitions (active→deactivated or deactivated→active).
+  # NEW_IMAGE alone would be insufficient: the publisher needs the old image to
+  # detect that a status change occurred rather than a different attribute update
+  # (e.g. last_message_at updates must NOT trigger a publish call).
+  stream_enabled   = true
+  stream_view_type = "NEW_AND_OLD_IMAGES"
+
   server_side_encryption {
     enabled = true
   }
