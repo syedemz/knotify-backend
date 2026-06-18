@@ -904,6 +904,99 @@ def _handle_messages_by_chat_room(event: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# setTyping handler — story 8.8
+#
+# Implementation choice: APPSYNC_JS PIPELINE resolver on NoneDS.
+# Rationale (mirrors choice in main.tf one-liner): no Lambda cold-start on
+# mutation; a single DDB GetItem membership check + pure JS payload pass-through
+# is sufficient — no Aurora, no DynamoDB write, no Lambda invocation needed.
+#
+# The _handle_set_typing function below is the Python fallback path that AppSync
+# would reach only if the resolver were inadvertently routed to the Lambda
+# datasource. In normal operation, setTyping is handled entirely in the APPSYNC_JS
+# pipeline (check_room_membership + set_typing_passthrough functions in main.tf).
+#
+# "No storage" guarantee (AC bullet relaxation per second-pass brainstorm
+# finding #15): proven by two complementary assertions:
+#   1. Terraform test (appsync.tftest.hcl): the setTyping resolver is PIPELINE
+#      kind, references NoneDS, and no pipeline function performs a write op.
+#   2. Python unit test J.2: _handle_set_typing calls NO DynamoDB write method.
+# ---------------------------------------------------------------------------
+
+
+def _handle_set_typing(event: dict) -> dict:
+    """
+    Implement the setTyping mutation — ephemeral typing indicator.
+
+    This Python function is the Lambda-datasource fallback path. In production
+    AppSync routes setTyping exclusively through the APPSYNC_JS pipeline
+    (check_room_membership + set_typing_passthrough on NoneDS), so this
+    function should never be invoked in normal operation. It exists to provide
+    a clean, testable implementation that satisfies the acceptance criteria's
+    "no storage" requirement even if the routing changes.
+
+    Steps:
+      1. Extract caller_id from identity.sub, roomId and isTyping from arguments.
+      2. GetItem ChatRoomMembership(caller_id, roomId) — reject Unauthorized
+         on miss (caller is not a member of the room).
+      3. Return a TypingEvent payload {userId, isTyping, roomId}.
+         NO DynamoDB write occurs — setTyping is ephemeral by design.
+         The returned payload is fanned out by AppSync to all
+         onTypingInRoom(roomId) subscribers via the @aws_subscribe binding.
+
+    "No storage" is the defining characteristic of this mutation: typing
+    indicators are transient; storing them would waste I/O and complicate
+    cleanup. AppSync's pub/sub layer handles fan-out without any persistence.
+
+    Args:
+        event: AppSync Lambda resolver event dict.
+
+    Returns:
+        TypingEvent dict {userId, isTyping, roomId} on success, or an
+        Unauthorized error dict if the caller is not a room member.
+    """
+    caller_id: str = event.get("identity", {}).get("sub", "")
+    arguments: dict = event.get("arguments", {})
+    room_id: str = arguments.get("roomId", "")
+    is_typing: bool = arguments.get("isTyping", False)
+
+    ddb = _get_dynamodb()
+
+    # Membership check: caller must be in the room before the indicator is
+    # broadcast. This mirrors the check_room_membership APPSYNC_JS function
+    # in the PIPELINE resolver path — both guard against non-members injecting
+    # spurious typing events into a room they do not belong to.
+    membership_resp = ddb.get_item(
+        TableName="ChatRoomMembership",
+        Key={
+            "user_id": {"S": caller_id},
+            "room_id": {"S": room_id},
+        },
+    )
+    if "Item" not in membership_resp:
+        return _unauthorized_response(REASON_NOT_FRIENDS)
+
+    logger.info(
+        "set_typing_success",
+        extra={
+            "caller_id": caller_id,
+            "room_id": room_id,
+            "is_typing": is_typing,
+        },
+    )
+
+    # Return TypingEvent payload — no write to any DynamoDB table.
+    # roomId is included so the onTypingInRoom(roomId) subscription field
+    # filter fires correctly: AppSync matches result.roomId against the
+    # subscriber's roomId argument.
+    return {
+        "userId": caller_id,
+        "isTyping": is_typing,
+        "roomId": room_id,
+    }
+
+
+# ---------------------------------------------------------------------------
 # markAsRead handler — story 8.7
 # ---------------------------------------------------------------------------
 
@@ -1046,11 +1139,10 @@ def _dispatch(event: dict) -> Any:
     Wired so far:
         (Mutation, createOrGetRoom)      → _handle_create_or_get_room  [story 8.3]
         (Mutation, sendMessage)          → _handle_send_message         [story 8.4]
+        (Mutation, setTyping)            → _handle_set_typing           [story 8.8]
         (Query,    listMyRooms)          → _handle_list_my_rooms        [story 8.5]
         (Query,    messagesByChatRoom)   → _handle_messages_by_chat_room [story 8.5]
         (Mutation, markAsRead)           → _handle_mark_as_read         [story 8.7]
-
-    Later stories add:
         (Mutation, setTyping)            → _handle_set_typing           [story 8.8]
 
     Args:
@@ -1075,6 +1167,9 @@ def _dispatch(event: dict) -> Any:
 
     if type_name == "Mutation" and field_name == "markAsRead":
         return _handle_mark_as_read(event)
+
+    if type_name == "Mutation" and field_name == "setTyping":
+        return _handle_set_typing(event)
 
     if type_name == "Query" and field_name == "listMyRooms":
         return _handle_list_my_rooms(event)

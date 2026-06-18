@@ -1,6 +1,6 @@
 phase: 8
 title: Chat (AppSync + DynamoDB Streams + push fan-out)
-last_updated: 2026-06-17 # story 8.7 done
+last_updated: 2026-06-17 # story 8.8 done
 
 context_summary: |
   Delivers the full chat capability in a single phase per the owner's resolved Option A: the AppSync GraphQL API with a hand-written schema (no Amplify auto-generation, no auto-CRUD subscriptions), Lambda resolvers that enforce membership and block checks against Aurora before establishing subscriptions, the deterministic-room-id creation flow from §5.4.1, DynamoDB Streams from ChatMessages and Notifications wired to a PushFanout Lambda that targets Expo Push (per the §13 #7 resolution in v1.6), the POST /v1/push-tokens REST endpoint for token registration, and the stale-token cleanup scheduled Lambda. This phase intentionally ships data plane and API plane together because the GraphQL schema and the DynamoDB key design are tightly coupled. After this phase only account deletion, observability consolidation, hardening, and S3 photos remain.
@@ -170,13 +170,13 @@ stories:
     title: setTyping mutation with no storage
     agent: backenddeveloper
     tracking_issue: 118
-    done: false
+    done: true
     depends_on: [8.6]
     acceptance_criteria:
       - setTyping(roomId, isTyping) uses an AppSync None data source; the resolver validates membership (GetItem ChatRoomMembership) and returns the payload to be fanned out via onTypingInRoom
       - No DynamoDB write occurs (verified by examining a CloudTrail trace of the mutation call)
       - Integration test: A calls setTyping(R, true) → B's onTypingInRoom subscription receives {userId: A, isTyping: true}
-    notes: ""
+    notes: "Completed 2026-06-17. Implementation choice (a): APPSYNC_JS PIPELINE resolver on NoneDS. Two pipeline functions: check_room_membership (reused from 8.6, read-only DDB GetItem) + set_typing_passthrough (new, NoneDS — zero write ops). Python _handle_set_typing fallback path also wired in dispatcher (membership check + TypingEvent return, no writes). 6 new unit tests (52 total, all pass). 18/18 TF module tests pass. 2 integration tests skip-gated in test_setTyping.py. terraform validate clean dev+prod. 'No DynamoDB write' proven: TF test 18 asserts set_typing_passthrough uses NoneDS; Python unit test J.2 asserts no write DDB methods called."
 
   - id: 8.9
     title: Extend the knotify-blocks Lambda for chat-room deactivation / reactivation

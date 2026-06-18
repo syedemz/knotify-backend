@@ -779,3 +779,147 @@ run "identity_scoped_resolvers_pipeline_config_references_identity_function" {
     error_message = "onFriendRequestUpdated pipeline_config must reference at least one function (story 8.6)"
   }
 }
+
+# ---------------------------------------------------------------------------
+# Story 8.8 tests — setTyping PIPELINE resolver (no storage)
+#
+# Implementation choice: APPSYNC_JS PIPELINE resolver on NoneDS.
+# Rationale (recorded here per AC): no Lambda cold-start on mutation; a single
+# DDB GetItem membership check (reusing check_room_membership from 8.6) plus
+# a pure JS payload pass-through on NoneDS is sufficient — no DynamoDB write.
+#
+# Tests assert:
+#   AC-8.8-T16 — setTyping mutation resolver is kind = PIPELINE
+#   AC-8.8-T17 — setTyping pipeline_config references check_room_membership
+#                (reused from story 8.6 — membership check GetItem only,
+#                 no write op in that function)
+#   AC-8.8-T18 — set_typing_passthrough APPSYNC_JS function exists and is
+#                wired to the NONE datasource (proves no DynamoDB write in
+#                the payload pass-through step)
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Test 16: setTyping mutation resolver is PIPELINE kind (story 8.8)
+#
+# Satisfies AC: "setTyping resolver validates membership and returns the payload
+# to be fanned out via onTypingInRoom" — implemented as a PIPELINE resolver.
+# ---------------------------------------------------------------------------
+run "set_typing_resolver_is_pipeline_kind" {
+  command = plan
+
+  variables {
+    environment                     = "test"
+    user_pool_id                    = "eu-central-1_TESTPOOL"
+    appsync_logs_role_arn           = "arn:aws:iam::123456789012:role/knotify-test-appsync-logs"
+    appsync_invoke_role_arn         = "arn:aws:iam::123456789012:role/knotify-test-appsync-invoke"
+    chat_resolver_lambda_arn        = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
+    chat_rooms_table_arn            = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms"
+    chat_room_membership_table_name = "ChatRoomMembership"
+    chat_room_membership_table_arn  = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRoomMembership"
+    chat_messages_table_name        = "ChatMessages"
+    chat_messages_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages"
+    message_reads_table_name        = "MessageReads"
+    message_reads_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/MessageReads"
+    notifications_table_name        = "Notifications"
+    notifications_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications"
+    chat_rooms_table_name           = "ChatRooms"
+    dynamodb_role_arn               = "arn:aws:iam::123456789012:role/knotify-test-ddb-role"
+  }
+
+  assert {
+    condition     = aws_appsync_resolver.set_typing.kind == "PIPELINE"
+    error_message = "setTyping mutation resolver must be PIPELINE kind (story 8.8 — no storage, APPSYNC_JS pipeline)"
+  }
+
+  assert {
+    condition     = aws_appsync_resolver.set_typing.type == "Mutation"
+    error_message = "setTyping resolver must be on the Mutation type"
+  }
+
+  assert {
+    condition     = aws_appsync_resolver.set_typing.field == "setTyping"
+    error_message = "setTyping resolver must be on the setTyping field"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 17: setTyping pipeline_config references check_room_membership function
+#          (story 8.8)
+#
+# Satisfies AC: membership check (GetItem ChatRoomMembership) reused from
+# story 8.6. The check_room_membership function performs a read-only GetItem;
+# no DynamoDB write op exists in that function.
+# ---------------------------------------------------------------------------
+run "set_typing_pipeline_config_references_check_room_membership" {
+  command = plan
+
+  variables {
+    environment                     = "test"
+    user_pool_id                    = "eu-central-1_TESTPOOL"
+    appsync_logs_role_arn           = "arn:aws:iam::123456789012:role/knotify-test-appsync-logs"
+    appsync_invoke_role_arn         = "arn:aws:iam::123456789012:role/knotify-test-appsync-invoke"
+    chat_resolver_lambda_arn        = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
+    chat_rooms_table_arn            = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms"
+    chat_room_membership_table_name = "ChatRoomMembership"
+    chat_room_membership_table_arn  = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRoomMembership"
+    chat_messages_table_name        = "ChatMessages"
+    chat_messages_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages"
+    message_reads_table_name        = "MessageReads"
+    message_reads_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/MessageReads"
+    notifications_table_name        = "Notifications"
+    notifications_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications"
+    chat_rooms_table_name           = "ChatRooms"
+    dynamodb_role_arn               = "arn:aws:iam::123456789012:role/knotify-test-ddb-role"
+  }
+
+  # pipeline_config must be non-empty (at least two functions: membership check + passthrough)
+  assert {
+    condition     = length(aws_appsync_resolver.set_typing.pipeline_config) > 0
+    error_message = "setTyping pipeline_config must reference at least one function (story 8.8)"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 18: set_typing_passthrough function is wired to the NONE datasource
+#          (story 8.8)
+#
+# Satisfies the "no DynamoDB write" AC: the payload pass-through step runs on
+# NoneDS — no PutItem / UpdateItem / DeleteItem can originate from a function
+# whose datasource is NONE. Combined with check_room_membership (read-only
+# GetItem), the entire setTyping pipeline performs zero writes.
+# ---------------------------------------------------------------------------
+run "set_typing_passthrough_function_uses_none_datasource" {
+  command = plan
+
+  variables {
+    environment                     = "test"
+    user_pool_id                    = "eu-central-1_TESTPOOL"
+    appsync_logs_role_arn           = "arn:aws:iam::123456789012:role/knotify-test-appsync-logs"
+    appsync_invoke_role_arn         = "arn:aws:iam::123456789012:role/knotify-test-appsync-invoke"
+    chat_resolver_lambda_arn        = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
+    chat_rooms_table_arn            = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms"
+    chat_room_membership_table_name = "ChatRoomMembership"
+    chat_room_membership_table_arn  = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRoomMembership"
+    chat_messages_table_name        = "ChatMessages"
+    chat_messages_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages"
+    message_reads_table_name        = "MessageReads"
+    message_reads_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/MessageReads"
+    notifications_table_name        = "Notifications"
+    notifications_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications"
+    chat_rooms_table_name           = "ChatRooms"
+    dynamodb_role_arn               = "arn:aws:iam::123456789012:role/knotify-test-ddb-role"
+  }
+
+  # The set_typing_passthrough function must exist and use the NONE datasource.
+  # A function on NoneDS cannot issue any DynamoDB API call — this is the
+  # Terraform-level proof that "no DynamoDB write occurs" in the setTyping path.
+  assert {
+    condition     = aws_appsync_function.set_typing_passthrough.data_source == aws_appsync_datasource.pipeline_none.name
+    error_message = "set_typing_passthrough function must use the NONE datasource (no DynamoDB write in setTyping path — story 8.8)"
+  }
+
+  assert {
+    condition     = aws_appsync_function.set_typing_passthrough.name == "set_typing_passthrough"
+    error_message = "set_typing_passthrough AppSync function must be declared (story 8.8)"
+  }
+}

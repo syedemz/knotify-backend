@@ -1221,3 +1221,195 @@ def test_given_profile_incomplete_when_mark_as_read_via_handler_then_unauthorize
     )
     assert result.get("reason") == "PROFILE_INCOMPLETE"
     mock_ddb.get_item.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Section J — setTyping resolver (story 8.8)
+#
+# setTyping(roomId, isTyping) is an APPSYNC_JS PIPELINE resolver wired to the
+# NONE datasource. It performs no DynamoDB write. The membership check reuses
+# the check_room_membership pipeline function from story 8.6.
+#
+# Because setTyping is handled entirely in the APPSYNC_JS pipeline (not routed
+# through the chat_resolver Lambda), the Python dispatcher still returns
+# Unimplemented for (Mutation, setTyping) — the AC does not require a Python
+# handler; the authoritative proof of "no DynamoDB write" is the Terraform
+# assertion that the resolver's pipeline contains no write operation and only
+# references NoneDS or read-only DDB functions.
+#
+# Python-level assertions in this section prove:
+#   J.1  (Mutation, setTyping) routed in dispatcher returns Unimplemented
+#        (because setTyping is APPSYNC_JS, not Lambda-backed — no Python handler).
+#        This is intentional: if AppSync ever mistakenly routes setTyping to the
+#        Lambda datasource, it will receive a clear Unimplemented error rather
+#        than silently doing nothing.
+#   J.2  _handle_set_typing does NOT call any DynamoDB write method
+#        (put_item, update_item, delete_item, transact_write_items) — asserts
+#        the "no storage" guarantee at the unit-test level for the Python path.
+#   J.3  _handle_set_typing returns a TypingEvent-shaped dict
+#        {userId, isTyping, roomId} on a successful membership check (the
+#        fallback path if AppSync ever routes to Lambda for any reason).
+#   J.4  _handle_set_typing returns Unauthorized when the caller is not a member.
+# ---------------------------------------------------------------------------
+
+
+def test_given_set_typing_when_dispatched_then_dispatcher_routes_to_handler() -> None:
+    """given (Mutation, setTyping) after story 8.8, when _dispatch called,
+    then result is NOT Unimplemented — the route is wired in the dispatcher."""
+    mod = _import_handler()
+
+    mock_ddb = MagicMock()
+    # GetItem returns membership present — caller is in the room
+    mock_ddb.get_item.return_value = {
+        "Item": {
+            "user_id": {"S": "caller-sub-typing"},
+            "room_id": {"S": "room-typing-abc"},
+        }
+    }
+    mod._dynamodb_client = mock_ddb
+
+    event = _make_appsync_event("Mutation", "setTyping", user_sub="caller-sub-typing")
+    event["arguments"] = {"roomId": "room-typing-abc", "isTyping": True}
+    result = mod._dispatch(event)
+
+    assert result.get("errorType") != "Unimplemented", (
+        f"setTyping must be routed but returned Unimplemented: {result}"
+    )
+
+
+def test_given_set_typing_handler_when_called_with_member_then_no_ddb_write_occurs() -> None:
+    """given _handle_set_typing called with a member caller, then NO DynamoDB
+    write method (put_item, update_item, delete_item, transact_write_items)
+    is invoked — the 'no storage' guarantee in the Python path."""
+    mod = _import_handler()
+
+    mock_ddb = MagicMock()
+    # GetItem returns membership present
+    mock_ddb.get_item.return_value = {
+        "Item": {
+            "user_id": {"S": "caller-sub-nostoring"},
+            "room_id": {"S": "room-nostoring"},
+        }
+    }
+    mod._dynamodb_client = mock_ddb
+
+    event = _make_appsync_event("Mutation", "setTyping", user_sub="caller-sub-nostoring")
+    event["arguments"] = {"roomId": "room-nostoring", "isTyping": True}
+    mod._handle_set_typing(event)
+
+    # Assert no write methods were called
+    mock_ddb.put_item.assert_not_called()
+    mock_ddb.update_item.assert_not_called()
+    mock_ddb.delete_item.assert_not_called()
+    mock_ddb.transact_write_items.assert_not_called()
+
+
+def test_given_set_typing_handler_when_called_with_non_member_then_unauthorized() -> None:
+    """given caller not in room (ChatRoomMembership GetItem returns no Item),
+    when _handle_set_typing is called, then returns Unauthorized and makes
+    no DynamoDB write."""
+    mod = _import_handler()
+
+    mock_ddb = MagicMock()
+    # No Item key → membership absent
+    mock_ddb.get_item.return_value = {}
+    mod._dynamodb_client = mock_ddb
+
+    event = _make_appsync_event("Mutation", "setTyping", user_sub="outsider-typing")
+    event["arguments"] = {"roomId": "room-typing-xyz", "isTyping": False}
+    result = mod._handle_set_typing(event)
+
+    assert result.get("errorType") == "Unauthorized", (
+        f"Expected Unauthorized for non-member, got: {result}"
+    )
+    # No write must occur regardless
+    mock_ddb.put_item.assert_not_called()
+    mock_ddb.update_item.assert_not_called()
+    mock_ddb.delete_item.assert_not_called()
+    mock_ddb.transact_write_items.assert_not_called()
+
+
+def test_given_set_typing_handler_when_member_calls_with_is_typing_true_then_returns_typing_event() -> None:
+    """given a member caller sends isTyping=True, when _handle_set_typing returns,
+    then the result is a TypingEvent dict: {userId, isTyping, roomId}."""
+    mod = _import_handler()
+
+    user_id = "user-sub-typing-event"
+    room_id = "room-typing-event"
+
+    mock_ddb = MagicMock()
+    mock_ddb.get_item.return_value = {
+        "Item": {"user_id": {"S": user_id}, "room_id": {"S": room_id}}
+    }
+    mod._dynamodb_client = mock_ddb
+
+    event = _make_appsync_event("Mutation", "setTyping", user_sub=user_id)
+    event["arguments"] = {"roomId": room_id, "isTyping": True}
+    result = mod._handle_set_typing(event)
+
+    assert "errorType" not in result, f"Expected TypingEvent payload, got error: {result}"
+    assert result.get("userId") == user_id, (
+        f"Expected userId={user_id!r} in TypingEvent, got: {result}"
+    )
+    assert result.get("isTyping") is True, (
+        f"Expected isTyping=True in TypingEvent, got: {result}"
+    )
+    assert result.get("roomId") == room_id, (
+        f"Expected roomId={room_id!r} in TypingEvent (drives onTypingInRoom field filter), "
+        f"got: {result}"
+    )
+
+
+def test_given_set_typing_handler_when_member_calls_with_is_typing_false_then_typing_event_reflects_false() -> None:
+    """given a member caller sends isTyping=False, when _handle_set_typing returns,
+    then the TypingEvent has isTyping=False."""
+    mod = _import_handler()
+
+    user_id = "user-sub-stop-typing"
+    room_id = "room-stop-typing"
+
+    mock_ddb = MagicMock()
+    mock_ddb.get_item.return_value = {
+        "Item": {"user_id": {"S": user_id}, "room_id": {"S": room_id}}
+    }
+    mod._dynamodb_client = mock_ddb
+
+    event = _make_appsync_event("Mutation", "setTyping", user_sub=user_id)
+    event["arguments"] = {"roomId": room_id, "isTyping": False}
+    result = mod._handle_set_typing(event)
+
+    assert result.get("isTyping") is False, (
+        f"Expected isTyping=False in TypingEvent, got: {result}"
+    )
+
+
+def test_given_set_typing_handler_when_called_then_only_one_ddb_get_item_is_called() -> None:
+    """given _handle_set_typing called for a member, then exactly one GetItem
+    (membership check) and no other DDB operations are performed."""
+    mod = _import_handler()
+
+    user_id = "user-sub-one-get"
+    room_id = "room-one-get"
+
+    mock_ddb = MagicMock()
+    mock_ddb.get_item.return_value = {
+        "Item": {"user_id": {"S": user_id}, "room_id": {"S": room_id}}
+    }
+    mod._dynamodb_client = mock_ddb
+
+    event = _make_appsync_event("Mutation", "setTyping", user_sub=user_id)
+    event["arguments"] = {"roomId": room_id, "isTyping": True}
+    mod._handle_set_typing(event)
+
+    # Exactly one GetItem (membership check)
+    assert mock_ddb.get_item.call_count == 1, (
+        f"Expected exactly 1 GetItem call, got {mock_ddb.get_item.call_count}"
+    )
+    # No query, scan, or write operations
+    mock_ddb.query.assert_not_called()
+    mock_ddb.scan.assert_not_called()
+    mock_ddb.put_item.assert_not_called()
+    mock_ddb.update_item.assert_not_called()
+    mock_ddb.delete_item.assert_not_called()
+    mock_ddb.transact_write_items.assert_not_called()
+    mock_ddb.batch_write_item.assert_not_called()

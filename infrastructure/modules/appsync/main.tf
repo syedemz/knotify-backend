@@ -491,3 +491,116 @@ resource "aws_appsync_resolver" "on_friend_request_updated" {
   request_template  = "{}"
   response_template = "$util.toJson($ctx.result)"
 }
+
+# ---------------------------------------------------------------------------
+# Story 8.8 — setTyping mutation PIPELINE resolver (no storage)
+#
+# Implementation choice: APPSYNC_JS PIPELINE resolver on NoneDS.
+# Rationale: no Lambda cold-start on mutation; a single DDB GetItem membership
+# check (reusing check_room_membership from 8.6) plus a pure JS payload
+# pass-through on NoneDS is sufficient — no DynamoDB write, no Lambda invocation.
+#
+# Pipeline:
+#   1. check_room_membership (reused from 8.6) — DDB GetItem on
+#      ChatRoomMembership(identity.sub, roomId). Rejects Unauthorized on miss.
+#      This is a read-only operation; no write occurs in this function.
+#   2. set_typing_passthrough (NoneDS) — constructs the TypingEvent payload
+#      {userId: identity.sub, isTyping: args.isTyping, roomId: args.roomId}
+#      and returns it. NoneDS guarantees no DynamoDB API call is possible.
+#
+# "No DynamoDB write" proof (brainstorm finding #15 relaxation):
+#   - check_room_membership datasource = ChatRoomMembership DDB → read-only GetItem
+#   - set_typing_passthrough datasource = NoneDS → zero DDB operations
+#   - Neither function contains a PutItem / UpdateItem / DeleteItem call
+#   - Terraform tests 16–18 in appsync.tftest.hcl assert this structure
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Pipeline function: set_typing_passthrough
+#
+# Runs on NoneDS — no data store interaction is possible from this datasource.
+# Constructs the TypingEvent payload from the resolver context and returns it.
+# AppSync's @aws_subscribe(mutations: ["setTyping"]) on onTypingInRoom picks up
+# this return value and fans it out to subscribers whose roomId argument matches
+# the payload's roomId field.
+# ---------------------------------------------------------------------------
+
+resource "aws_appsync_function" "set_typing_passthrough" {
+  api_id      = aws_appsync_graphql_api.knotify.id
+  name        = "set_typing_passthrough"
+  description = "Pipeline function: constructs TypingEvent payload {userId, isTyping, roomId} on NoneDS — no DynamoDB write (story 8.8)."
+  data_source = aws_appsync_datasource.pipeline_none.name
+
+  # APPSYNC_JS runtime on NoneDS — no external data store call, no write op.
+  runtime {
+    name            = "APPSYNC_JS"
+    runtime_version = "1.0.0"
+  }
+
+  code = <<-APPSYNC_JS
+    // set_typing_passthrough — APPSYNC_JS pipeline function (story 8.8)
+    // Runtime: APPSYNC_JS on NoneDS — no Lambda cold-start, no DynamoDB write.
+    //
+    // This is the second (and final) function in the setTyping pipeline.
+    // check_room_membership (the first function) has already verified membership
+    // via a read-only DDB GetItem.  This function constructs the TypingEvent
+    // payload that AppSync broadcasts to onTypingInRoom(roomId) subscribers.
+    //
+    // NoneDS guarantees this function cannot issue any DynamoDB API call —
+    // "no storage" is enforced at the datasource level, not just by convention.
+
+    import { util } from "@aws-appsync/utils";
+
+    export function request(ctx) {
+      // NoneDS request must return an empty object — no I/O is performed.
+      return {};
+    }
+
+    export function response(ctx) {
+      if (ctx.error) {
+        util.error(ctx.error.message, ctx.error.type);
+      }
+      // Build TypingEvent matching schema.graphql's TypingEvent type:
+      //   type TypingEvent { userId: ID!, isTyping: Boolean!, roomId: ID! }
+      // roomId is included so the onTypingInRoom(roomId) field filter fires:
+      // AppSync matches result.roomId against each subscriber's roomId argument.
+      return {
+        userId:   ctx.identity.sub,
+        isTyping: ctx.args.isTyping,
+        roomId:   ctx.args.roomId,
+      };
+    }
+  APPSYNC_JS
+}
+
+# ---------------------------------------------------------------------------
+# PIPELINE resolver for Mutation.setTyping
+#
+# Pipeline functions (in order):
+#   1. check_room_membership — GetItem ChatRoomMembership(identity.sub, roomId)
+#                              Rejects Unauthorized on miss. Read-only.
+#   2. set_typing_passthrough — Builds TypingEvent payload on NoneDS. No write.
+#
+# The resolver is attached to the Mutation type so AppSync triggers it when a
+# client calls setTyping(roomId, isTyping).  The pipeline returns the TypingEvent
+# payload; @aws_subscribe(mutations: ["setTyping"]) on onTypingInRoom picks it
+# up and fans it out via the existing roomId field filter (story 8.2 schema).
+# ---------------------------------------------------------------------------
+
+resource "aws_appsync_resolver" "set_typing" {
+  api_id = aws_appsync_graphql_api.knotify.id
+  type   = "Mutation"
+  field  = "setTyping"
+  kind   = "PIPELINE"
+
+  pipeline_config {
+    functions = [
+      aws_appsync_function.check_room_membership.function_id,
+      aws_appsync_function.set_typing_passthrough.function_id,
+    ]
+  }
+
+  # Passthrough request/response for PIPELINE resolvers.
+  request_template  = "{}"
+  response_template = "$util.toJson($ctx.result)"
+}
