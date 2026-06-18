@@ -24,6 +24,16 @@ Test coverage for story 8.0 (empty dispatcher):
 Test coverage for story 8.4 (sendMessage — token derivation):
   C. derive_client_request_token — pure function: same inputs produce same hash;
      differing inputs (content diff by one byte, second ±1) produce different hashes.
+
+Test coverage for story 8.5 (listMyRooms + messagesByChatRoom):
+  D. Pagination helpers — _encode_next_token / _decode_next_token are pure
+     inverse functions; None in → None out; non-None dict round-trips losslessly.
+  E. Dispatcher routing — (Query, listMyRooms) and (Query, messagesByChatRoom)
+     are no longer Unimplemented once story 8.5 is wired.
+  F. listMyRooms sort order — rooms returned in last_message_at descending order.
+  G. messagesByChatRoom membership gate — non-member caller returns Unauthorized.
+  H. @require_profile_complete_appsync gate applied to both resolvers (via handler
+     entry point, same pattern as story 8.3 IT-8.3-4).
 """
 
 from __future__ import annotations
@@ -430,3 +440,476 @@ def test_given_any_inputs_when_derive_token_called_then_result_is_64_char_hex_st
     assert isinstance(token, str)
     assert len(token) == 64
     assert all(c in "0123456789abcdef" for c in token)
+
+
+# ---------------------------------------------------------------------------
+# Section D — Pagination helpers (story 8.5)
+#
+# _encode_next_token / _decode_next_token are pure, stateless, and inverse of
+# each other.  Their correctness underpins the nextToken contract exposed in the
+# GraphQL schema's MessageConnection.nextToken field.
+# ---------------------------------------------------------------------------
+
+
+def test_given_none_input_when_encode_next_token_called_then_returns_none() -> None:
+    """given None, when _encode_next_token called, then returns None (no cursor)."""
+    mod = _import_handler()
+    assert mod._encode_next_token(None) is None
+
+
+def test_given_none_input_when_decode_next_token_called_then_returns_none() -> None:
+    """given None, when _decode_next_token called, then returns None (no cursor)."""
+    mod = _import_handler()
+    assert mod._decode_next_token(None) is None
+
+
+def test_given_dict_when_encode_then_decode_returns_original_dict() -> None:
+    """given a DynamoDB LastEvaluatedKey dict, when encode then decode, then
+    round-trip is lossless (same dict recovered)."""
+    mod = _import_handler()
+    original = {
+        "room_id": {"S": "some-room-id"},
+        "sk": {"S": "2024-01-01T00:00:00+00:00#01ARZ3NDEKTSV4RRFFQ69G5FAV"},
+    }
+    token = mod._encode_next_token(original)
+    assert token is not None
+    assert isinstance(token, str)
+    recovered = mod._decode_next_token(token)
+    assert recovered == original
+
+
+def test_given_encoded_token_when_decoded_then_result_is_dict() -> None:
+    """given a token produced by _encode_next_token, when decoded, then result is a dict."""
+    mod = _import_handler()
+    source = {"room_id": {"S": "r1"}, "sk": {"S": "ts#ulid"}}
+    token = mod._encode_next_token(source)
+    result = mod._decode_next_token(token)
+    assert isinstance(result, dict)
+
+
+def test_given_two_distinct_dicts_when_encoded_then_tokens_differ() -> None:
+    """given two different LastEvaluatedKey dicts, when encoded, then tokens are different."""
+    mod = _import_handler()
+    token_a = mod._encode_next_token({"sk": {"S": "cursor-a"}})
+    token_b = mod._encode_next_token({"sk": {"S": "cursor-b"}})
+    assert token_a != token_b
+
+
+def test_given_empty_dict_when_encode_then_decode_returns_empty_dict() -> None:
+    """given an empty dict (degenerate LastEvaluatedKey), when encode then decode,
+    then empty dict is recovered."""
+    mod = _import_handler()
+    token = mod._encode_next_token({})
+    assert token is not None
+    recovered = mod._decode_next_token(token)
+    assert recovered == {}
+
+
+# ---------------------------------------------------------------------------
+# Section E — Dispatcher routing for listMyRooms + messagesByChatRoom (story 8.5)
+#
+# After story 8.5 is wired, (Query, listMyRooms) and (Query, messagesByChatRoom)
+# must NOT return an Unimplemented error.
+# ---------------------------------------------------------------------------
+
+
+def test_given_list_my_rooms_query_when_dispatched_then_not_unimplemented() -> None:
+    """given (Query, listMyRooms) after story 8.5, when _dispatch called,
+    then result is NOT Unimplemented (it is a list, not an error dict)."""
+    mod = _import_handler()
+
+    # Mock DDB: Query returns empty Items (no memberships) so listMyRooms returns []
+    mock_ddb = MagicMock()
+    mock_ddb.query.return_value = {"Items": []}
+    mod._dynamodb_client = mock_ddb
+
+    event = _make_appsync_event("Query", "listMyRooms")
+    result = mod._dispatch(event)
+    # listMyRooms returns a list on success (not an error dict)
+    is_unimplemented = isinstance(result, dict) and result.get("errorType") == "Unimplemented"
+    assert not is_unimplemented, (
+        f"listMyRooms must be routed but returned Unimplemented: {result}"
+    )
+
+
+def test_given_messages_by_chat_room_query_when_dispatched_then_not_unimplemented() -> None:
+    """given (Query, messagesByChatRoom) after story 8.5, when _dispatch called,
+    then result is NOT Unimplemented."""
+    mod = _import_handler()
+
+    # Mock DDB: GetItem returns no Item → non-member → Unauthorized
+    # (Unauthorized is the expected path when the caller is not in the room)
+    mock_ddb = MagicMock()
+    mock_ddb.get_item.return_value = {}  # no Item key → membership absent
+    mod._dynamodb_client = mock_ddb
+
+    event = _make_appsync_event("Query", "messagesByChatRoom")
+    event["arguments"] = {"roomId": "test-room-id"}
+    result = mod._dispatch(event)
+    assert result.get("errorType") != "Unimplemented", (
+        f"messagesByChatRoom must be routed but returned Unimplemented: {result}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Section F — listMyRooms sort order (story 8.5)
+#
+# The handler must sort ChatRooms by last_message_at descending before
+# returning the list.  BatchGetItem responses are unordered by spec so the
+# sort must happen in Python, not be assumed from DynamoDB.
+# ---------------------------------------------------------------------------
+
+
+def test_given_two_rooms_with_different_last_message_at_when_list_my_rooms_then_sorted_descending() -> None:
+    """given two rooms with different last_message_at, when listMyRooms is called,
+    then they are returned with the most-recent room first (descending order)."""
+    mod = _import_handler()
+
+    user_id = "test-user-sub-sort"
+    room_old_id = "room-older-abc"
+    room_new_id = "room-newer-xyz"
+
+    mock_ddb = MagicMock()
+
+    # Query(ChatRoomMembership, PK=user_id) returns two membership rows
+    mock_ddb.query.return_value = {
+        "Items": [
+            {"user_id": {"S": user_id}, "room_id": {"S": room_old_id}},
+            {"user_id": {"S": user_id}, "room_id": {"S": room_new_id}},
+        ]
+    }
+
+    # BatchGetItem returns the two rooms in arbitrary order (DynamoDB does not
+    # guarantee order on BatchGetItem responses)
+    mock_ddb.batch_get_item.return_value = {
+        "Responses": {
+            "ChatRooms": [
+                # Intentionally return the newer room second to prove Python sort
+                {
+                    "room_id": {"S": room_old_id},
+                    "status": {"S": "active"},
+                    "friendship_active": {"BOOL": True},
+                    "last_message_at": {"S": "2024-01-01T10:00:00+00:00"},
+                },
+                {
+                    "room_id": {"S": room_new_id},
+                    "status": {"S": "active"},
+                    "friendship_active": {"BOOL": True},
+                    "last_message_at": {"S": "2024-01-02T10:00:00+00:00"},
+                },
+            ]
+        },
+        "UnprocessedKeys": {},
+    }
+
+    mod._dynamodb_client = mock_ddb
+
+    event = _make_appsync_event("Query", "listMyRooms", user_sub=user_id)
+    result = mod._dispatch(event)
+
+    assert isinstance(result, list), f"Expected list, got: {type(result)} — {result}"
+    assert len(result) == 2, f"Expected 2 rooms, got: {len(result)}"
+    # Newer room must be first (descending by last_message_at)
+    assert result[0]["roomId"] == room_new_id, (
+        f"Expected newer room first, got: {result[0]['roomId']!r}"
+    )
+    assert result[1]["roomId"] == room_old_id, (
+        f"Expected older room second, got: {result[1]['roomId']!r}"
+    )
+
+
+def test_given_no_rooms_when_list_my_rooms_then_returns_empty_list() -> None:
+    """given a user with no rooms, when listMyRooms is called, then returns []."""
+    mod = _import_handler()
+
+    mock_ddb = MagicMock()
+    mock_ddb.query.return_value = {"Items": []}
+    mod._dynamodb_client = mock_ddb
+
+    event = _make_appsync_event("Query", "listMyRooms")
+    result = mod._dispatch(event)
+
+    assert result == [], f"Expected empty list, got: {result}"
+
+
+def test_given_rooms_without_last_message_at_when_list_my_rooms_then_no_error() -> None:
+    """given rooms with no last_message_at (never sent a message), when listMyRooms,
+    then handler does not raise (rooms sort to the end, no KeyError)."""
+    mod = _import_handler()
+
+    user_id = "test-user-no-msg"
+    room_id = "room-no-messages"
+
+    mock_ddb = MagicMock()
+    mock_ddb.query.return_value = {
+        "Items": [{"user_id": {"S": user_id}, "room_id": {"S": room_id}}]
+    }
+    mock_ddb.batch_get_item.return_value = {
+        "Responses": {
+            "ChatRooms": [
+                {
+                    "room_id": {"S": room_id},
+                    "status": {"S": "active"},
+                    "friendship_active": {"BOOL": True},
+                    # last_message_at deliberately absent
+                }
+            ]
+        },
+        "UnprocessedKeys": {},
+    }
+    mod._dynamodb_client = mock_ddb
+
+    event = _make_appsync_event("Query", "listMyRooms", user_sub=user_id)
+    result = mod._dispatch(event)
+    assert isinstance(result, list)
+    assert len(result) == 1
+
+
+# ---------------------------------------------------------------------------
+# Section G — messagesByChatRoom membership gate (story 8.5)
+# ---------------------------------------------------------------------------
+
+
+def test_given_non_member_caller_when_messages_by_chat_room_then_unauthorized() -> None:
+    """given a caller not in the room (ChatRoomMembership GetItem returns no Item),
+    when messagesByChatRoom is called, then returns Unauthorized."""
+    mod = _import_handler()
+
+    mock_ddb = MagicMock()
+    # GetItem returns no Item → membership absent
+    mock_ddb.get_item.return_value = {}
+    mod._dynamodb_client = mock_ddb
+
+    event = _make_appsync_event("Query", "messagesByChatRoom")
+    event["arguments"] = {"roomId": "any-room-id"}
+    result = mod._dispatch(event)
+
+    assert result.get("errorType") == "Unauthorized", (
+        f"Expected Unauthorized for non-member, got: {result}"
+    )
+
+
+def test_given_member_caller_no_messages_when_messages_by_chat_room_then_empty_connection() -> None:
+    """given a member caller and no messages in room, when messagesByChatRoom,
+    then returns MessageConnection with empty items and no nextToken."""
+    mod = _import_handler()
+
+    user_id = "member-user-id"
+    room_id = "room-with-no-messages"
+
+    mock_ddb = MagicMock()
+
+    # GetItem for membership check succeeds (Item present)
+    mock_ddb.get_item.return_value = {
+        "Item": {"user_id": {"S": user_id}, "room_id": {"S": room_id}}
+    }
+    # Query for messages returns empty Items
+    mock_ddb.query.return_value = {"Items": []}
+
+    mod._dynamodb_client = mock_ddb
+
+    event = _make_appsync_event("Query", "messagesByChatRoom", user_sub=user_id)
+    event["arguments"] = {"roomId": room_id}
+    result = mod._dispatch(event)
+
+    assert "errorType" not in result, f"Expected success but got error: {result}"
+    assert "items" in result, f"Expected 'items' key in result, got: {result.keys()}"
+    assert result["items"] == [], f"Expected empty items, got: {result['items']}"
+    assert result.get("nextToken") is None
+
+
+def test_given_member_caller_with_messages_when_messages_by_chat_room_then_returns_items() -> None:
+    """given a member caller and two messages, when messagesByChatRoom, then
+    returns MessageConnection with two Message items."""
+    mod = _import_handler()
+
+    user_id = "member-user-id-2"
+    room_id = "room-with-messages"
+
+    mock_ddb = MagicMock()
+    mock_ddb.get_item.return_value = {
+        "Item": {"user_id": {"S": user_id}, "room_id": {"S": room_id}}
+    }
+    mock_ddb.query.return_value = {
+        "Items": [
+            {
+                "room_id": {"S": room_id},
+                "sk": {"S": "2024-01-02T00:00:00+00:00#ULID2"},
+                "sender_id": {"S": "other-user"},
+                "content": {"S": "hello"},
+                "content_type": {"S": "text"},
+                "delivered_at": {"S": "2024-01-02T00:00:00+00:00"},
+            },
+            {
+                "room_id": {"S": room_id},
+                "sk": {"S": "2024-01-01T00:00:00+00:00#ULID1"},
+                "sender_id": {"S": user_id},
+                "content": {"S": "first message"},
+                "content_type": {"S": "text"},
+                "delivered_at": {"S": "2024-01-01T00:00:00+00:00"},
+            },
+        ]
+    }
+    mod._dynamodb_client = mock_ddb
+
+    event = _make_appsync_event("Query", "messagesByChatRoom", user_sub=user_id)
+    event["arguments"] = {"roomId": room_id}
+    result = mod._dispatch(event)
+
+    assert "errorType" not in result, f"Unexpected error: {result}"
+    assert len(result["items"]) == 2
+    # nextToken absent when no LastEvaluatedKey in DynamoDB response
+    assert result.get("nextToken") is None
+
+
+def test_given_member_caller_with_last_evaluated_key_when_messages_by_chat_room_then_next_token_present() -> None:
+    """given DynamoDB returns LastEvaluatedKey, when messagesByChatRoom,
+    then nextToken is a non-empty string in the response."""
+    mod = _import_handler()
+
+    user_id = "paged-user"
+    room_id = "paged-room"
+
+    mock_ddb = MagicMock()
+    mock_ddb.get_item.return_value = {
+        "Item": {"user_id": {"S": user_id}, "room_id": {"S": room_id}}
+    }
+    mock_ddb.query.return_value = {
+        "Items": [
+            {
+                "room_id": {"S": room_id},
+                "sk": {"S": "2024-01-01T00:00:00+00:00#ULID1"},
+                "sender_id": {"S": user_id},
+                "content": {"S": "msg"},
+                "content_type": {"S": "text"},
+                "delivered_at": {"S": "2024-01-01T00:00:00+00:00"},
+            }
+        ],
+        # DynamoDB sets LastEvaluatedKey when there are more pages
+        "LastEvaluatedKey": {
+            "room_id": {"S": room_id},
+            "sk": {"S": "2024-01-01T00:00:00+00:00#ULID1"},
+        },
+    }
+    mod._dynamodb_client = mock_ddb
+
+    event = _make_appsync_event("Query", "messagesByChatRoom", user_sub=user_id)
+    event["arguments"] = {"roomId": room_id}
+    result = mod._dispatch(event)
+
+    assert "errorType" not in result, f"Unexpected error: {result}"
+    assert result.get("nextToken") is not None, "Expected nextToken when LastEvaluatedKey present"
+    assert isinstance(result["nextToken"], str)
+    assert len(result["nextToken"]) > 0
+
+
+def test_given_member_caller_with_limit_arg_when_messages_by_chat_room_then_limit_capped_at_100() -> None:
+    """given limit=500 (excessive), when messagesByChatRoom, then DynamoDB is
+    called with Limit <= 100 (defensive cap) not with the client-supplied value."""
+    mod = _import_handler()
+
+    user_id = "limit-test-user"
+    room_id = "limit-test-room"
+
+    mock_ddb = MagicMock()
+    mock_ddb.get_item.return_value = {
+        "Item": {"user_id": {"S": user_id}, "room_id": {"S": room_id}}
+    }
+    mock_ddb.query.return_value = {"Items": []}
+    mod._dynamodb_client = mock_ddb
+
+    event = _make_appsync_event("Query", "messagesByChatRoom", user_sub=user_id)
+    event["arguments"] = {"roomId": room_id, "limit": 500}
+    mod._dispatch(event)
+
+    # Assert DynamoDB query was called with a Limit of at most 100
+    assert mock_ddb.query.called, "DynamoDB query was not called"
+    call_kwargs = mock_ddb.query.call_args[1]
+    effective_limit = call_kwargs.get("Limit", call_kwargs.get("limit"))
+    assert effective_limit is not None, "Limit was not passed to DynamoDB query"
+    assert effective_limit <= 100, (
+        f"Expected Limit <= 100 (defensive cap), got {effective_limit}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Section H — @require_profile_complete_appsync gate on new resolvers
+#
+# Both listMyRooms and messagesByChatRoom must be gated by the decorator.
+# We drive the full handler() entrypoint (not _dispatch()) to verify that
+# the decorator fires before any DDB operation.
+# ---------------------------------------------------------------------------
+
+
+def _make_handler_module_with_real_decorator() -> ModuleType:
+    """Import handler with the real @require_profile_complete_appsync decorator
+    from the layer source, not the no-op pass-through used in other tests."""
+    # _OBS_DIR is already defined at module level; use it directly.
+    obs_pkg_dir = os.path.join(_OBS_DIR, "knotify_obs")
+
+    spec = importlib.util.spec_from_file_location(
+        "chat_resolver_handler_real_dec_" + str(id(object())),
+        os.path.join(_HANDLER_DIR, "handler.py"),
+    )
+    mod = importlib.util.module_from_spec(spec)
+
+    # Patch knotify_obs with a real-ish stub that exposes the actual decorator
+    # sourced from the layer file, so the gate is real, not a no-op.
+    dec_spec = importlib.util.spec_from_file_location(
+        "_pca_dec_" + str(id(object())),
+        os.path.join(obs_pkg_dir, "_profile_complete_appsync.py"),
+    )
+    dec_mod = importlib.util.module_from_spec(dec_spec)
+    dec_spec.loader.exec_module(dec_mod)
+    real_decorator = dec_mod.require_profile_complete_appsync
+
+    with patch.dict(
+        "sys.modules",
+        {
+            "knotify_db": MagicMock(),
+            "knotify_obs": MagicMock(
+                init_logger=MagicMock(return_value=MagicMock()),
+                require_profile_complete_appsync=real_decorator,
+                is_blocked=MagicMock(return_value=False),
+                chat_room_id=MagicMock(return_value="computed-room-id"),
+            ),
+        },
+    ):
+        spec.loader.exec_module(mod)
+    return mod
+
+
+def test_given_profile_incomplete_when_list_my_rooms_via_handler_then_unauthorized() -> None:
+    """given custom:profile_complete != 'true', when handler() called for listMyRooms,
+    then decorator returns Unauthorized before any DDB call."""
+    mod = _make_handler_module_with_real_decorator()
+    mock_ddb = MagicMock()
+    mod._dynamodb_client = mock_ddb
+
+    event = _make_appsync_event("Query", "listMyRooms", profile_complete=None)
+    result = mod.handler(event, {})
+
+    assert result.get("errorType") == "Unauthorized", (
+        f"Expected Unauthorized from decorator, got: {result}"
+    )
+    assert result.get("reason") == "PROFILE_INCOMPLETE"
+    # No DDB call should have been made
+    mock_ddb.query.assert_not_called()
+
+
+def test_given_profile_incomplete_when_messages_by_chat_room_via_handler_then_unauthorized() -> None:
+    """given custom:profile_complete != 'true', when handler() called for messagesByChatRoom,
+    then decorator returns Unauthorized before any DDB call."""
+    mod = _make_handler_module_with_real_decorator()
+    mock_ddb = MagicMock()
+    mod._dynamodb_client = mock_ddb
+
+    event = _make_appsync_event("Query", "messagesByChatRoom", profile_complete="false")
+    event["arguments"] = {"roomId": "some-room"}
+    result = mod.handler(event, {})
+
+    assert result.get("errorType") == "Unauthorized", (
+        f"Expected Unauthorized from decorator, got: {result}"
+    )
+    assert result.get("reason") == "PROFILE_INCOMPLETE"
+    mock_ddb.get_item.assert_not_called()

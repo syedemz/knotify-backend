@@ -1,6 +1,6 @@
 phase: 8
 title: Chat (AppSync + DynamoDB Streams + push fan-out)
-last_updated: 2026-06-17 # story 8.4 done
+last_updated: 2026-06-17 # story 8.5 done
 
 context_summary: |
   Delivers the full chat capability in a single phase per the owner's resolved Option A: the AppSync GraphQL API with a hand-written schema (no Amplify auto-generation, no auto-CRUD subscriptions), Lambda resolvers that enforce membership and block checks against Aurora before establishing subscriptions, the deterministic-room-id creation flow from §5.4.1, DynamoDB Streams from ChatMessages and Notifications wired to a PushFanout Lambda that targets Expo Push (per the §13 #7 resolution in v1.6), the POST /v1/push-tokens REST endpoint for token registration, and the stale-token cleanup scheduled Lambda. This phase intentionally ships data plane and API plane together because the GraphQL schema and the DynamoDB key design are tightly coupled. After this phase only account deletion, observability consolidation, hardening, and S3 photos remain.
@@ -124,7 +124,7 @@ stories:
     title: Query resolvers listMyRooms and messagesByChatRoom
     agent: backenddeveloper
     tracking_issue: 115
-    done: false
+    done: true
     depends_on: [8.3]
     acceptance_criteria:
       - listMyRooms: chat_resolver Query handler issues DynamoDB Query on ChatRoomMembership with PK=identity.sub, collects the room_id values; calls BatchGetItem(ChatRooms, Keys=[{room_id: r1}, {room_id: r2}, ...]) to fetch each room object; merges; returns the list ordered by ChatRooms.last_message_at descending
