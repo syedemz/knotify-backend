@@ -882,3 +882,112 @@ run "role_arns_output_contains_room_state_publisher" {
     error_message = "role_arns[room_state_publisher] must be wired to aws_iam_role.room_state_publisher.arn"
   }
 }
+
+# ===========================================================================
+# Tests 27–30: notifications_publisher IAM role (story 8.9c)
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Test 27: notifications_publisher role exists with Lambda trust policy
+#
+# Satisfies AC: "New IAM role notifications_publisher_role in iam_roles module"
+# ---------------------------------------------------------------------------
+run "notifications_publisher_role_exists_with_lambda_trust_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    notifications_stream_arn      = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications/stream/2026-06-18T00:00:00.000"
+    appsync_api_arn               = "arn:aws:appsync:eu-central-1:123456789012:apis/TESTAPI"
+  }
+
+  assert {
+    condition     = aws_iam_role.notifications_publisher.assume_role_policy != ""
+    error_message = "notifications_publisher assume_role_policy must not be empty"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 28: notifications_publisher DynamoDB stream inline policy exists
+#
+# Satisfies AC: "dynamodb:DescribeStream + GetRecords + GetShardIterator +
+#               ListStreams on the Notifications stream ARN"
+# ---------------------------------------------------------------------------
+run "notifications_publisher_dynamodb_stream_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    notifications_stream_arn      = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications/stream/2026-06-18T00:00:00.000"
+    appsync_api_arn               = "arn:aws:appsync:eu-central-1:123456789012:apis/TESTAPI"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.notifications_publisher_dynamodb_stream.name == "notifications-publisher-dynamodb-stream"
+    error_message = "notifications_publisher DynamoDB stream policy must be named notifications-publisher-dynamodb-stream"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.notifications_publisher_dynamodb_stream.role == aws_iam_role.notifications_publisher.name
+    error_message = "notifications_publisher DynamoDB stream policy must be attached to notifications_publisher role"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 29: notifications_publisher AppSync GraphQL inline policy exists
+#
+# Satisfies AC: "appsync:GraphQL on the publishNotification and
+#               _publishFriendRequestUpdated field ARNs (scoped to fields, not *)"
+# ---------------------------------------------------------------------------
+run "notifications_publisher_appsync_graphql_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    notifications_stream_arn      = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications/stream/2026-06-18T00:00:00.000"
+    appsync_api_arn               = "arn:aws:appsync:eu-central-1:123456789012:apis/TESTAPI"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.notifications_publisher_appsync.name == "notifications-publisher-appsync"
+    error_message = "notifications_publisher AppSync policy must be named notifications-publisher-appsync"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.notifications_publisher_appsync.role == aws_iam_role.notifications_publisher.name
+    error_message = "notifications_publisher AppSync policy must be attached to notifications_publisher role"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 30: role_arns output map contains notifications_publisher
+#
+# Satisfies the module output shape requirement so root modules can reference
+# module.iam_roles.role_arns["notifications_publisher"].
+# ---------------------------------------------------------------------------
+run "role_arns_output_contains_notifications_publisher" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    notifications_stream_arn      = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications/stream/2026-06-18T00:00:00.000"
+    appsync_api_arn               = "arn:aws:appsync:eu-central-1:123456789012:apis/TESTAPI"
+  }
+
+  override_resource {
+    target = aws_iam_role.notifications_publisher
+    values = {
+      arn = "arn:aws:iam::123456789012:role/knotify-test-notifications-publisher"
+    }
+    override_during = plan
+  }
+
+  assert {
+    condition     = output.role_arns["notifications_publisher"] == "arn:aws:iam::123456789012:role/knotify-test-notifications-publisher"
+    error_message = "role_arns[notifications_publisher] must be wired to aws_iam_role.notifications_publisher.arn"
+  }
+}

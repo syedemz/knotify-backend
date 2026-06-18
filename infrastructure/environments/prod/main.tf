@@ -157,6 +157,10 @@ module "iam_roles" {
   # Scope room_state_publisher AppSync publish permissions to the exact
   # publish-mutation field ARNs (story 8.9a). API ARN sourced from appsync module.
   appsync_api_arn = module.appsync.api_arn
+
+  # Scope notifications_publisher DynamoDB stream actions to Notifications stream ARN
+  # (story 8.9c). Stream ARN sourced from dynamodb module outputs.tf:61.
+  notifications_stream_arn = module.dynamodb.notifications_stream_arn
 }
 
 # ---------------------------------------------------------------------------
@@ -1135,4 +1139,25 @@ module "room_state_publisher" {
   role_arn              = module.iam_roles.role_arns["room_state_publisher"]
   chat_rooms_stream_arn = module.dynamodb.chat_rooms_stream_arn
   appsync_graphql_url   = module.appsync.graphql_url
+}
+
+# ---------------------------------------------------------------------------
+# notifications_publisher Lambda — story 8.9c
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+# Mirrors the dev wiring exactly.
+#
+# Placement: OUTSIDE the VPC — AppSync HTTPS reachable via public DNS.
+# No Aurora access — Notifications DynamoDB stream only.
+# ---------------------------------------------------------------------------
+
+module "notifications_publisher" {
+  source = "../../modules/notifications_publisher"
+
+  environment              = var.environment
+  function_name            = "knotify-notifications-publisher-${var.environment}"
+  filename                 = "${path.module}/../../../build/notifications_publisher.zip"
+  role_arn                 = module.iam_roles.role_arns["notifications_publisher"]
+  notifications_stream_arn = module.dynamodb.notifications_stream_arn
+  appsync_graphql_url      = module.appsync.graphql_url
 }

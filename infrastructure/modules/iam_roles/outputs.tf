@@ -18,5 +18,7 @@ output "role_arns" {
     appsync_chat_resolver_invoke  = aws_iam_role.appsync_chat_resolver_invoke.arn
     # Story 8.9a — room_state_publisher IAM role
     room_state_publisher          = aws_iam_role.room_state_publisher.arn
+    # Story 8.9c — notifications_publisher IAM role
+    notifications_publisher       = aws_iam_role.notifications_publisher.arn
   }
 }

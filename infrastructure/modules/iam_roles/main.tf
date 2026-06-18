@@ -805,3 +805,89 @@ resource "aws_iam_role_policy" "room_state_publisher_appsync" {
   role   = aws_iam_role.room_state_publisher.name
   policy = data.aws_iam_policy_document.room_state_publisher_appsync.json
 }
+
+# ===========================================================================
+# Role: notifications_publisher
+#
+# For the notifications_publisher Lambda (story 8.9c).
+# Consumes the Notifications DynamoDB Stream and publishes AppSync mutations
+# via SigV4 (IAM auth mode).
+#
+# OUTSIDE the VPC: AppSync HTTPS is reachable via public DNS; no VPC endpoint
+# or ENI attachment needed (same rationale as room_state_publisher hotfix #106
+# lesson).
+# No VPC access policy attached — this role does NOT run in a VPC.
+#
+# DynamoDB stream actions scoped to the Notifications stream ARN only:
+#   dynamodb:DescribeStream + GetRecords + GetShardIterator + ListStreams
+#
+# AppSync actions scoped to the exact publish-mutation field ARNs:
+#   appsync:GraphQL on ${appsync_api_arn}/types/Mutation/fields/publishNotification
+#   appsync:GraphQL on ${appsync_api_arn}/types/Mutation/fields/_publishFriendRequestUpdated
+#   NOT a wildcard on the entire API — least-privilege per codingprinciples.md.
+# ===========================================================================
+
+resource "aws_iam_role" "notifications_publisher" {
+  name               = "knotify-${var.environment}-notifications-publisher"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+# Basic Lambda execution — creates log group and can write CloudWatch logs.
+# The managed AWSLambdaBasicExecutionRole is used instead of VPC access because
+# this Lambda runs OUTSIDE the VPC (no ENI attachment needed).
+resource "aws_iam_role_policy_attachment" "notifications_publisher_basic_execution" {
+  role       = aws_iam_role.notifications_publisher.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# DynamoDB stream read actions — scoped to the Notifications stream ARN.
+# These four actions are exactly what a Lambda ESM consumer needs to read
+# a DynamoDB stream: DescribeStream + GetRecords + GetShardIterator + ListStreams.
+data "aws_iam_policy_document" "notifications_publisher_dynamodb_stream" {
+  statement {
+    sid    = "NotificationsStreamRead"
+    effect = "Allow"
+    actions = [
+      "dynamodb:DescribeStream",
+      "dynamodb:GetRecords",
+      "dynamodb:GetShardIterator",
+      "dynamodb:ListStreams",
+    ]
+    resources = [
+      var.notifications_stream_arn != "" ? var.notifications_stream_arn : "arn:aws:dynamodb:*:*:table/Notifications/stream/*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "notifications_publisher_dynamodb_stream" {
+  name   = "notifications-publisher-dynamodb-stream"
+  role   = aws_iam_role.notifications_publisher.name
+  policy = data.aws_iam_policy_document.notifications_publisher_dynamodb_stream.json
+}
+
+# AppSync GraphQL publish — scoped to the two backend-only publish mutation
+# field ARNs.  NOT a wildcard on ${appsync_api_arn}/* — codingprinciples.md
+# forbids wildcard Resource on any committed IAM policy.
+# Field ARN format: ${api_arn}/types/Mutation/fields/${field_name}
+data "aws_iam_policy_document" "notifications_publisher_appsync" {
+  statement {
+    sid    = "AppSyncPublishNotifications"
+    effect = "Allow"
+    actions = [
+      "appsync:GraphQL",
+    ]
+    resources = var.appsync_api_arn != "" ? [
+      "${var.appsync_api_arn}/types/Mutation/fields/publishNotification",
+      "${var.appsync_api_arn}/types/Mutation/fields/_publishFriendRequestUpdated",
+    ] : [
+      "arn:aws:appsync:*:*:apis/*/types/Mutation/fields/publishNotification",
+      "arn:aws:appsync:*:*:apis/*/types/Mutation/fields/_publishFriendRequestUpdated",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "notifications_publisher_appsync" {
+  name   = "notifications-publisher-appsync"
+  role   = aws_iam_role.notifications_publisher.name
+  policy = data.aws_iam_policy_document.notifications_publisher_appsync.json
+}

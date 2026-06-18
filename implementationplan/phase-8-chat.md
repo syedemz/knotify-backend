@@ -1,6 +1,6 @@
 phase: 8
 title: Chat (AppSync + DynamoDB Streams + push fan-out)
-last_updated: 2026-06-18 # story 8.9b done
+last_updated: 2026-06-18 # story 8.9c done
 
 context_summary: |
   Delivers the full chat capability in a single phase per the owner's resolved Option A: the AppSync GraphQL API with a hand-written schema (no Amplify auto-generation, no auto-CRUD subscriptions), Lambda resolvers that enforce membership and block checks against Aurora before establishing subscriptions, the deterministic-room-id creation flow from §5.4.1, DynamoDB Streams from ChatMessages and Notifications wired to a PushFanout Lambda that targets Expo Push (per the §13 #7 resolution in v1.6), the POST /v1/push-tokens REST endpoint for token registration, and the stale-token cleanup scheduled Lambda. This phase intentionally ships data plane and API plane together because the GraphQL schema and the DynamoDB key design are tightly coupled. After this phase only account deletion, observability consolidation, hardening, and S3 photos remain.
@@ -239,7 +239,7 @@ stories:
     title: Notifications-stream publisher Lambda (DynamoDB Streams → AppSync publishNotification / _publishFriendRequestUpdated)
     agent: backenddeveloper
     tracking_issue: 122
-    done: false
+    done: true
     depends_on: [8.1, 8.2]
     acceptance_criteria:
       - New Lambda infrastructure/src/functions/notifications_publisher/ consumes the existing Notifications DynamoDB Stream (phase 2 already provisioned `stream_enabled = true` + `stream_view_type = "NEW_IMAGE"` on the Notifications table at modules/dynamodb/main.tf:253-254 for PushFanout consumption — this story does NOT modify the DDB module, it only adds a second event source mapping)

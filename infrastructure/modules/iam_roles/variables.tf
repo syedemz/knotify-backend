@@ -75,7 +75,17 @@ variable "chat_rooms_stream_arn" {
 }
 
 variable "appsync_api_arn" {
-  description = "ARN of the AppSync GraphQL API. Used to scope room_state_publisher_role's appsync:GraphQL permission to the exact _publishRoomDeactivated and _publishRoomReactivated field ARNs (story 8.9a). Pass module.appsync.api_arn from each environment root module."
+  description = "ARN of the AppSync GraphQL API. Used to scope room_state_publisher_role's appsync:GraphQL permission to the exact _publishRoomDeactivated and _publishRoomReactivated field ARNs (story 8.9a), and notifications_publisher_role's appsync:GraphQL permission to publishNotification and _publishFriendRequestUpdated field ARNs (story 8.9c). Pass module.appsync.api_arn from each environment root module."
+  type        = string
+  default     = ""
+}
+
+# ---------------------------------------------------------------------------
+# Story 8.9c — notifications_publisher IAM role scoping
+# ---------------------------------------------------------------------------
+
+variable "notifications_stream_arn" {
+  description = "DynamoDB stream ARN for the Notifications table. Used to scope notifications_publisher_role's dynamodb stream read actions (story 8.9c). Pass module.dynamodb.notifications_stream_arn from each environment root module."
   type        = string
   default     = ""
 }

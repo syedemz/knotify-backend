@@ -151,6 +151,10 @@ module "iam_roles" {
   # Scope room_state_publisher AppSync publish permissions to the exact
   # publish-mutation field ARNs (story 8.9a). API ARN sourced from appsync module.
   appsync_api_arn = module.appsync.api_arn
+
+  # Scope notifications_publisher DynamoDB stream actions to Notifications stream ARN
+  # (story 8.9c). Stream ARN sourced from dynamodb module outputs.tf:61.
+  notifications_stream_arn = module.dynamodb.notifications_stream_arn
 }
 
 # ---------------------------------------------------------------------------
@@ -1288,4 +1292,34 @@ module "room_state_publisher" {
   role_arn              = module.iam_roles.role_arns["room_state_publisher"]
   chat_rooms_stream_arn = module.dynamodb.chat_rooms_stream_arn
   appsync_graphql_url   = module.appsync.graphql_url
+}
+
+# ---------------------------------------------------------------------------
+# notifications_publisher Lambda — story 8.9c
+#
+# Consumes the Notifications DynamoDB Stream (NEW_IMAGE) and publishes AppSync
+# mutations when new notification rows are inserted:
+#   Generic types (friend_request_received, bookmark, match, ...)
+#       → publishNotification(notification: <payload>) via SigV4 (IAM auth mode)
+#   friend_request_accepted
+#       → _publishFriendRequestUpdated(payload: <payload>) via SigV4 (IAM auth mode)
+#
+# Placement: OUTSIDE the VPC — AppSync HTTPS reachable via public DNS.
+# No Aurora access — Notifications DynamoDB stream only.
+# SigV4 signing handled by botocore at runtime using the Lambda execution role.
+#
+# CONSUMER LIMIT: with this ESM the Notifications stream has 2 ESM consumers
+# (notifications_publisher + push_fanout from 8.10), which is the AWS default
+# limit of 2 simultaneous consumers per DynamoDB stream.
+# ---------------------------------------------------------------------------
+
+module "notifications_publisher" {
+  source = "../../modules/notifications_publisher"
+
+  environment              = var.environment
+  function_name            = "knotify-notifications-publisher-${var.environment}"
+  filename                 = "${path.module}/../../../build/notifications_publisher.zip"
+  role_arn                 = module.iam_roles.role_arns["notifications_publisher"]
+  notifications_stream_arn = module.dynamodb.notifications_stream_arn
+  appsync_graphql_url      = module.appsync.graphql_url
 }

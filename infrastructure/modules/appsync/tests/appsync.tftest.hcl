@@ -1066,3 +1066,99 @@ run "api_arn_output_is_wired_to_appsync_api" {
     error_message = "api_arn output must be wired to aws_appsync_graphql_api.knotify.arn (story 8.9a)"
   }
 }
+
+# ===========================================================================
+# Tests 22–23: NONE-datasource local resolvers for 8.9c backend-only mutations
+#
+# publishNotification and _publishFriendRequestUpdated are @aws_iam mutations
+# called by the notifications_publisher Lambda.  Each needs a UNIT resolver on
+# the NoneDS NONE datasource so AppSync can fan-out to @aws_subscribe subscribers.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Test 22: publishNotification resolver uses NoneDS (NONE datasource)
+#
+# Satisfies AC (story 8.9c): "NONE-datasource local resolvers for
+# publishNotification and _publishFriendRequestUpdated added to appsync module"
+# ---------------------------------------------------------------------------
+run "publish_notification_resolver_uses_none_datasource" {
+  command = plan
+
+  variables {
+    environment                     = "test"
+    user_pool_id                    = "eu-central-1_TESTPOOL"
+    appsync_logs_role_arn           = "arn:aws:iam::123456789012:role/knotify-test-appsync-logs"
+    appsync_invoke_role_arn         = "arn:aws:iam::123456789012:role/knotify-test-appsync-invoke"
+    chat_resolver_lambda_arn        = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
+    chat_rooms_table_arn            = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms"
+    chat_room_membership_table_name = "ChatRoomMembership"
+    chat_room_membership_table_arn  = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRoomMembership"
+    chat_messages_table_name        = "ChatMessages"
+    chat_messages_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages"
+    message_reads_table_name        = "MessageReads"
+    message_reads_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/MessageReads"
+    notifications_table_name        = "Notifications"
+    notifications_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications"
+    chat_rooms_table_name           = "ChatRooms"
+    dynamodb_role_arn               = "arn:aws:iam::123456789012:role/knotify-test-ddb-role"
+  }
+
+  assert {
+    condition     = aws_appsync_resolver.publish_notification.type == "Mutation"
+    error_message = "publish_notification resolver must be attached to the Mutation type"
+  }
+
+  assert {
+    condition     = aws_appsync_resolver.publish_notification.field == "publishNotification"
+    error_message = "publish_notification resolver must be attached to the publishNotification field"
+  }
+
+  assert {
+    condition     = aws_appsync_resolver.publish_notification.data_source == aws_appsync_datasource.pipeline_none.name
+    error_message = "publish_notification resolver must use the NoneDS NONE datasource"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 23: _publishFriendRequestUpdated resolver uses NoneDS (NONE datasource)
+#
+# Satisfies AC (story 8.9c): "_publishFriendRequestUpdated NONE-datasource
+# resolver added to appsync module"
+# ---------------------------------------------------------------------------
+run "publish_friend_request_updated_resolver_uses_none_datasource" {
+  command = plan
+
+  variables {
+    environment                     = "test"
+    user_pool_id                    = "eu-central-1_TESTPOOL"
+    appsync_logs_role_arn           = "arn:aws:iam::123456789012:role/knotify-test-appsync-logs"
+    appsync_invoke_role_arn         = "arn:aws:iam::123456789012:role/knotify-test-appsync-invoke"
+    chat_resolver_lambda_arn        = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
+    chat_rooms_table_arn            = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms"
+    chat_room_membership_table_name = "ChatRoomMembership"
+    chat_room_membership_table_arn  = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRoomMembership"
+    chat_messages_table_name        = "ChatMessages"
+    chat_messages_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages"
+    message_reads_table_name        = "MessageReads"
+    message_reads_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/MessageReads"
+    notifications_table_name        = "Notifications"
+    notifications_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications"
+    chat_rooms_table_name           = "ChatRooms"
+    dynamodb_role_arn               = "arn:aws:iam::123456789012:role/knotify-test-ddb-role"
+  }
+
+  assert {
+    condition     = aws_appsync_resolver.publish_friend_request_updated.type == "Mutation"
+    error_message = "_publishFriendRequestUpdated resolver must be attached to the Mutation type"
+  }
+
+  assert {
+    condition     = aws_appsync_resolver.publish_friend_request_updated.field == "_publishFriendRequestUpdated"
+    error_message = "_publishFriendRequestUpdated resolver must be attached to the _publishFriendRequestUpdated field"
+  }
+
+  assert {
+    condition     = aws_appsync_resolver.publish_friend_request_updated.data_source == aws_appsync_datasource.pipeline_none.name
+    error_message = "_publishFriendRequestUpdated resolver must use the NoneDS NONE datasource"
+  }
+}
