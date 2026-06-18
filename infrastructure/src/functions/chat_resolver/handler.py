@@ -264,7 +264,11 @@ def _handle_create_or_get_room(event: dict) -> dict:
                     "user_id": {"S": caller_id},
                     "room_id": {"S": room_id},
                 },
-                "ConditionExpression": "attribute_not_exists(user_id)",
+                # attribute_not_exists(room_id) checks the SK — this (user_id, room_id)
+                # composite key is unique per membership row. Using attribute_not_exists
+                # on the SK correctly scopes the guard to "this user is not already in
+                # this specific room" rather than "this user has no membership at all".
+                "ConditionExpression": "attribute_not_exists(room_id)",
             }
         },
         {
@@ -274,7 +278,7 @@ def _handle_create_or_get_room(event: dict) -> dict:
                     "user_id": {"S": other_user_id},
                     "room_id": {"S": room_id},
                 },
-                "ConditionExpression": "attribute_not_exists(user_id)",
+                "ConditionExpression": "attribute_not_exists(room_id)",
             }
         },
     ]
