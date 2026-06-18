@@ -343,3 +343,110 @@ run "chat_resolver_ds_uses_invoke_role_arn" {
     error_message = "chat_resolver_ds service_role_arn must be the appsync_invoke_role_arn"
   }
 }
+
+# ---------------------------------------------------------------------------
+# Test 8: schema is loaded from schema.graphql file (story 8.2)
+#
+# Satisfies AC (schema.graphql): aws_appsync_graphql_api.knotify uses the
+# file() reference rather than the placeholder inline string.  The schema
+# attribute reflects the file content on plan; we assert it contains the
+# canonical type names from §5.4 of architecture.md.
+#
+# This test will FAIL until schema.graphql is authored and main.tf is updated
+# to `schema = file("${path.module}/schema.graphql")`.
+# ---------------------------------------------------------------------------
+run "schema_loaded_from_file_contains_canonical_types" {
+  command = plan
+
+  variables {
+    environment        = "test"
+    user_pool_id       = "eu-central-1_TESTPOOL"
+    appsync_logs_role_arn     = "arn:aws:iam::123456789012:role/knotify-test-appsync-logs"
+    appsync_invoke_role_arn   = "arn:aws:iam::123456789012:role/knotify-test-appsync-invoke"
+    chat_resolver_lambda_arn  = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
+    chat_rooms_table_arn              = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms"
+    chat_room_membership_table_name   = "ChatRoomMembership"
+    chat_room_membership_table_arn    = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRoomMembership"
+    chat_messages_table_name          = "ChatMessages"
+    chat_messages_table_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages"
+    message_reads_table_name          = "MessageReads"
+    message_reads_table_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/MessageReads"
+    notifications_table_name          = "Notifications"
+    notifications_table_arn           = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications"
+    chat_rooms_table_name             = "ChatRooms"
+    dynamodb_role_arn                 = "arn:aws:iam::123456789012:role/knotify-test-ddb-role"
+  }
+
+  assert {
+    condition     = strcontains(aws_appsync_graphql_api.knotify.schema, "type Message")
+    error_message = "schema must define the Message type (§5.4 ChatMessages model)"
+  }
+
+  assert {
+    condition     = strcontains(aws_appsync_graphql_api.knotify.schema, "type ChatRoom")
+    error_message = "schema must define the ChatRoom type (§5.4 ChatRooms model)"
+  }
+
+  assert {
+    condition     = strcontains(aws_appsync_graphql_api.knotify.schema, "type ChatRoomMembership")
+    error_message = "schema must define the ChatRoomMembership type (§5.4 ChatRoomMembership model)"
+  }
+
+  assert {
+    condition     = strcontains(aws_appsync_graphql_api.knotify.schema, "type MessageRead")
+    error_message = "schema must define the MessageRead type (§5.4 MessageReads model)"
+  }
+
+  assert {
+    condition     = strcontains(aws_appsync_graphql_api.knotify.schema, "type Notification")
+    error_message = "schema must define the Notification type (§5.4 Notifications model)"
+  }
+
+  assert {
+    condition     = strcontains(aws_appsync_graphql_api.knotify.schema, "type TypingEvent")
+    error_message = "schema must define the TypingEvent type (ephemeral typing pub/sub)"
+  }
+
+  assert {
+    condition     = strcontains(aws_appsync_graphql_api.knotify.schema, "sendMessage(")
+    error_message = "schema must declare the sendMessage mutation"
+  }
+
+  assert {
+    condition     = strcontains(aws_appsync_graphql_api.knotify.schema, "@aws_iam")
+    error_message = "schema must annotate backend-only publish mutations with @aws_iam"
+  }
+
+  assert {
+    condition     = strcontains(aws_appsync_graphql_api.knotify.schema, "onMessageInRoom(")
+    error_message = "schema must declare the onMessageInRoom subscription"
+  }
+
+  assert {
+    condition     = strcontains(aws_appsync_graphql_api.knotify.schema, "@aws_subscribe")
+    error_message = "schema must use @aws_subscribe on subscription fields"
+  }
+
+  # The sendMessage mutation must start with roomId, NOT senderId.
+  # Checking for the exact opening of the mutation argument list confirms no
+  # senderId argument is injected before or alongside roomId.
+  assert {
+    condition     = strcontains(aws_appsync_graphql_api.knotify.schema, "sendMessage(roomId: ID!, content: String!")
+    error_message = "sendMessage must start with (roomId, content) — no senderId argument allowed; sender is derived server-side"
+  }
+
+  assert {
+    condition     = !strcontains(aws_appsync_graphql_api.knotify.schema, "onCreateMessage")
+    error_message = "schema must NOT contain auto-generated onCreateMessage subscription"
+  }
+
+  assert {
+    condition     = !strcontains(aws_appsync_graphql_api.knotify.schema, "onUpdateMessage")
+    error_message = "schema must NOT contain auto-generated onUpdateMessage subscription"
+  }
+
+  assert {
+    condition     = !strcontains(aws_appsync_graphql_api.knotify.schema, "onDeleteMessage")
+    error_message = "schema must NOT contain auto-generated onDeleteMessage subscription"
+  }
+}

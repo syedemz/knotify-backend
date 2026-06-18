@@ -1,0 +1,258 @@
+# ---------------------------------------------------------------------------
+# Knotify AppSync GraphQL Schema — story 8.2
+#
+# Hand-authored SDL.  No Amplify auto-generation, no auto-CRUD subscriptions.
+# Object types match the DynamoDB key designs in §5.4 of architecture.md.
+#
+# Auth modes:
+#   Primary  — AMAZON_COGNITO_USER_POOLS (JWT)
+#   Secondary — AWS_IAM (backend publisher Lambdas only)
+#
+# Directives:
+#   @aws_iam        — restricts the field to IAM callers; JWT clients cannot
+#                     invoke these mutations directly.
+#   @aws_subscribe  — binds a Subscription field to one or more publishing
+#                     mutations; AppSync filters events by the given field.
+#
+# Scalars provided natively by AppSync (no custom scalar declarations needed):
+#   AWSDateTime — ISO-8601 timestamp string
+#   AWSJSON     — arbitrary JSON serialised as a string
+#   ID          — opaque string identifier
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Object types — §5.4 ChatRooms table
+# ---------------------------------------------------------------------------
+
+type ChatRoom {
+  # PK: deterministic sha256(canonical_pair(userA, userB))
+  roomId: ID!
+  # Lexicographically smaller participant UUID
+  userA: ID!
+  # Lexicographically larger participant UUID
+  userB: ID!
+  createdAt: AWSDateTime!
+  lastMessageId: ID
+  lastMessageAt: AWSDateTime
+  lastMessagePreview: String
+  lastMessageSenderId: ID
+  # 'active' | 'deactivated'
+  status: String!
+  # 'user_deleted_account' | 'blocked' | null
+  deactivatedReason: String
+  deactivatedAt: AWSDateTime
+  deactivatedBy: ID
+  reactivatedAt: AWSDateTime
+  # true when a live friendships row exists for the pair; false after unfriend or block
+  friendshipActive: Boolean!
+}
+
+# ---------------------------------------------------------------------------
+# Object types — §5.4 ChatRoomMembership table
+# ---------------------------------------------------------------------------
+
+type ChatRoomMembership {
+  # PK: caller's user_id
+  userId: ID!
+  # SK: room_id
+  roomId: ID!
+  otherUserId: ID!
+  joinedAt: AWSDateTime!
+  lastReadMessageId: ID
+  lastReadAt: AWSDateTime
+  cachedOtherName: String
+  cachedOtherAvatar: String
+  notificationsMuted: Boolean!
+  hidden: Boolean!
+}
+
+# ---------------------------------------------------------------------------
+# Object types — §5.4 ChatMessages table
+# ---------------------------------------------------------------------------
+
+type Message {
+  # PK: room_id
+  roomId: ID!
+  # SK: <ISO timestamp>#<message_id> — server-set, sortable
+  createdAt: AWSDateTime!
+  messageId: ID!
+  # Server-set from JWT sub — never client-supplied
+  senderId: ID!
+  content: String!
+  # 'text' | 'gif'
+  contentType: String!
+  # Only set when contentType = 'gif'
+  gifUrl: String
+  deliveredAt: AWSDateTime!
+}
+
+# ---------------------------------------------------------------------------
+# Object types — §5.4 MessageReads table
+# ---------------------------------------------------------------------------
+
+type MessageRead {
+  # PK: room_id
+  roomId: ID!
+  # SK: user_id
+  userId: ID!
+  lastReadMessageId: ID!
+  lastReadAt: AWSDateTime!
+}
+
+# ---------------------------------------------------------------------------
+# Object types — §5.4 Notifications table
+# ---------------------------------------------------------------------------
+
+type Notification {
+  # PK: user_id (recipient)
+  userId: ID!
+  # SK: <ISO timestamp>#<notification_id>
+  createdAt: AWSDateTime!
+  notificationId: ID!
+  # 'friend_request' | 'friend_request_accepted' | 'profile_view' |
+  # 'room_deactivated' | 'bookmark_received'
+  type: String!
+  # Notification-type-specific JSON payload
+  payload: AWSJSON
+  senderUserId: ID
+  senderName: String
+  senderAvatar: String
+  read: Boolean!
+  delivered: Boolean!
+}
+
+# ---------------------------------------------------------------------------
+# Object types — ephemeral typing indicator (no DynamoDB storage; §5.4)
+# ---------------------------------------------------------------------------
+
+type TypingEvent {
+  roomId: ID!
+  userId: ID!
+  isTyping: Boolean!
+}
+
+# ---------------------------------------------------------------------------
+# Pagination wrapper for messagesByChatRoom query
+# ---------------------------------------------------------------------------
+
+type MessageConnection {
+  items: [Message!]!
+  nextToken: String
+}
+
+# ---------------------------------------------------------------------------
+# Query — skeletons only; resolvers wired in stories 8.5
+# ---------------------------------------------------------------------------
+
+type Query {
+  # Returns all chat rooms for the authenticated user, ordered by
+  # last_message_at descending.
+  listMyRooms: [ChatRoom!]!
+
+  # Returns paginated messages for a room the caller is a member of.
+  # createdAtGt: exclusive lower bound on the SK sort key (ISO timestamp prefix).
+  # limit: default 20, max 50.
+  # nextToken: opaque DynamoDB LastEvaluatedKey (base64-encoded).
+  messagesByChatRoom(
+    roomId: ID!
+    createdAtGt: AWSDateTime
+    limit: Int
+    nextToken: String
+  ): MessageConnection!
+}
+
+# ---------------------------------------------------------------------------
+# Mutation — signatures only; resolver bodies wired in stories 8.3–8.8
+#
+# Rules enforced here (not in resolver bodies):
+#   - sendMessage has NO senderId argument — sender is derived from identity.sub
+#     on the server side (prevents spoofed sender IDs).
+#   - Backend-only publish mutations carry @aws_iam so JWT clients cannot
+#     invoke them directly.  They are called by publisher Lambdas via SigV4.
+# ---------------------------------------------------------------------------
+
+type Mutation {
+  # Story 8.3 — idempotent room creation; returns existing room if already present
+  createOrGetRoom(otherUserId: ID!): ChatRoom!
+
+  # Story 8.4 — sends a message; sender derived server-side from identity.sub
+  # NOTE: no senderId argument by design — the schema enforces server-side derivation.
+  sendMessage(roomId: ID!, content: String!, contentType: String): Message!
+
+  # Story 8.7 — marks messages as read up to lastMessageId
+  markAsRead(roomId: ID!, lastMessageId: ID!): MessageRead!
+
+  # Story 8.8 — ephemeral typing indicator; AppSync None datasource, no DDB write
+  setTyping(roomId: ID!, isTyping: Boolean!): TypingEvent!
+
+  # -------------------------------------------------------------------------
+  # Backend-only publish mutations — @aws_iam restricts to IAM callers
+  #
+  # These exist so AppSync has a known mutation to broadcast through.
+  # They are invoked from backend Lambdas (room_state_publisher story 8.9a,
+  # notifications_publisher story 8.9c) via SigV4 (IAM auth mode).
+  # JWT-authenticated mobile clients CANNOT call these fields.
+  # -------------------------------------------------------------------------
+
+  # Story 8.9a — room_state_publisher calls when ChatRooms status → deactivated
+  _publishRoomDeactivated(roomId: ID!, payload: AWSJSON!): ChatRoom! @aws_iam
+
+  # Story 8.9a — room_state_publisher calls when ChatRooms status → active
+  _publishRoomReactivated(roomId: ID!, payload: AWSJSON!): ChatRoom! @aws_iam
+
+  # Story 8.9c — notifications_publisher calls for generic in-app notifications
+  publishNotification(notification: AWSJSON!): Notification! @aws_iam
+
+  # Story 8.9c — notifications_publisher calls for friend-request state changes
+  _publishFriendRequestUpdated(payload: AWSJSON!): Notification! @aws_iam
+}
+
+# ---------------------------------------------------------------------------
+# Subscription — scoped subscriptions only.
+#
+# Every field is @aws_subscribe-bound to the named publishing mutation.
+# The `field` argument on @aws_subscribe matches the primary argument of
+# the publishing mutation that carries the room/user scope — AppSync uses
+# this to filter events so subscribers only receive events matching their
+# declared argument.
+#
+# No auto-generated CRUD subscriptions exist.
+# Explicit scoped subscriptions replace them for security.
+# ---------------------------------------------------------------------------
+
+type Subscription {
+  # Fires when sendMessage publishes a new Message on roomId.
+  # Subscriber provides roomId; AppSync filters so only messages for that
+  # room are delivered.
+  onMessageInRoom(roomId: ID!): Message
+    @aws_subscribe(mutations: ["sendMessage"])
+
+  # Fires when publishNotification is called by the notifications_publisher.
+  # Identity-scoped: AppSync delivers only when notification.userId == identity.sub.
+  # No argument needed — filtering is identity-based, not argument-based.
+  onNotificationForMe: Notification
+    @aws_subscribe(mutations: ["publishNotification"])
+
+  # Fires when setTyping publishes a TypingEvent on roomId.
+  onTypingInRoom(roomId: ID!): TypingEvent
+    @aws_subscribe(mutations: ["setTyping"])
+
+  # Fires when _publishRoomDeactivated broadcasts a room status change.
+  onRoomDeactivated(roomId: ID!): ChatRoom
+    @aws_subscribe(mutations: ["_publishRoomDeactivated"])
+
+  # Fires when _publishRoomReactivated broadcasts a room status change.
+  onRoomReactivated(roomId: ID!): ChatRoom
+    @aws_subscribe(mutations: ["_publishRoomReactivated"])
+
+  # Fires when markAsRead publishes a read receipt on roomId.
+  onReadReceipt(roomId: ID!): MessageRead
+    @aws_subscribe(mutations: ["markAsRead"])
+
+  # Fires when _publishFriendRequestUpdated is called by notifications_publisher.
+  # Identity-scoped: filtering by payload.userId == identity.sub done by
+  # the pipeline resolver added in story 8.6.
+  onFriendRequestUpdated: Notification
+    @aws_subscribe(mutations: ["_publishFriendRequestUpdated"])
+}

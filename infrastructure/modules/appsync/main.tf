@@ -73,9 +73,10 @@ resource "aws_appsync_graphql_api" "knotify" {
     exclude_verbose_content = false
   }
 
-  # Schema body lands in story 8.2 — placeholder satisfies terraform validate.
-  # Story 8.2 replaces this string with file("${path.module}/schema.graphql").
-  schema = "type Query { _placeholder: String }"
+  # Hand-authored SDL for the full chat domain — story 8.2.
+  # Defines Message, ChatRoom, ChatRoomMembership, MessageRead, Notification,
+  # TypingEvent types plus scoped Query / Mutation / Subscription per §5.4.
+  schema = file("${path.module}/schema.graphql")
 }
 
 # ---------------------------------------------------------------------------
