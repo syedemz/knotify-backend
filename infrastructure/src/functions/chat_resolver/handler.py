@@ -613,7 +613,7 @@ def _handle_send_message(event: dict) -> dict:
                 "TableName": "ChatMessages",
                 "Item": {
                     "room_id": {"S": room_id},
-                    "sk": {"S": message_sk},
+                    "created_at_message_id": {"S": message_sk},
                     "sender_id": {"S": sender_id},
                     "content": {"S": content},
                     "content_type": {"S": content_type},
@@ -780,9 +780,10 @@ def _handle_list_my_rooms(event: dict) -> list:
 def _decode_message(item: dict) -> dict:
     """Decode a DynamoDB ChatMessages item into a plain dict matching Message type.
 
-    The ChatMessages table SK is the "sk" attribute (written by sendMessage as
-    "<iso-timestamp>#<ulid>").  The "createdAt" field mirrors the ISO timestamp
-    prefix of the SK; "messageId" is the full SK value used as a cursor.
+    The ChatMessages table SK is the "created_at_message_id" attribute (written
+    by sendMessage as "<iso-timestamp>#<ulid>").  The "createdAt" field mirrors
+    the ISO timestamp prefix of the SK; "messageId" is the full SK value used
+    as a cursor.
 
     Args:
         item: A single ChatMessages DynamoDB item.
@@ -790,7 +791,7 @@ def _decode_message(item: dict) -> dict:
     Returns:
         Message dict with camelCase keys matching the GraphQL Message type.
     """
-    sk_value = item.get("sk", {}).get("S", "")
+    sk_value = item.get("created_at_message_id", {}).get("S", "")
     # createdAt is the ISO timestamp prefix (before the '#' separator)
     created_at = sk_value.split("#")[0] if "#" in sk_value else sk_value
     return {
@@ -868,7 +869,7 @@ def _handle_messages_by_chat_room(event: dict) -> dict:
     # returns all messages created after the given timestamp.
     if created_at_gt:
         query_kwargs["KeyConditionExpression"] += (
-            " AND sk > :cat_gt"
+            " AND created_at_message_id > :cat_gt"
         )
         query_kwargs["ExpressionAttributeValues"][":cat_gt"] = {"S": created_at_gt}
 

@@ -469,7 +469,7 @@ def test_given_dict_when_encode_then_decode_returns_original_dict() -> None:
     mod = _import_handler()
     original = {
         "room_id": {"S": "some-room-id"},
-        "sk": {"S": "2024-01-01T00:00:00+00:00#01ARZ3NDEKTSV4RRFFQ69G5FAV"},
+        "created_at_message_id": {"S": "2024-01-01T00:00:00+00:00#01ARZ3NDEKTSV4RRFFQ69G5FAV"},
     }
     token = mod._encode_next_token(original)
     assert token is not None
@@ -481,7 +481,7 @@ def test_given_dict_when_encode_then_decode_returns_original_dict() -> None:
 def test_given_encoded_token_when_decoded_then_result_is_dict() -> None:
     """given a token produced by _encode_next_token, when decoded, then result is a dict."""
     mod = _import_handler()
-    source = {"room_id": {"S": "r1"}, "sk": {"S": "ts#ulid"}}
+    source = {"room_id": {"S": "r1"}, "created_at_message_id": {"S": "ts#ulid"}}
     token = mod._encode_next_token(source)
     result = mod._decode_next_token(token)
     assert isinstance(result, dict)
@@ -490,8 +490,8 @@ def test_given_encoded_token_when_decoded_then_result_is_dict() -> None:
 def test_given_two_distinct_dicts_when_encoded_then_tokens_differ() -> None:
     """given two different LastEvaluatedKey dicts, when encoded, then tokens are different."""
     mod = _import_handler()
-    token_a = mod._encode_next_token({"sk": {"S": "cursor-a"}})
-    token_b = mod._encode_next_token({"sk": {"S": "cursor-b"}})
+    token_a = mod._encode_next_token({"created_at_message_id": {"S": "cursor-a"}})
+    token_b = mod._encode_next_token({"created_at_message_id": {"S": "cursor-b"}})
     assert token_a != token_b
 
 
@@ -734,7 +734,7 @@ def test_given_member_caller_with_messages_when_messages_by_chat_room_then_retur
         "Items": [
             {
                 "room_id": {"S": room_id},
-                "sk": {"S": "2024-01-02T00:00:00+00:00#ULID2"},
+                "created_at_message_id": {"S": "2024-01-02T00:00:00+00:00#ULID2"},
                 "sender_id": {"S": "other-user"},
                 "content": {"S": "hello"},
                 "content_type": {"S": "text"},
@@ -742,7 +742,7 @@ def test_given_member_caller_with_messages_when_messages_by_chat_room_then_retur
             },
             {
                 "room_id": {"S": room_id},
-                "sk": {"S": "2024-01-01T00:00:00+00:00#ULID1"},
+                "created_at_message_id": {"S": "2024-01-01T00:00:00+00:00#ULID1"},
                 "sender_id": {"S": user_id},
                 "content": {"S": "first message"},
                 "content_type": {"S": "text"},
@@ -778,7 +778,7 @@ def test_given_member_caller_with_last_evaluated_key_when_messages_by_chat_room_
         "Items": [
             {
                 "room_id": {"S": room_id},
-                "sk": {"S": "2024-01-01T00:00:00+00:00#ULID1"},
+                "created_at_message_id": {"S": "2024-01-01T00:00:00+00:00#ULID1"},
                 "sender_id": {"S": user_id},
                 "content": {"S": "msg"},
                 "content_type": {"S": "text"},
@@ -788,7 +788,7 @@ def test_given_member_caller_with_last_evaluated_key_when_messages_by_chat_room_
         # DynamoDB sets LastEvaluatedKey when there are more pages
         "LastEvaluatedKey": {
             "room_id": {"S": room_id},
-            "sk": {"S": "2024-01-01T00:00:00+00:00#ULID1"},
+            "created_at_message_id": {"S": "2024-01-01T00:00:00+00:00#ULID1"},
         },
     }
     mod._dynamodb_client = mock_ddb
