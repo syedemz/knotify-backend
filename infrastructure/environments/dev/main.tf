@@ -1361,3 +1361,78 @@ module "push_fanout" {
   expo_push_url            = "https://exp.host/--/api/v2/push/send"
   expo_auth_mode           = "none"
 }
+
+# ---------------------------------------------------------------------------
+# knotify-push-tokens Lambda — story 8.11
+#
+# Handles one route:
+#   POST /v1/push-tokens — register or refresh a device push notification token
+#
+# NOT gated by @require_profile_complete — token registration happens at first
+# app launch before onboarding completes.
+# JWT authorizer is enforced by the HTTP API Cognito authorizer (API Gateway).
+#
+# Uses the push_tokens IAM role (dynamodb:PutItem on PushNotificationTokens only).
+# Placed in the VPC (private subnets + lambda SG) to reach the DynamoDB VPC
+# endpoint, consistent with other REST Lambdas.
+# ---------------------------------------------------------------------------
+
+module "push_tokens" {
+  source = "../../modules/push_tokens"
+
+  environment   = var.environment
+  function_name = "knotify-push-tokens-${var.environment}"
+  filename      = "${path.module}/../../../build/push_tokens.zip"
+  role_arn      = module.iam_roles.role_arns["push_tokens"]
+
+  layers = [
+    module.observability_layer.layer_arn,
+  ]
+
+  vpc_config = {
+    subnet_ids         = module.networking.private_subnet_ids
+    security_group_ids = [module.networking.lambda_security_group_id]
+  }
+
+  table_push_tokens_name = module.dynamodb.push_tokens_table_name
+}
+
+# ---------------------------------------------------------------------------
+# API Gateway wiring — story 8.11
+#
+# One integration + one route + one Lambda permission.
+# Route uses JWT authorization (Cognito User Pool, same authorizer as all
+# other routes in the HTTP API).
+#
+# Lambda permission source_arn MUST use api_execution_arn (not default_stage_arn).
+# Per hotfix #86: using default_stage_arn causes 5xx with no Lambda invocation
+# log entry because it is the management ARN, not the execute-api principal ARN.
+# ---------------------------------------------------------------------------
+
+resource "aws_apigatewayv2_integration" "push_tokens" {
+  api_id                 = module.api_gateway.api_id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = module.push_tokens.invoke_arn
+  payload_format_version = "2.0"
+}
+
+resource "aws_apigatewayv2_route" "post_push_tokens" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "POST /v1/push-tokens"
+  target             = "integrations/${aws_apigatewayv2_integration.push_tokens.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+# Lambda permission — scoped to the push-tokens route on this API.
+# source_arn uses api_execution_arn (execute-api ARN) per hotfix #86 lesson.
+resource "aws_lambda_permission" "push_tokens_api_gateway" {
+  statement_id  = "AllowPushTokensAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = module.push_tokens.function_name
+  qualifier     = "live"
+  principal     = "apigateway.amazonaws.com"
+  # Scoped to POST /v1/push-tokens via the execute-api ARN.
+  # source_arn = api_execution_arn (NOT default_stage_arn) per hotfix #86.
+  source_arn = "${module.api_gateway.api_execution_arn}/*/*/v1/push-tokens"
+}

@@ -1038,3 +1038,55 @@ resource "aws_iam_role_policy" "push_fanout_secrets" {
   role   = aws_iam_role.push_fanout.name
   policy = data.aws_iam_policy_document.push_fanout_secrets.json
 }
+
+# ===========================================================================
+# Role: push_tokens
+#
+# For the push_tokens Lambda (story 8.11 — POST /v1/push-tokens).
+# Registers or refreshes device push notification tokens via a single
+# DynamoDB PutItem (unconditional upsert) on PushNotificationTokens.
+#
+# Inside the VPC: the Lambda is placed in private subnets (same pattern as
+# other REST handlers) so it can reach the DynamoDB VPC endpoint.
+# AWSLambdaVPCAccessExecutionRole is attached for ENI attachment capability.
+#
+# NOT decorated with @require_profile_complete — token registration happens
+# at first app launch before onboarding completes.
+#
+# DynamoDB permission:
+#   dynamodb:PutItem on PushNotificationTokens only — no read, no delete,
+#   no other tables.  Least-privilege per codingprinciples.md.
+# ===========================================================================
+
+resource "aws_iam_role" "push_tokens" {
+  name               = "knotify-${var.environment}-push-tokens"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+# VPC access — Lambda runs inside the VPC (private subnets + lambda SG)
+# to reach the DynamoDB VPC endpoint. Consistent with other REST handlers.
+resource "aws_iam_role_policy_attachment" "push_tokens_vpc_access" {
+  role       = aws_iam_role.push_tokens.name
+  policy_arn = local.vpc_access_policy_arn
+}
+
+# DynamoDB PutItem on PushNotificationTokens — scoped to exact table ARN.
+# Default wildcard fallback is used only in isolated IAM unit tests.
+data "aws_iam_policy_document" "push_tokens_dynamodb" {
+  statement {
+    sid    = "PushTokensPutItem"
+    effect = "Allow"
+    actions = [
+      "dynamodb:PutItem",
+    ]
+    resources = [
+      var.push_notification_tokens_table_arn != "" ? var.push_notification_tokens_table_arn : "arn:aws:dynamodb:*:*:table/PushNotificationTokens",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "push_tokens_dynamodb" {
+  name   = "push-tokens-dynamodb"
+  role   = aws_iam_role.push_tokens.name
+  policy = data.aws_iam_policy_document.push_tokens_dynamodb.json
+}

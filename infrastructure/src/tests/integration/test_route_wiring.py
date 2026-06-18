@@ -16,7 +16,7 @@ Verifies that every route wired by stories 6.1–6.4 meets four invariants:
      (bypassing CloudFront, i.e., no x-knotify-edge-secret header) returns
      HTTP 403 — the @with_edge_secret decorator fires at the Lambda layer.
 
-Routes under test (19 total, enumerated from dev/main.tf):
+Routes under test (20 total, enumerated from dev/main.tf):
 
   6.1 / profile (4 routes):
     GET  /v1/profile/me
@@ -46,6 +46,9 @@ Routes under test (19 total, enumerated from dev/main.tf):
   7.5 / match (2 routes):
     POST /v1/match/search
     GET  /v1/match/deck
+
+  8.11 / push-tokens (1 route):
+    POST /v1/push-tokens
 
 NOTE (drift advisory — 2026-06-10):
   Dev infrastructure is currently destroyed. These tests are authored and
@@ -120,6 +123,8 @@ _EXPECTED_ROUTE_KEYS: frozenset[str] = frozenset(
         # story 7.5 — match
         "POST /v1/match/search",
         "GET /v1/match/deck",
+        # story 8.11 — push-tokens
+        "POST /v1/push-tokens",
     ]
 )
 
@@ -268,7 +273,7 @@ def test_all_expected_routes_exist_with_jwt_authorization():
     )
     # All correctly-configured routes must share exactly one authorizer ID —
     # the single Cognito JWT authorizer created by module.api_gateway.
-    # Route count: 4 (profile) + 7 (friends) + 3 (bookmarks) + 3 (blocks) + 2 (match) = 19
+    # Route count: 4 (profile) + 7 (friends) + 3 (bookmarks) + 3 (blocks) + 2 (match) + 1 (push-tokens) = 20
     assert len(authorizer_ids) == 1, (
         f"Expected exactly one AuthorizerId across all {len(_EXPECTED_ROUTE_KEYS)} routes "
         f"(single Cognito JWT authorizer), but found {len(authorizer_ids)}: {authorizer_ids!r}"

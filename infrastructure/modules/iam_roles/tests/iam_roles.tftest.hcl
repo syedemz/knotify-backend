@@ -1103,3 +1103,83 @@ run "role_arns_output_contains_push_fanout" {
     error_message = "role_arns[push_fanout] must be wired to aws_iam_role.push_fanout.arn"
   }
 }
+
+# ===========================================================================
+# Tests 35–37: push_tokens IAM role (story 8.11)
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Test 35: push_tokens role exists with Lambda trust policy
+#
+# Satisfies AC: "IAM role push_tokens_role in iam_roles module:
+#               dynamodb:PutItem on PushNotificationTokens"
+# ---------------------------------------------------------------------------
+run "push_tokens_role_exists_with_lambda_trust_policy" {
+  command = plan
+
+  variables {
+    environment                        = "test"
+    aurora_master_user_secret_arn      = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    push_notification_tokens_table_arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/PushNotificationTokens"
+  }
+
+  assert {
+    condition     = aws_iam_role.push_tokens.assume_role_policy != ""
+    error_message = "push_tokens assume_role_policy must not be empty"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 36: push_tokens DynamoDB inline policy exists
+#
+# Satisfies AC: "dynamodb:PutItem on PushNotificationTokens (scoped to
+#               exact table ARN, not wildcard)"
+# ---------------------------------------------------------------------------
+run "push_tokens_dynamodb_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                        = "test"
+    aurora_master_user_secret_arn      = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    push_notification_tokens_table_arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/PushNotificationTokens"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.push_tokens_dynamodb.name == "push-tokens-dynamodb"
+    error_message = "push_tokens DynamoDB policy must be named push-tokens-dynamodb"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.push_tokens_dynamodb.role == aws_iam_role.push_tokens.name
+    error_message = "push_tokens DynamoDB policy must be attached to push_tokens role"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 37: role_arns output map contains push_tokens
+#
+# Satisfies the module output shape requirement so root modules can reference
+# module.iam_roles.role_arns["push_tokens"].
+# ---------------------------------------------------------------------------
+run "role_arns_output_contains_push_tokens" {
+  command = plan
+
+  variables {
+    environment                        = "test"
+    aurora_master_user_secret_arn      = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    push_notification_tokens_table_arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/PushNotificationTokens"
+  }
+
+  override_resource {
+    target = aws_iam_role.push_tokens
+    values = {
+      arn = "arn:aws:iam::123456789012:role/knotify-test-push-tokens"
+    }
+    override_during = plan
+  }
+
+  assert {
+    condition     = output.role_arns["push_tokens"] == "arn:aws:iam::123456789012:role/knotify-test-push-tokens"
+    error_message = "role_arns[push_tokens] must be wired to aws_iam_role.push_tokens.arn"
+  }
+}

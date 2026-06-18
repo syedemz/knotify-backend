@@ -1,6 +1,6 @@
 phase: 8
 title: Chat (AppSync + DynamoDB Streams + push fan-out)
-last_updated: 2026-06-18 # story 8.10 done
+last_updated: 2026-06-18 # story 8.11 done
 
 context_summary: |
   Delivers the full chat capability in a single phase per the owner's resolved Option A: the AppSync GraphQL API with a hand-written schema (no Amplify auto-generation, no auto-CRUD subscriptions), Lambda resolvers that enforce membership and block checks against Aurora before establishing subscriptions, the deterministic-room-id creation flow from §5.4.1, DynamoDB Streams from ChatMessages and Notifications wired to a PushFanout Lambda that targets Expo Push (per the §13 #7 resolution in v1.6), the POST /v1/push-tokens REST endpoint for token registration, and the stale-token cleanup scheduled Lambda. This phase intentionally ships data plane and API plane together because the GraphQL schema and the DynamoDB key design are tightly coupled. After this phase only account deletion, observability consolidation, hardening, and S3 photos remain.
@@ -286,7 +286,7 @@ stories:
     title: POST /v1/push-tokens REST endpoint
     agent: backenddeveloper
     tracking_issue: 124
-    done: false
+    done: true
     depends_on: []
     acceptance_criteria:
       - infrastructure/src/functions/push_tokens/ implements POST /v1/push-tokens with JSON body {platform, push_token, device_id, app_version}; PutItem (which acts as upsert) on PushNotificationTokens with PK=identity.sub, SK=device_id, attributes push_token + platform + app_version + last_seen=NOW()

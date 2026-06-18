@@ -22,5 +22,7 @@ output "role_arns" {
     notifications_publisher       = aws_iam_role.notifications_publisher.arn
     # Story 8.10 — push_fanout IAM role
     push_fanout                   = aws_iam_role.push_fanout.arn
+    # Story 8.11 — push_tokens IAM role
+    push_tokens                   = aws_iam_role.push_tokens.arn
   }
 }

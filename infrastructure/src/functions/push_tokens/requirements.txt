@@ -1,0 +1,9 @@
+# push_tokens Lambda runtime dependencies
+#
+# This Lambda only needs boto3 (provided by the Lambda runtime) and
+# knotify_obs (provided by the observability Lambda layer).
+#
+# No Aurora access (psycopg2 not needed).
+# No requests (no outbound HTTP to external services).
+# knotify_obs and knotify_db are supplied by Lambda layers and are
+# deliberately excluded from this file (build_package.py strips them).
