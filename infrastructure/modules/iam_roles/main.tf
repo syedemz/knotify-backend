@@ -891,3 +891,150 @@ resource "aws_iam_role_policy" "notifications_publisher_appsync" {
   role   = aws_iam_role.notifications_publisher.name
   policy = data.aws_iam_policy_document.notifications_publisher_appsync.json
 }
+
+# ===========================================================================
+# Role: push_fanout
+#
+# For the push_fanout Lambda (story 8.10).
+# Consumes BOTH ChatMessages and Notifications DynamoDB Streams and sends
+# push notifications via the Expo Push API.
+#
+# OUTSIDE the VPC: only touches DynamoDB and Expo (open internet); no VPC
+# endpoint or ENI attachment needed.  Avoids hotfix #106 blackhole trap.
+# No VPC access policy attached — this role does NOT run in a VPC.
+#
+# DynamoDB data-plane actions on four tables:
+#   ChatRooms            — GetItem (find recipient from user_a/user_b)
+#   ChatRoomMembership   — GetItem (check notifications_muted, cached_other_name)
+#   Notifications        — UpdateItem (SET delivered=true on HTTP 200)
+#   PushNotificationTokens — Query (get tokens for recipient),
+#                            DeleteItem (purge DeviceNotRegistered tokens)
+#
+# DynamoDB stream read actions on BOTH stream ARNs:
+#   ChatMessages stream  — DescribeStream + GetRecords + GetShardIterator + ListStreams
+#   Notifications stream — same four actions
+#
+# Secrets Manager (prod only):
+#   GetSecretValue on knotify-prod-expo-push-credential
+#   Conditional on var.expo_push_secret_arn != "" so dev keeps a wildcard fallback.
+# ===========================================================================
+
+resource "aws_iam_role" "push_fanout" {
+  name               = "knotify-${var.environment}-push-fanout"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+# Basic Lambda execution — creates log group and can write CloudWatch logs.
+# AWSLambdaBasicExecutionRole instead of VPC access because this Lambda runs
+# OUTSIDE the VPC (no ENI attachment needed).
+resource "aws_iam_role_policy_attachment" "push_fanout_basic_execution" {
+  role       = aws_iam_role.push_fanout.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# DynamoDB stream read actions on ChatMessages and Notifications stream ARNs.
+# Both stream ARNs in a single statement — same four actions required for each.
+data "aws_iam_policy_document" "push_fanout_dynamodb_streams" {
+  statement {
+    sid    = "ChatMessagesStreamRead"
+    effect = "Allow"
+    actions = [
+      "dynamodb:DescribeStream",
+      "dynamodb:GetRecords",
+      "dynamodb:GetShardIterator",
+      "dynamodb:ListStreams",
+    ]
+    resources = [
+      var.chat_messages_stream_arn != "" ? var.chat_messages_stream_arn : "arn:aws:dynamodb:*:*:table/ChatMessages/stream/*",
+    ]
+  }
+
+  statement {
+    sid    = "NotificationsStreamRead"
+    effect = "Allow"
+    actions = [
+      "dynamodb:DescribeStream",
+      "dynamodb:GetRecords",
+      "dynamodb:GetShardIterator",
+      "dynamodb:ListStreams",
+    ]
+    resources = [
+      var.notifications_stream_arn != "" ? var.notifications_stream_arn : "arn:aws:dynamodb:*:*:table/Notifications/stream/*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "push_fanout_dynamodb_streams" {
+  name   = "push-fanout-dynamodb-streams"
+  role   = aws_iam_role.push_fanout.name
+  policy = data.aws_iam_policy_document.push_fanout_dynamodb_streams.json
+}
+
+# DynamoDB data-plane permissions on the four tables the handler touches.
+# Scoped to exact table ARNs — no wildcard Resource per codingprinciples.md.
+# Default fallback patterns are used only in isolated IAM unit tests.
+data "aws_iam_policy_document" "push_fanout_dynamodb_tables" {
+  statement {
+    sid    = "ChatRoomsAndMembershipRead"
+    effect = "Allow"
+    actions = [
+      "dynamodb:GetItem",
+    ]
+    resources = [
+      var.chat_rooms_table_arn != "" ? var.chat_rooms_table_arn : "arn:aws:dynamodb:*:*:table/ChatRooms",
+      var.chat_room_membership_table_arn != "" ? var.chat_room_membership_table_arn : "arn:aws:dynamodb:*:*:table/ChatRoomMembership",
+    ]
+  }
+
+  statement {
+    sid    = "NotificationsMarkDelivered"
+    effect = "Allow"
+    actions = [
+      "dynamodb:UpdateItem",
+    ]
+    resources = [
+      var.notifications_table_arn != "" ? var.notifications_table_arn : "arn:aws:dynamodb:*:*:table/Notifications",
+    ]
+  }
+
+  statement {
+    sid    = "PushTokensQueryAndDelete"
+    effect = "Allow"
+    actions = [
+      "dynamodb:Query",
+      "dynamodb:DeleteItem",
+    ]
+    resources = [
+      var.push_notification_tokens_table_arn != "" ? var.push_notification_tokens_table_arn : "arn:aws:dynamodb:*:*:table/PushNotificationTokens",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "push_fanout_dynamodb_tables" {
+  name   = "push-fanout-dynamodb-tables"
+  role   = aws_iam_role.push_fanout.name
+  policy = data.aws_iam_policy_document.push_fanout_dynamodb_tables.json
+}
+
+# Secrets Manager — GetSecretValue on the Expo prod credential.
+# Only provisioned when expo_push_secret_arn is non-empty (prod root module
+# passes the real ARN; dev omits it so the policy uses a wildcard fallback that
+# still validates but won't match any real secret in the dev account).
+data "aws_iam_policy_document" "push_fanout_secrets" {
+  statement {
+    sid    = "ReadExpoPushCredential"
+    effect = "Allow"
+    actions = [
+      "secretsmanager:GetSecretValue",
+    ]
+    resources = [
+      var.expo_push_secret_arn != "" ? var.expo_push_secret_arn : "${local.sm_arn_prefix}:secret:knotify-prod-expo-push-credential-*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "push_fanout_secrets" {
+  name   = "push-fanout-secrets"
+  role   = aws_iam_role.push_fanout.name
+  policy = data.aws_iam_policy_document.push_fanout_secrets.json
+}

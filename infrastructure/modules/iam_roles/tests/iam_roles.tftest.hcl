@@ -991,3 +991,115 @@ run "role_arns_output_contains_notifications_publisher" {
     error_message = "role_arns[notifications_publisher] must be wired to aws_iam_role.notifications_publisher.arn"
   }
 }
+
+# ===========================================================================
+# Tests 31–34: push_fanout IAM role (story 8.10)
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Test 31: push_fanout role exists with Lambda trust policy
+#
+# Satisfies AC: "New IAM role push_fanout_role in iam_roles module"
+# ---------------------------------------------------------------------------
+run "push_fanout_role_exists_with_lambda_trust_policy" {
+  command = plan
+
+  variables {
+    environment                       = "test"
+    aurora_master_user_secret_arn     = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    chat_messages_stream_arn          = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages/stream/2026-06-18T00:00:00.000"
+    notifications_stream_arn          = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications/stream/2026-06-18T00:00:00.000"
+    push_notification_tokens_table_arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/PushNotificationTokens"
+  }
+
+  assert {
+    condition     = aws_iam_role.push_fanout.assume_role_policy != ""
+    error_message = "push_fanout assume_role_policy must not be empty"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 32: push_fanout DynamoDB stream inline policy exists
+#
+# Satisfies AC: "dynamodb stream actions on ChatMessages and Notifications stream ARNs"
+# ---------------------------------------------------------------------------
+run "push_fanout_dynamodb_streams_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                       = "test"
+    aurora_master_user_secret_arn     = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    chat_messages_stream_arn          = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages/stream/2026-06-18T00:00:00.000"
+    notifications_stream_arn          = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications/stream/2026-06-18T00:00:00.000"
+    push_notification_tokens_table_arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/PushNotificationTokens"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.push_fanout_dynamodb_streams.name == "push-fanout-dynamodb-streams"
+    error_message = "push_fanout DynamoDB streams policy must be named push-fanout-dynamodb-streams"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.push_fanout_dynamodb_streams.role == aws_iam_role.push_fanout.name
+    error_message = "push_fanout DynamoDB streams policy must be attached to push_fanout role"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 33: push_fanout DynamoDB table inline policy exists
+#
+# Satisfies AC: "dynamodb:GetItem + Query + UpdateItem + DeleteItem on the
+#               four touched tables"
+# ---------------------------------------------------------------------------
+run "push_fanout_dynamodb_tables_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                       = "test"
+    aurora_master_user_secret_arn     = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    chat_messages_stream_arn          = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages/stream/2026-06-18T00:00:00.000"
+    notifications_stream_arn          = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications/stream/2026-06-18T00:00:00.000"
+    push_notification_tokens_table_arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/PushNotificationTokens"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.push_fanout_dynamodb_tables.name == "push-fanout-dynamodb-tables"
+    error_message = "push_fanout DynamoDB tables policy must be named push-fanout-dynamodb-tables"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.push_fanout_dynamodb_tables.role == aws_iam_role.push_fanout.name
+    error_message = "push_fanout DynamoDB tables policy must be attached to push_fanout role"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 34: role_arns output map contains push_fanout
+#
+# Satisfies the module output shape requirement so root modules can reference
+# module.iam_roles.role_arns["push_fanout"].
+# ---------------------------------------------------------------------------
+run "role_arns_output_contains_push_fanout" {
+  command = plan
+
+  variables {
+    environment                       = "test"
+    aurora_master_user_secret_arn     = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    chat_messages_stream_arn          = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages/stream/2026-06-18T00:00:00.000"
+    notifications_stream_arn          = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications/stream/2026-06-18T00:00:00.000"
+    push_notification_tokens_table_arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/PushNotificationTokens"
+  }
+
+  override_resource {
+    target = aws_iam_role.push_fanout
+    values = {
+      arn = "arn:aws:iam::123456789012:role/knotify-test-push-fanout"
+    }
+    override_during = plan
+  }
+
+  assert {
+    condition     = output.role_arns["push_fanout"] == "arn:aws:iam::123456789012:role/knotify-test-push-fanout"
+    error_message = "role_arns[push_fanout] must be wired to aws_iam_role.push_fanout.arn"
+  }
+}

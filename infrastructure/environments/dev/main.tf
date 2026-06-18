@@ -155,6 +155,16 @@ module "iam_roles" {
   # Scope notifications_publisher DynamoDB stream actions to Notifications stream ARN
   # (story 8.9c). Stream ARN sourced from dynamodb module outputs.tf:61.
   notifications_stream_arn = module.dynamodb.notifications_stream_arn
+
+  # Scope push_fanout DynamoDB stream actions to ChatMessages stream ARN (story 8.10).
+  chat_messages_stream_arn = module.dynamodb.chat_messages_stream_arn
+
+  # Scope push_fanout DynamoDB data-plane permissions on PushNotificationTokens (story 8.10).
+  push_notification_tokens_table_arn = module.dynamodb.push_notification_tokens_arn
+
+  # expo_push_secret_arn is intentionally omitted in dev (no Expo prod credential).
+  # The IAM policy uses a wildcard fallback pattern that validates but won't match
+  # any real secret in the dev account.
 }
 
 # ---------------------------------------------------------------------------
@@ -1322,4 +1332,32 @@ module "notifications_publisher" {
   role_arn                 = module.iam_roles.role_arns["notifications_publisher"]
   notifications_stream_arn = module.dynamodb.notifications_stream_arn
   appsync_graphql_url      = module.appsync.graphql_url
+}
+
+# ---------------------------------------------------------------------------
+# push_fanout Lambda — story 8.10
+#
+# Receives DynamoDB stream events from BOTH ChatMessages and Notifications and
+# fans out push notifications to the Expo Push API.
+#
+# Placement: OUTSIDE the VPC — only touches DynamoDB and Expo (open internet).
+#
+# EXPO_AUTH_MODE=none: dev uses unauthenticated Expo push (acceptable for dev
+# rate limits). No Expo access token secret is provisioned in dev.
+#
+# CONSUMER LIMIT: Notifications stream now has 2 ESM consumers
+# (notifications_publisher + push_fanout), which is the AWS default limit.
+# ---------------------------------------------------------------------------
+
+module "push_fanout" {
+  source = "../../modules/push_fanout"
+
+  environment              = var.environment
+  function_name            = "knotify-push-fanout-${var.environment}"
+  filename                 = "${path.module}/../../../build/push_fanout.zip"
+  role_arn                 = module.iam_roles.role_arns["push_fanout"]
+  chat_messages_stream_arn = module.dynamodb.chat_messages_stream_arn
+  notifications_stream_arn = module.dynamodb.notifications_stream_arn
+  expo_push_url            = "https://exp.host/--/api/v2/push/send"
+  expo_auth_mode           = "none"
 }

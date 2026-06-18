@@ -89,3 +89,25 @@ variable "notifications_stream_arn" {
   type        = string
   default     = ""
 }
+
+# ---------------------------------------------------------------------------
+# Story 8.10 — push_fanout IAM role scoping
+# ---------------------------------------------------------------------------
+
+variable "chat_messages_stream_arn" {
+  description = "DynamoDB stream ARN for the ChatMessages table. Used to scope push_fanout_role's dynamodb stream read actions (story 8.10). Pass module.dynamodb.chat_messages_stream_arn from each environment root module."
+  type        = string
+  default     = ""
+}
+
+variable "push_notification_tokens_table_arn" {
+  description = "ARN of the PushNotificationTokens DynamoDB table. Used to scope push_fanout_role's DynamoDB data-plane permissions (story 8.10). Pass module.dynamodb.push_notification_tokens_arn from each environment root module."
+  type        = string
+  default     = ""
+}
+
+variable "expo_push_secret_arn" {
+  description = "ARN of the Expo push credential Secrets Manager secret (knotify-prod-expo-push-credential). Used to scope push_fanout_role's secretsmanager:GetSecretValue permission (prod only; empty in dev). Pass the aws_secretsmanager_secret ARN from the prod root module."
+  type        = string
+  default     = ""
+}

@@ -161,6 +161,16 @@ module "iam_roles" {
   # Scope notifications_publisher DynamoDB stream actions to Notifications stream ARN
   # (story 8.9c). Stream ARN sourced from dynamodb module outputs.tf:61.
   notifications_stream_arn = module.dynamodb.notifications_stream_arn
+
+  # Scope push_fanout DynamoDB stream actions to ChatMessages stream ARN (story 8.10).
+  chat_messages_stream_arn = module.dynamodb.chat_messages_stream_arn
+
+  # Scope push_fanout DynamoDB data-plane permissions on PushNotificationTokens (story 8.10).
+  push_notification_tokens_table_arn = module.dynamodb.push_notification_tokens_arn
+
+  # Scope push_fanout Secrets Manager permission to the prod Expo push credential ARN.
+  # Forward reference — Terraform resolves this after the secret resource below is declared.
+  expo_push_secret_arn = aws_secretsmanager_secret.expo_push_credential.arn
 }
 
 # ---------------------------------------------------------------------------
@@ -1160,4 +1170,62 @@ module "notifications_publisher" {
   role_arn                 = module.iam_roles.role_arns["notifications_publisher"]
   notifications_stream_arn = module.dynamodb.notifications_stream_arn
   appsync_graphql_url      = module.appsync.graphql_url
+}
+
+# ---------------------------------------------------------------------------
+# Expo push credential — Secrets Manager secret (prod only)
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+#
+# The actual secret value (the Expo access token) is placed manually by an
+# operator via the AWS Console or CLI. Terraform creates the secret resource
+# without a value on first apply; subsequent plans respect the
+# lifecycle.ignore_changes = [secret_string] annotation so Terraform never
+# overwrites an operator-set value.
+#
+# The push_fanout Lambda reads this secret on cold start when EXPO_AUTH_MODE=bearer.
+# Secret name matches the hardcoded constant in handler.py: knotify-prod-expo-push-credential.
+# ---------------------------------------------------------------------------
+
+resource "aws_secretsmanager_secret" "expo_push_credential" {
+  name        = "knotify-prod-expo-push-credential"
+  description = "Expo Push API access token for knotify prod push notifications (story 8.10). Value set manually by operator."
+
+  # Recovery window of 7 days — allows accidental deletion to be undone.
+  recovery_window_in_days = 7
+}
+
+resource "aws_secretsmanager_secret_version" "expo_push_credential" {
+  secret_id     = aws_secretsmanager_secret.expo_push_credential.id
+  secret_string = "placeholder-replace-with-real-expo-token"
+
+  lifecycle {
+    # Operator sets the real token value manually; Terraform must never overwrite it.
+    ignore_changes = [secret_string]
+  }
+}
+
+# ---------------------------------------------------------------------------
+# push_fanout Lambda — story 8.10
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+# Mirrors the dev wiring with EXPO_AUTH_MODE=bearer (Secrets Manager token).
+#
+# Placement: OUTSIDE the VPC — only touches DynamoDB and Expo (open internet).
+#
+# CONSUMER LIMIT: Notifications stream now has 2 ESM consumers
+# (notifications_publisher + push_fanout), which is the AWS default limit.
+# ---------------------------------------------------------------------------
+
+module "push_fanout" {
+  source = "../../modules/push_fanout"
+
+  environment              = var.environment
+  function_name            = "knotify-push-fanout-${var.environment}"
+  filename                 = "${path.module}/../../../build/push_fanout.zip"
+  role_arn                 = module.iam_roles.role_arns["push_fanout"]
+  chat_messages_stream_arn = module.dynamodb.chat_messages_stream_arn
+  notifications_stream_arn = module.dynamodb.notifications_stream_arn
+  expo_push_url            = "https://exp.host/--/api/v2/push/send"
+  expo_auth_mode           = "bearer"
 }

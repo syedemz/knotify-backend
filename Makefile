@@ -125,6 +125,8 @@ package-all:
 	$(MAKE) package FUNC=room_state_publisher
 	@echo "[package-all] Building notifications_publisher function ..."
 	$(MAKE) package FUNC=notifications_publisher
+	@echo "[package-all] Building push_fanout function ..."
+	$(MAKE) package FUNC=push_fanout
 	@echo "[package-all] Done — all artifacts in $(BUILD_DIR)/"
 
 # ---------------------------------------------------------------------------
