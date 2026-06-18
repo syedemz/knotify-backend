@@ -1,6 +1,6 @@
 phase: 8
 title: Chat (AppSync + DynamoDB Streams + push fan-out)
-last_updated: 2026-06-18 # story 8.12 done
+last_updated: 2026-06-18 # story 8.13 done
 
 context_summary: |
   Delivers the full chat capability in a single phase per the owner's resolved Option A: the AppSync GraphQL API with a hand-written schema (no Amplify auto-generation, no auto-CRUD subscriptions), Lambda resolvers that enforce membership and block checks against Aurora before establishing subscriptions, the deterministic-room-id creation flow from §5.4.1, DynamoDB Streams from ChatMessages and Notifications wired to a PushFanout Lambda that targets Expo Push (per the §13 #7 resolution in v1.6), the POST /v1/push-tokens REST endpoint for token registration, and the stale-token cleanup scheduled Lambda. This phase intentionally ships data plane and API plane together because the GraphQL schema and the DynamoDB key design are tightly coupled. After this phase only account deletion, observability consolidation, hardening, and S3 photos remain.
@@ -323,7 +323,7 @@ stories:
     title: End-to-end chat test
     agent: backenddeveloper
     tracking_issue: 126
-    done: false
+    done: true
     depends_on: [8.4, 8.6, 8.7, 8.9, 8.9a, 8.9b, 8.9c, 8.10, 8.11]
     acceptance_criteria:
       - tests/integration/chat_e2e_test.py provisions two test users via Cognito, completes both profiles (so custom:profile_complete claim flips true), has them become friends via the phase-6 friends API
