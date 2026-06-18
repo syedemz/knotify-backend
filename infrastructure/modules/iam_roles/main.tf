@@ -583,3 +583,73 @@ resource "aws_iam_role_policy" "chat_resolver_dynamodb" {
   role   = aws_iam_role.chat_resolver.name
   policy = data.aws_iam_policy_document.chat_resolver_dynamodb.json
 }
+
+# ===========================================================================
+# Role: appsync_logs
+#
+# Grants AppSync the permission to push execution logs to CloudWatch Logs.
+# Trust principal is appsync.amazonaws.com (not lambda.amazonaws.com).
+# Managed policy AWSAppSyncPushToCloudWatchLogs is the AWS-published policy
+# for this purpose — no custom inline policy needed.
+# This role ARN is passed into aws_appsync_graphql_api.log_config
+# .cloudwatch_logs_role_arn in the appsync module (story 8.1).
+# ===========================================================================
+
+data "aws_iam_policy_document" "appsync_assume_role" {
+  statement {
+    sid     = "AppSyncAssumeRole"
+    effect  = "Allow"
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["appsync.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "appsync_logs" {
+  name               = "knotify-${var.environment}-appsync-logs"
+  assume_role_policy = data.aws_iam_policy_document.appsync_assume_role.json
+}
+
+resource "aws_iam_role_policy_attachment" "appsync_logs_cloudwatch" {
+  role       = aws_iam_role.appsync_logs.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSAppSyncPushToCloudWatchLogs"
+}
+
+# ===========================================================================
+# Role: appsync_chat_resolver_invoke
+#
+# Grants AppSync the permission to invoke the chat_resolver Lambda function.
+# Trust principal is appsync.amazonaws.com.
+# Inline policy grants lambda:InvokeFunction scoped to the exact Lambda ARN
+# supplied from module.chat_resolver.lambda_arn in the root modules.
+# This role is registered as the service_role_arn on the chat_resolver_ds
+# AWS_LAMBDA datasource in the appsync module (story 8.1).
+# Default "" ARN value is used in IAM unit tests (chat_resolver module not
+# yet wired when running isolated module tests).
+# ===========================================================================
+
+resource "aws_iam_role" "appsync_chat_resolver_invoke" {
+  name               = "knotify-${var.environment}-appsync-chat-resolver-invoke"
+  assume_role_policy = data.aws_iam_policy_document.appsync_assume_role.json
+}
+
+data "aws_iam_policy_document" "appsync_chat_resolver_invoke_lambda" {
+  statement {
+    sid    = "InvokeChatResolverLambda"
+    effect = "Allow"
+    actions = [
+      "lambda:InvokeFunction",
+    ]
+    resources = [
+      var.chat_resolver_lambda_arn != "" ? var.chat_resolver_lambda_arn : "arn:aws:lambda:*:*:function:knotify-chat-resolver-*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "appsync_chat_resolver_invoke_lambda" {
+  name   = "appsync-chat-resolver-invoke-lambda"
+  role   = aws_iam_role.appsync_chat_resolver_invoke.name
+  policy = data.aws_iam_policy_document.appsync_chat_resolver_invoke_lambda.json
+}

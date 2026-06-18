@@ -618,3 +618,123 @@ run "aurora_reader_match_app_user_credential_inline_policy_exists" {
     error_message = "aurora_reader_match inline policy must be attached to the aurora_reader_match role"
   }
 }
+
+# ---------------------------------------------------------------------------
+# Test 20: appsync_logs_role — trust principal appsync.amazonaws.com,
+#          AWSAppSyncPushToCloudWatchLogs managed policy attached
+#
+# Satisfies story 8.1 AC: "new appsync_logs_role with trust on
+# appsync.amazonaws.com and managed policy AWSAppSyncPushToCloudWatchLogs".
+# ---------------------------------------------------------------------------
+run "appsync_logs_role_exists_with_trust_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = aws_iam_role.appsync_logs.assume_role_policy != ""
+    error_message = "appsync_logs assume_role_policy must not be empty"
+  }
+}
+
+run "appsync_logs_role_attaches_appsync_cloudwatch_managed_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy_attachment.appsync_logs_cloudwatch.policy_arn == "arn:aws:iam::aws:policy/service-role/AWSAppSyncPushToCloudWatchLogs"
+    error_message = "appsync_logs must attach AWSAppSyncPushToCloudWatchLogs"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 21: appsync_chat_resolver_invoke — trust principal appsync.amazonaws.com,
+#          inline policy granting lambda:InvokeFunction on chat_resolver Lambda ARN
+#
+# Satisfies story 8.1 AC: "aws_iam_role for AppSync to invoke chat_resolver Lambda
+# is declared and granted lambda:InvokeFunction on module.chat_resolver.lambda_arn".
+# ---------------------------------------------------------------------------
+run "appsync_chat_resolver_invoke_role_exists" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    chat_resolver_lambda_arn      = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
+  }
+
+  assert {
+    condition     = aws_iam_role.appsync_chat_resolver_invoke.assume_role_policy != ""
+    error_message = "appsync_chat_resolver_invoke assume_role_policy must not be empty"
+  }
+}
+
+run "appsync_chat_resolver_invoke_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    chat_resolver_lambda_arn      = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.appsync_chat_resolver_invoke_lambda.name == "appsync-chat-resolver-invoke-lambda"
+    error_message = "appsync_chat_resolver_invoke inline policy must be named appsync-chat-resolver-invoke-lambda"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.appsync_chat_resolver_invoke_lambda.role == aws_iam_role.appsync_chat_resolver_invoke.name
+    error_message = "appsync_chat_resolver_invoke inline policy must be attached to the appsync_chat_resolver_invoke role"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 22: role_arns output map contains appsync_logs and appsync_chat_resolver_invoke
+#
+# Satisfies the module output shape requirement so root modules can reference
+# module.iam_roles.role_arns["appsync_logs"] and
+# module.iam_roles.role_arns["appsync_chat_resolver_invoke"].
+# ---------------------------------------------------------------------------
+run "role_arns_output_contains_appsync_roles" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    chat_resolver_lambda_arn      = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
+  }
+
+  override_resource {
+    target = aws_iam_role.appsync_logs
+    values = {
+      arn = "arn:aws:iam::123456789012:role/knotify-test-appsync-logs"
+    }
+    override_during = plan
+  }
+
+  override_resource {
+    target = aws_iam_role.appsync_chat_resolver_invoke
+    values = {
+      arn = "arn:aws:iam::123456789012:role/knotify-test-appsync-chat-resolver-invoke"
+    }
+    override_during = plan
+  }
+
+  assert {
+    condition     = output.role_arns["appsync_logs"] == "arn:aws:iam::123456789012:role/knotify-test-appsync-logs"
+    error_message = "role_arns[appsync_logs] must be wired to aws_iam_role.appsync_logs.arn"
+  }
+
+  assert {
+    condition     = output.role_arns["appsync_chat_resolver_invoke"] == "arn:aws:iam::123456789012:role/knotify-test-appsync-chat-resolver-invoke"
+    error_message = "role_arns[appsync_chat_resolver_invoke] must be wired to aws_iam_role.appsync_chat_resolver_invoke.arn"
+  }
+}

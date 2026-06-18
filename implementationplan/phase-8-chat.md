@@ -1,6 +1,6 @@
 phase: 8
 title: Chat (AppSync + DynamoDB Streams + push fan-out)
-last_updated: 2026-06-18 # story 8.0 done
+last_updated: 2026-06-17 # story 8.1 done
 
 context_summary: |
   Delivers the full chat capability in a single phase per the owner's resolved Option A: the AppSync GraphQL API with a hand-written schema (no Amplify auto-generation, no auto-CRUD subscriptions), Lambda resolvers that enforce membership and block checks against Aurora before establishing subscriptions, the deterministic-room-id creation flow from §5.4.1, DynamoDB Streams from ChatMessages and Notifications wired to a PushFanout Lambda that targets Expo Push (per the §13 #7 resolution in v1.6), the POST /v1/push-tokens REST endpoint for token registration, and the stale-token cleanup scheduled Lambda. This phase intentionally ships data plane and API plane together because the GraphQL schema and the DynamoDB key design are tightly coupled. After this phase only account deletion, observability consolidation, hardening, and S3 photos remain.
@@ -47,7 +47,7 @@ stories:
     title: AppSync API Terraform module
     agent: backenddeveloper
     tracking_issue: 111
-    done: false
+    done: true
     depends_on: [8.0]
     acceptance_criteria:
       - infrastructure/modules/appsync/main.tf creates aws_appsync_graphql_api with authentication_type AMAZON_COGNITO_USER_POOLS (primary) and additional_authentication_provider AWS_IAM (secondary, consumed by the backend publisher Lambdas — 8.9a room_state_publisher and 8.9c notifications_publisher; publish mutations declared in 8.2 are annotated `@aws_iam` so user-JWT clients cannot invoke them)

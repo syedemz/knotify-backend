@@ -53,3 +53,13 @@ variable "notifications_table_arn" {
   type        = string
   default     = ""
 }
+
+# ---------------------------------------------------------------------------
+# Story 8.1 — AppSync IAM roles
+# ---------------------------------------------------------------------------
+
+variable "chat_resolver_lambda_arn" {
+  description = "ARN of the chat_resolver Lambda live alias. Used to scope appsync_chat_resolver_invoke's lambda:InvokeFunction permission (story 8.1). Pass module.chat_resolver.lambda_arn from each environment root module."
+  type        = string
+  default     = ""
+}

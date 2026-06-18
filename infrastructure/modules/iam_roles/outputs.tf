@@ -12,5 +12,8 @@ output "role_arns" {
     aurora_reader_match           = aws_iam_role.aurora_reader_match.arn
     aurora_refresh_lambda         = aws_iam_role.aurora_refresh_lambda.arn
     chat_resolver                 = aws_iam_role.chat_resolver.arn
+    # Story 8.1 — AppSync IAM roles
+    appsync_logs                  = aws_iam_role.appsync_logs.arn
+    appsync_chat_resolver_invoke  = aws_iam_role.appsync_chat_resolver_invoke.arn
   }
 }

@@ -138,6 +138,11 @@ module "iam_roles" {
   chat_messages_table_arn        = module.dynamodb.chat_messages_arn
   message_reads_table_arn        = module.dynamodb.message_reads_arn
   notifications_table_arn        = module.dynamodb.notifications_arn
+
+  # Scope appsync_chat_resolver_invoke's lambda:InvokeFunction to the exact
+  # chat_resolver Lambda ARN (story 8.1). Forward reference — Terraform
+  # resolves this after the chat_resolver module is declared below.
+  chat_resolver_lambda_arn = module.chat_resolver.lambda_arn
 }
 
 # ---------------------------------------------------------------------------
@@ -1153,6 +1158,54 @@ module "chat_resolver" {
   aurora_host    = module.aurora.cluster_endpoint
   aurora_port    = tostring(module.aurora.port)
   aurora_dbname  = module.aurora.database_name
+}
+
+# ---------------------------------------------------------------------------
+# AppSync GraphQL API — story 8.1
+#
+# Provisions the knotify chat AppSync API with:
+#   - Primary auth: AMAZON_COGNITO_USER_POOLS (Cognito JWT for client access)
+#   - Secondary auth: AWS_IAM (backend publisher Lambdas: 8.9a, 8.9c)
+#   - Five DynamoDB datasources (five chat domain tables)
+#   - One Lambda datasource (chat_resolver_ds → chat_resolver Lambda)
+#   - log_config at ALL field-level detail to CloudWatch (7-day retention)
+#
+# Schema is a placeholder ("type Query { _placeholder: String }") until
+# story 8.2 ships the full hand-written SDL. The appsync module's main.tf
+# carries a "# Schema body lands in story 8.2" comment marking the swap point.
+# ---------------------------------------------------------------------------
+
+module "appsync" {
+  source = "../../modules/appsync"
+
+  environment = var.environment
+
+  # Cognito User Pool — primary auth mode
+  user_pool_id = module.cognito.user_pool_id
+
+  # IAM roles from iam_roles module (story 8.1)
+  appsync_logs_role_arn   = module.iam_roles.role_arns["appsync_logs"]
+  appsync_invoke_role_arn = module.iam_roles.role_arns["appsync_chat_resolver_invoke"]
+
+  # chat_resolver Lambda datasource
+  chat_resolver_lambda_arn = module.chat_resolver.lambda_arn
+
+  # Five chat domain DynamoDB datasources
+  chat_rooms_table_name           = module.dynamodb.chat_rooms_table_name
+  chat_rooms_table_arn            = module.dynamodb.chat_rooms_arn
+  chat_room_membership_table_name = module.dynamodb.chat_room_membership_table_name
+  chat_room_membership_table_arn  = module.dynamodb.chat_room_membership_arn
+  chat_messages_table_name        = module.dynamodb.chat_messages_table_name
+  chat_messages_table_arn         = module.dynamodb.chat_messages_arn
+  message_reads_table_name        = module.dynamodb.message_reads_table_name
+  message_reads_table_arn         = module.dynamodb.message_reads_arn
+  notifications_table_name        = module.dynamodb.notifications_table_name
+  notifications_table_arn         = module.dynamodb.notifications_arn
+
+  # DynamoDB service role — the chat_resolver IAM role already has
+  # dynamodb:GetItem / PutItem / Query / etc. on the five chat tables (story 8.0)
+  # and is the natural service role for DDB datasources used by pipeline resolvers.
+  dynamodb_role_arn = module.iam_roles.role_arns["chat_resolver"]
 }
 
 # ---------------------------------------------------------------------------
