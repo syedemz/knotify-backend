@@ -1,5 +1,5 @@
 project: knotify-backend
-last_updated: 2026-06-17 # phase-7 complete + probe-verified + tagged (phase-7-complete); 4 post-merge hotfixes shipped (#106/#107/#108/#109)
+last_updated: 2026-06-17 # phase-8 complete — all 17 stories done, ready for PR #127 merge + tag
 
 phases:
 
@@ -55,7 +55,7 @@ phases:
   title: Chat (AppSync + DynamoDB Streams + push fan-out)
   file: implementationplan/phase-8-chat.md
   ready: true
-  done: false
+  done: true
 
 - phase: 9
   title: Account deletion (Step Functions, soft delete)
