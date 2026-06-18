@@ -1,5 +1,5 @@
 """
-Unit tests for the knotify-chat-resolver Lambda handler (story 8.0 scaffold).
+Unit tests for the knotify-chat-resolver Lambda handler.
 
 These tests are fully isolated — they do NOT require a running database,
 AWS credentials, or a deployed Lambda. External collaborators (DB connection,
@@ -20,6 +20,10 @@ Test coverage for story 8.0 (empty dispatcher):
   B. @require_profile_complete_appsync — the decorator blocks access when the
      custom:profile_complete claim is missing or not "true" and lets requests
      through when it is "true".
+
+Test coverage for story 8.4 (sendMessage — token derivation):
+  C. derive_client_request_token — pure function: same inputs produce same hash;
+     differing inputs (content diff by one byte, second ±1) produce different hashes.
 """
 
 from __future__ import annotations
@@ -154,13 +158,28 @@ def test_given_unknown_query_field_when_dispatched_then_returns_unimplemented() 
     assert "Query.unknownField" in result["message"]
 
 
-def test_given_mutation_field_when_dispatched_then_returns_unimplemented() -> None:
-    """given Mutation.sendMessage, when _dispatch called, then Unimplemented error."""
+def test_given_mutation_send_message_when_dispatched_then_not_unimplemented() -> None:
+    """given Mutation.sendMessage (story 8.4 wired), when _dispatch called, then NOT Unimplemented.
+
+    sendMessage is now routed to _handle_send_message; it will reject the
+    caller (Unauthorized — not a room member) rather than returning Unimplemented.
+    """
+    from unittest.mock import MagicMock
+
     mod = _import_handler()
+    # Inject a mock DDB client so no real AWS call is made.
+    # GetItem returns no Item → sender is not a member → Unauthorized.
+    mock_ddb = MagicMock()
+    mock_ddb.get_item.return_value = {}
+    mod._dynamodb_client = mock_ddb
+
     event = _make_appsync_event("Mutation", "sendMessage")
+    event["arguments"] = {"roomId": "room-x", "content": "hello"}
     result = mod._dispatch(event)
-    assert result["errorType"] == "Unimplemented"
-    assert "Mutation.sendMessage" in result["message"]
+    # Must NOT be Unimplemented — the route is now wired.
+    assert result.get("errorType") != "Unimplemented", (
+        f"sendMessage must be routed but got Unimplemented: {result}"
+    )
 
 
 def test_given_subscription_field_when_dispatched_then_returns_unimplemented() -> None:
@@ -276,3 +295,138 @@ def test_given_no_identity_key_when_decorator_applied_then_unauthorized() -> Non
 
     result = fake_handler({}, _CONTEXT)
     assert result["errorType"] == "Unauthorized"
+
+
+# ---------------------------------------------------------------------------
+# Section C — derive_client_request_token (story 8.4)
+#
+# Determinism proof: same (sender, room, content, second) inputs always yield
+# the same SHA-256 hex digest; any single-field difference yields a different
+# digest.  This is the sole automated proof of the idempotency property —
+# the deployed Lambda's wall clock cannot be pinned, so an integration-test
+# replay would be flaky and is intentionally omitted.
+# ---------------------------------------------------------------------------
+
+
+def test_given_same_inputs_when_derive_token_called_twice_then_same_hash() -> None:
+    """given identical (sender, room, content, second), when called twice, then identical token."""
+    mod = _import_handler()
+    token_a = mod.derive_client_request_token(
+        sender_id="user-aaa",
+        room_id="room-111",
+        content="hello world",
+        epoch_second=1_718_000_000,
+    )
+    token_b = mod.derive_client_request_token(
+        sender_id="user-aaa",
+        room_id="room-111",
+        content="hello world",
+        epoch_second=1_718_000_000,
+    )
+    assert token_a == token_b
+
+
+def test_given_content_differs_by_one_byte_when_derive_token_called_then_different_hashes() -> None:
+    """given content differing by one byte, when derive_token called, then different tokens."""
+    mod = _import_handler()
+    token_original = mod.derive_client_request_token(
+        sender_id="user-aaa",
+        room_id="room-111",
+        content="hello world",
+        epoch_second=1_718_000_000,
+    )
+    token_mutated = mod.derive_client_request_token(
+        sender_id="user-aaa",
+        room_id="room-111",
+        content="hello worle",  # last char differs
+        epoch_second=1_718_000_000,
+    )
+    assert token_original != token_mutated
+
+
+def test_given_epoch_second_minus_one_when_derive_token_called_then_different_hash() -> None:
+    """given epoch_second - 1, when derive_token called, then token differs (clock boundary)."""
+    mod = _import_handler()
+    base_second = 1_718_000_000
+    token_base = mod.derive_client_request_token(
+        sender_id="user-aaa",
+        room_id="room-111",
+        content="hello world",
+        epoch_second=base_second,
+    )
+    token_prev = mod.derive_client_request_token(
+        sender_id="user-aaa",
+        room_id="room-111",
+        content="hello world",
+        epoch_second=base_second - 1,
+    )
+    assert token_base != token_prev
+
+
+def test_given_epoch_second_plus_one_when_derive_token_called_then_different_hash() -> None:
+    """given epoch_second + 1, when derive_token called, then token differs (clock boundary)."""
+    mod = _import_handler()
+    base_second = 1_718_000_000
+    token_base = mod.derive_client_request_token(
+        sender_id="user-aaa",
+        room_id="room-111",
+        content="hello world",
+        epoch_second=base_second,
+    )
+    token_next = mod.derive_client_request_token(
+        sender_id="user-aaa",
+        room_id="room-111",
+        content="hello world",
+        epoch_second=base_second + 1,
+    )
+    assert token_base != token_next
+
+
+def test_given_different_sender_ids_when_derive_token_called_then_different_hashes() -> None:
+    """given different sender_ids, when derive_token called, then tokens differ."""
+    mod = _import_handler()
+    token_a = mod.derive_client_request_token(
+        sender_id="user-aaa",
+        room_id="room-111",
+        content="hello world",
+        epoch_second=1_718_000_000,
+    )
+    token_b = mod.derive_client_request_token(
+        sender_id="user-bbb",
+        room_id="room-111",
+        content="hello world",
+        epoch_second=1_718_000_000,
+    )
+    assert token_a != token_b
+
+
+def test_given_different_room_ids_when_derive_token_called_then_different_hashes() -> None:
+    """given different room_ids, when derive_token called, then tokens differ."""
+    mod = _import_handler()
+    token_a = mod.derive_client_request_token(
+        sender_id="user-aaa",
+        room_id="room-111",
+        content="hello world",
+        epoch_second=1_718_000_000,
+    )
+    token_b = mod.derive_client_request_token(
+        sender_id="user-aaa",
+        room_id="room-222",
+        content="hello world",
+        epoch_second=1_718_000_000,
+    )
+    assert token_a != token_b
+
+
+def test_given_any_inputs_when_derive_token_called_then_result_is_64_char_hex_string() -> None:
+    """given valid inputs, when derive_token called, then result is a 64-character hex SHA-256."""
+    mod = _import_handler()
+    token = mod.derive_client_request_token(
+        sender_id="user-aaa",
+        room_id="room-111",
+        content="test message",
+        epoch_second=1_718_000_000,
+    )
+    assert isinstance(token, str)
+    assert len(token) == 64
+    assert all(c in "0123456789abcdef" for c in token)

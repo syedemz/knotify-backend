@@ -228,17 +228,28 @@ def test_given_mutation_create_or_get_room_when_dispatch_called_then_handler_inv
     )
 
 
-def test_given_mutation_send_message_when_dispatch_called_then_unimplemented() -> None:
-    """given (Mutation, sendMessage), when _dispatch called, then Unimplemented (not yet wired)."""
-    mod = _import_handler()
+def test_given_mutation_send_message_when_dispatch_called_then_not_unimplemented() -> None:
+    """given (Mutation, sendMessage) — wired in story 8.4 — when _dispatch called, then NOT Unimplemented.
+
+    The route is now live; the handler will reject the caller as Unauthorized
+    (not a room member) rather than returning Unimplemented.
+    """
+    mock_ddb = MagicMock()
+    # GetItem for membership returns no item (sender is not a member).
+    mock_ddb.get_item.return_value = {}
+
+    mod = _import_handler(dynamodb_client_override=mock_ddb)
     event = {
         "typeName": "Mutation",
         "fieldName": "sendMessage",
         "identity": {"sub": "x", "claims": {}},
-        "arguments": {},
+        "arguments": {"roomId": "room-y", "content": "hello"},
     }
     result = mod._dispatch(event)
-    assert result["errorType"] == "Unimplemented"
+    # sendMessage is wired — must NOT be Unimplemented.
+    assert result.get("errorType") != "Unimplemented", (
+        f"sendMessage should be wired (story 8.4) but got Unimplemented: {result}"
+    )
 
 
 # ---------------------------------------------------------------------------
