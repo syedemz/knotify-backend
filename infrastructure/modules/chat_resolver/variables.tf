@@ -1,8 +1,3 @@
-variable "environment" {
-  description = "Deployment environment (dev or prod). Used in resource names."
-  type        = string
-}
-
 variable "function_name" {
   description = "Name of the chat_resolver Lambda function."
   type        = string

@@ -140,11 +140,6 @@ module "iam_roles" {
 
   # Scope chat_resolver DynamoDB permissions to exact table ARNs (story 8.0).
   # Sourced from the dynamodb module outputs added in story 8.0.
-  chat_rooms_table_arn           = module.dynamodb.chat_rooms_arn
-  chat_room_membership_table_arn = module.dynamodb.chat_room_membership_arn
-  chat_messages_table_arn        = module.dynamodb.chat_messages_arn
-  message_reads_table_arn        = module.dynamodb.message_reads_arn
-  notifications_table_arn        = module.dynamodb.notifications_arn
 
   # Scope appsync_chat_resolver_invoke's lambda:InvokeFunction to the exact
   # chat_resolver Lambda ARN (story 8.1). Forward reference resolved by Terraform.
@@ -1024,7 +1019,6 @@ resource "aws_lambda_permission" "match_api_gateway" {
 module "chat_resolver" {
   source = "../../modules/chat_resolver"
 
-  environment   = var.environment
   function_name = "knotify-chat-resolver-${var.environment}"
   filename      = "${path.module}/../../../build/chat_resolver.zip"
   role_arn      = module.iam_roles.role_arns["chat_resolver"]
@@ -1078,15 +1072,10 @@ module "appsync" {
 
   # Five chat domain DynamoDB datasources
   chat_rooms_table_name           = module.dynamodb.chat_rooms_table_name
-  chat_rooms_table_arn            = module.dynamodb.chat_rooms_arn
   chat_room_membership_table_name = module.dynamodb.chat_room_membership_table_name
-  chat_room_membership_table_arn  = module.dynamodb.chat_room_membership_arn
   chat_messages_table_name        = module.dynamodb.chat_messages_table_name
-  chat_messages_table_arn         = module.dynamodb.chat_messages_arn
   message_reads_table_name        = module.dynamodb.message_reads_table_name
-  message_reads_table_arn         = module.dynamodb.message_reads_arn
   notifications_table_name        = module.dynamodb.notifications_table_name
-  notifications_table_arn         = module.dynamodb.notifications_arn
 
   # DynamoDB service role — the chat_resolver IAM role grants DDB access (story 8.0)
   dynamodb_role_arn = module.iam_roles.role_arns["chat_resolver"]
@@ -1143,7 +1132,6 @@ module "refresh_deck_view" {
 module "room_state_publisher" {
   source = "../../modules/room_state_publisher"
 
-  environment           = var.environment
   function_name         = "knotify-room-state-publisher-${var.environment}"
   filename              = "${path.module}/../../../build/room_state_publisher.zip"
   role_arn              = module.iam_roles.role_arns["room_state_publisher"]
@@ -1164,7 +1152,6 @@ module "room_state_publisher" {
 module "notifications_publisher" {
   source = "../../modules/notifications_publisher"
 
-  environment              = var.environment
   function_name            = "knotify-notifications-publisher-${var.environment}"
   filename                 = "${path.module}/../../../build/notifications_publisher.zip"
   role_arn                 = module.iam_roles.role_arns["notifications_publisher"]
@@ -1220,7 +1207,6 @@ resource "aws_secretsmanager_secret_version" "expo_push_credential" {
 module "push_fanout" {
   source = "../../modules/push_fanout"
 
-  environment              = var.environment
   function_name            = "knotify-push-fanout-${var.environment}"
   filename                 = "${path.module}/../../../build/push_fanout.zip"
   role_arn                 = module.iam_roles.role_arns["push_fanout"]
@@ -1251,7 +1237,6 @@ module "push_fanout" {
 module "push_tokens" {
   source = "../../modules/push_tokens"
 
-  environment   = var.environment
   function_name = "knotify-push-tokens-${var.environment}"
   filename      = "${path.module}/../../../build/push_tokens.zip"
   role_arn      = module.iam_roles.role_arns["push_tokens"]
@@ -1326,7 +1311,6 @@ resource "aws_lambda_permission" "push_tokens_api_gateway" {
 module "stale_token_cleanup" {
   source = "../../modules/stale_token_cleanup"
 
-  environment            = var.environment
   function_name          = "knotify-stale-token-cleanup-${var.environment}"
   filename               = "${path.module}/../../../build/stale_token_cleanup.zip"
   role_arn               = module.iam_roles.role_arns["stale_token_cleanup"]

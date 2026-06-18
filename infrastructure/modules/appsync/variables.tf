@@ -35,18 +35,8 @@ variable "chat_rooms_table_name" {
   type        = string
 }
 
-variable "chat_rooms_table_arn" {
-  description = "ARN of the ChatRooms DynamoDB table. Sourced from module.dynamodb.chat_rooms_arn."
-  type        = string
-}
-
 variable "chat_room_membership_table_name" {
   description = "Name of the ChatRoomMembership DynamoDB table. Sourced from module.dynamodb.chat_room_membership_table_name."
-  type        = string
-}
-
-variable "chat_room_membership_table_arn" {
-  description = "ARN of the ChatRoomMembership DynamoDB table. Sourced from module.dynamodb.chat_room_membership_arn."
   type        = string
 }
 
@@ -55,28 +45,13 @@ variable "chat_messages_table_name" {
   type        = string
 }
 
-variable "chat_messages_table_arn" {
-  description = "ARN of the ChatMessages DynamoDB table. Sourced from module.dynamodb.chat_messages_arn."
-  type        = string
-}
-
 variable "message_reads_table_name" {
   description = "Name of the MessageReads DynamoDB table. Sourced from module.dynamodb.message_reads_table_name."
   type        = string
 }
 
-variable "message_reads_table_arn" {
-  description = "ARN of the MessageReads DynamoDB table. Sourced from module.dynamodb.message_reads_arn."
-  type        = string
-}
-
 variable "notifications_table_name" {
   description = "Name of the Notifications DynamoDB table. Sourced from module.dynamodb.notifications_table_name."
-  type        = string
-}
-
-variable "notifications_table_arn" {
-  description = "ARN of the Notifications DynamoDB table. Sourced from module.dynamodb.notifications_arn."
   type        = string
 }
 
