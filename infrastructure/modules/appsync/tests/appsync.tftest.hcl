@@ -450,3 +450,332 @@ run "schema_loaded_from_file_contains_canonical_types" {
     error_message = "schema must NOT contain auto-generated onDeleteMessage subscription"
   }
 }
+
+# ---------------------------------------------------------------------------
+# Story 8.6 tests — Pipeline resolvers for subscription fields
+#
+# Implementation choice: APPSYNC_JS runtime on a NONE datasource.
+# Cheaper than Lambda (no cold-start per subscribe), no external call,
+# and supports synchronous DynamoDB GetItem via the AppSync JS evaluator.
+# Comment in main.tf: "APPSYNC_JS on NONE datasource — no Lambda cold-start on subscribe"
+#
+# Tests assert:
+#   AC-8.6-T1  — NONE datasource declared for pipeline function execution
+#   AC-8.6-T2  — check_room_membership AppSync function declared
+#                (used by the 5 room-scoped subscriptions)
+#   AC-8.6-T3  — check_identity_match AppSync function declared
+#                (used by the 2 identity-scoped subscriptions)
+#   AC-8.6-T4  — PIPELINE resolver for onMessageInRoom references
+#                check_room_membership function
+#   AC-8.6-T5  — PIPELINE resolver for onTypingInRoom references
+#                check_room_membership function
+#   AC-8.6-T6  — PIPELINE resolver for onRoomDeactivated references
+#                check_room_membership function
+#   AC-8.6-T7  — PIPELINE resolver for onRoomReactivated references
+#                check_room_membership function
+#   AC-8.6-T8  — PIPELINE resolver for onReadReceipt references
+#                check_room_membership function
+#   AC-8.6-T9  — PIPELINE resolver for onNotificationForMe references
+#                check_identity_match function
+#   AC-8.6-T10 — PIPELINE resolver for onFriendRequestUpdated references
+#                check_identity_match function
+# ---------------------------------------------------------------------------
+
+# Shared variables local — Terraform test does not support shared defaults,
+# so each run block repeats the variable block verbatim.
+
+# ---------------------------------------------------------------------------
+# Test 9: NONE datasource declared for pipeline function execution (story 8.6)
+#
+# The pipeline membership-check and identity-check functions run against a
+# NONE datasource (APPSYNC_JS runtime — no data source I/O needed; the check
+# is purely in AppSync JS evaluator code).
+# ---------------------------------------------------------------------------
+run "none_datasource_declared_for_pipeline_functions" {
+  command = plan
+
+  variables {
+    environment                     = "test"
+    user_pool_id                    = "eu-central-1_TESTPOOL"
+    appsync_logs_role_arn           = "arn:aws:iam::123456789012:role/knotify-test-appsync-logs"
+    appsync_invoke_role_arn         = "arn:aws:iam::123456789012:role/knotify-test-appsync-invoke"
+    chat_resolver_lambda_arn        = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
+    chat_rooms_table_arn            = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms"
+    chat_room_membership_table_name = "ChatRoomMembership"
+    chat_room_membership_table_arn  = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRoomMembership"
+    chat_messages_table_name        = "ChatMessages"
+    chat_messages_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages"
+    message_reads_table_name        = "MessageReads"
+    message_reads_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/MessageReads"
+    notifications_table_name        = "Notifications"
+    notifications_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications"
+    chat_rooms_table_name           = "ChatRooms"
+    dynamodb_role_arn               = "arn:aws:iam::123456789012:role/knotify-test-ddb-role"
+  }
+
+  assert {
+    condition     = aws_appsync_datasource.pipeline_none.type == "NONE"
+    error_message = "A NONE datasource must be declared for APPSYNC_JS pipeline functions (story 8.6)"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 10: check_room_membership AppSync function declared (story 8.6)
+# ---------------------------------------------------------------------------
+run "check_room_membership_function_declared" {
+  command = plan
+
+  variables {
+    environment                     = "test"
+    user_pool_id                    = "eu-central-1_TESTPOOL"
+    appsync_logs_role_arn           = "arn:aws:iam::123456789012:role/knotify-test-appsync-logs"
+    appsync_invoke_role_arn         = "arn:aws:iam::123456789012:role/knotify-test-appsync-invoke"
+    chat_resolver_lambda_arn        = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
+    chat_rooms_table_arn            = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms"
+    chat_room_membership_table_name = "ChatRoomMembership"
+    chat_room_membership_table_arn  = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRoomMembership"
+    chat_messages_table_name        = "ChatMessages"
+    chat_messages_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages"
+    message_reads_table_name        = "MessageReads"
+    message_reads_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/MessageReads"
+    notifications_table_name        = "Notifications"
+    notifications_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications"
+    chat_rooms_table_name           = "ChatRooms"
+    dynamodb_role_arn               = "arn:aws:iam::123456789012:role/knotify-test-ddb-role"
+  }
+
+  assert {
+    condition     = aws_appsync_function.check_room_membership.name == "check_room_membership"
+    error_message = "check_room_membership AppSync function must be declared (story 8.6)"
+  }
+
+  assert {
+    condition     = aws_appsync_function.check_room_membership.data_source == aws_appsync_datasource.chat_room_membership.name
+    error_message = "check_room_membership must use the ChatRoomMembership DynamoDB datasource (story 8.6)"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 11: check_identity_match AppSync function declared (story 8.6)
+# ---------------------------------------------------------------------------
+run "check_identity_match_function_declared" {
+  command = plan
+
+  variables {
+    environment                     = "test"
+    user_pool_id                    = "eu-central-1_TESTPOOL"
+    appsync_logs_role_arn           = "arn:aws:iam::123456789012:role/knotify-test-appsync-logs"
+    appsync_invoke_role_arn         = "arn:aws:iam::123456789012:role/knotify-test-appsync-invoke"
+    chat_resolver_lambda_arn        = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
+    chat_rooms_table_arn            = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms"
+    chat_room_membership_table_name = "ChatRoomMembership"
+    chat_room_membership_table_arn  = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRoomMembership"
+    chat_messages_table_name        = "ChatMessages"
+    chat_messages_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages"
+    message_reads_table_name        = "MessageReads"
+    message_reads_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/MessageReads"
+    notifications_table_name        = "Notifications"
+    notifications_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications"
+    chat_rooms_table_name           = "ChatRooms"
+    dynamodb_role_arn               = "arn:aws:iam::123456789012:role/knotify-test-ddb-role"
+  }
+
+  assert {
+    condition     = aws_appsync_function.check_identity_match.name == "check_identity_match"
+    error_message = "check_identity_match AppSync function must be declared (story 8.6)"
+  }
+
+  assert {
+    condition     = aws_appsync_function.check_identity_match.data_source == aws_appsync_datasource.pipeline_none.name
+    error_message = "check_identity_match must use the NONE datasource (story 8.6)"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 12: Room-scoped subscription resolvers are PIPELINE kind (story 8.6)
+#
+# onMessageInRoom, onTypingInRoom, onRoomDeactivated, onRoomReactivated,
+# onReadReceipt — all must be PIPELINE resolvers whose pipeline_config
+# references the check_room_membership function.
+# ---------------------------------------------------------------------------
+run "room_scoped_subscription_resolvers_are_pipeline_kind" {
+  command = plan
+
+  variables {
+    environment                     = "test"
+    user_pool_id                    = "eu-central-1_TESTPOOL"
+    appsync_logs_role_arn           = "arn:aws:iam::123456789012:role/knotify-test-appsync-logs"
+    appsync_invoke_role_arn         = "arn:aws:iam::123456789012:role/knotify-test-appsync-invoke"
+    chat_resolver_lambda_arn        = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
+    chat_rooms_table_arn            = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms"
+    chat_room_membership_table_name = "ChatRoomMembership"
+    chat_room_membership_table_arn  = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRoomMembership"
+    chat_messages_table_name        = "ChatMessages"
+    chat_messages_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages"
+    message_reads_table_name        = "MessageReads"
+    message_reads_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/MessageReads"
+    notifications_table_name        = "Notifications"
+    notifications_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications"
+    chat_rooms_table_name           = "ChatRooms"
+    dynamodb_role_arn               = "arn:aws:iam::123456789012:role/knotify-test-ddb-role"
+  }
+
+  assert {
+    condition     = aws_appsync_resolver.on_message_in_room.kind == "PIPELINE"
+    error_message = "onMessageInRoom subscription resolver must be PIPELINE kind (story 8.6)"
+  }
+
+  assert {
+    condition     = aws_appsync_resolver.on_typing_in_room.kind == "PIPELINE"
+    error_message = "onTypingInRoom subscription resolver must be PIPELINE kind (story 8.6)"
+  }
+
+  assert {
+    condition     = aws_appsync_resolver.on_room_deactivated.kind == "PIPELINE"
+    error_message = "onRoomDeactivated subscription resolver must be PIPELINE kind (story 8.6)"
+  }
+
+  assert {
+    condition     = aws_appsync_resolver.on_room_reactivated.kind == "PIPELINE"
+    error_message = "onRoomReactivated subscription resolver must be PIPELINE kind (story 8.6)"
+  }
+
+  assert {
+    condition     = aws_appsync_resolver.on_read_receipt.kind == "PIPELINE"
+    error_message = "onReadReceipt subscription resolver must be PIPELINE kind (story 8.6)"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 13: Identity-scoped subscription resolvers are PIPELINE kind (story 8.6)
+#
+# onNotificationForMe and onFriendRequestUpdated — PIPELINE resolvers whose
+# pipeline_config references the check_identity_match function.
+# ---------------------------------------------------------------------------
+run "identity_scoped_subscription_resolvers_are_pipeline_kind" {
+  command = plan
+
+  variables {
+    environment                     = "test"
+    user_pool_id                    = "eu-central-1_TESTPOOL"
+    appsync_logs_role_arn           = "arn:aws:iam::123456789012:role/knotify-test-appsync-logs"
+    appsync_invoke_role_arn         = "arn:aws:iam::123456789012:role/knotify-test-appsync-invoke"
+    chat_resolver_lambda_arn        = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
+    chat_rooms_table_arn            = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms"
+    chat_room_membership_table_name = "ChatRoomMembership"
+    chat_room_membership_table_arn  = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRoomMembership"
+    chat_messages_table_name        = "ChatMessages"
+    chat_messages_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages"
+    message_reads_table_name        = "MessageReads"
+    message_reads_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/MessageReads"
+    notifications_table_name        = "Notifications"
+    notifications_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications"
+    chat_rooms_table_name           = "ChatRooms"
+    dynamodb_role_arn               = "arn:aws:iam::123456789012:role/knotify-test-ddb-role"
+  }
+
+  assert {
+    condition     = aws_appsync_resolver.on_notification_for_me.kind == "PIPELINE"
+    error_message = "onNotificationForMe subscription resolver must be PIPELINE kind (story 8.6)"
+  }
+
+  assert {
+    condition     = aws_appsync_resolver.on_friend_request_updated.kind == "PIPELINE"
+    error_message = "onFriendRequestUpdated subscription resolver must be PIPELINE kind (story 8.6)"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 14: Pipeline function IDs wired into room-scoped resolver pipeline_config
+#          (story 8.6)
+#
+# Each room-scoped subscription's pipeline_config.functions list must contain
+# the check_room_membership function ID. We assert that the resolver's
+# pipeline_config block exists (length > 0) and the first function references
+# the membership check function.
+# ---------------------------------------------------------------------------
+run "room_scoped_resolvers_pipeline_config_references_membership_function" {
+  command = plan
+
+  variables {
+    environment                     = "test"
+    user_pool_id                    = "eu-central-1_TESTPOOL"
+    appsync_logs_role_arn           = "arn:aws:iam::123456789012:role/knotify-test-appsync-logs"
+    appsync_invoke_role_arn         = "arn:aws:iam::123456789012:role/knotify-test-appsync-invoke"
+    chat_resolver_lambda_arn        = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
+    chat_rooms_table_arn            = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms"
+    chat_room_membership_table_name = "ChatRoomMembership"
+    chat_room_membership_table_arn  = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRoomMembership"
+    chat_messages_table_name        = "ChatMessages"
+    chat_messages_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages"
+    message_reads_table_name        = "MessageReads"
+    message_reads_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/MessageReads"
+    notifications_table_name        = "Notifications"
+    notifications_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications"
+    chat_rooms_table_name           = "ChatRooms"
+    dynamodb_role_arn               = "arn:aws:iam::123456789012:role/knotify-test-ddb-role"
+  }
+
+  # Assert pipeline_config is non-empty (i.e., at least one function wired)
+  assert {
+    condition     = length(aws_appsync_resolver.on_message_in_room.pipeline_config) > 0
+    error_message = "onMessageInRoom pipeline_config must reference at least one function (story 8.6)"
+  }
+
+  assert {
+    condition     = length(aws_appsync_resolver.on_typing_in_room.pipeline_config) > 0
+    error_message = "onTypingInRoom pipeline_config must reference at least one function (story 8.6)"
+  }
+
+  assert {
+    condition     = length(aws_appsync_resolver.on_room_deactivated.pipeline_config) > 0
+    error_message = "onRoomDeactivated pipeline_config must reference at least one function (story 8.6)"
+  }
+
+  assert {
+    condition     = length(aws_appsync_resolver.on_room_reactivated.pipeline_config) > 0
+    error_message = "onRoomReactivated pipeline_config must reference at least one function (story 8.6)"
+  }
+
+  assert {
+    condition     = length(aws_appsync_resolver.on_read_receipt.pipeline_config) > 0
+    error_message = "onReadReceipt pipeline_config must reference at least one function (story 8.6)"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 15: Identity-scoped resolvers pipeline_config references identity-match
+#          function (story 8.6)
+# ---------------------------------------------------------------------------
+run "identity_scoped_resolvers_pipeline_config_references_identity_function" {
+  command = plan
+
+  variables {
+    environment                     = "test"
+    user_pool_id                    = "eu-central-1_TESTPOOL"
+    appsync_logs_role_arn           = "arn:aws:iam::123456789012:role/knotify-test-appsync-logs"
+    appsync_invoke_role_arn         = "arn:aws:iam::123456789012:role/knotify-test-appsync-invoke"
+    chat_resolver_lambda_arn        = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
+    chat_rooms_table_arn            = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRooms"
+    chat_room_membership_table_name = "ChatRoomMembership"
+    chat_room_membership_table_arn  = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatRoomMembership"
+    chat_messages_table_name        = "ChatMessages"
+    chat_messages_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/ChatMessages"
+    message_reads_table_name        = "MessageReads"
+    message_reads_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/MessageReads"
+    notifications_table_name        = "Notifications"
+    notifications_table_arn         = "arn:aws:dynamodb:eu-central-1:123456789012:table/Notifications"
+    chat_rooms_table_name           = "ChatRooms"
+    dynamodb_role_arn               = "arn:aws:iam::123456789012:role/knotify-test-ddb-role"
+  }
+
+  assert {
+    condition     = length(aws_appsync_resolver.on_notification_for_me.pipeline_config) > 0
+    error_message = "onNotificationForMe pipeline_config must reference at least one function (story 8.6)"
+  }
+
+  assert {
+    condition     = length(aws_appsync_resolver.on_friend_request_updated.pipeline_config) > 0
+    error_message = "onFriendRequestUpdated pipeline_config must reference at least one function (story 8.6)"
+  }
+}

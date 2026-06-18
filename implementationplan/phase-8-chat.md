@@ -1,6 +1,6 @@
 phase: 8
 title: Chat (AppSync + DynamoDB Streams + push fan-out)
-last_updated: 2026-06-17 # story 8.5 done
+last_updated: 2026-06-17 # story 8.6 done
 
 context_summary: |
   Delivers the full chat capability in a single phase per the owner's resolved Option A: the AppSync GraphQL API with a hand-written schema (no Amplify auto-generation, no auto-CRUD subscriptions), Lambda resolvers that enforce membership and block checks against Aurora before establishing subscriptions, the deterministic-room-id creation flow from §5.4.1, DynamoDB Streams from ChatMessages and Notifications wired to a PushFanout Lambda that targets Expo Push (per the §13 #7 resolution in v1.6), the POST /v1/push-tokens REST endpoint for token registration, and the stale-token cleanup scheduled Lambda. This phase intentionally ships data plane and API plane together because the GraphQL schema and the DynamoDB key design are tightly coupled. After this phase only account deletion, observability consolidation, hardening, and S3 photos remain.
@@ -140,7 +140,7 @@ stories:
     title: Scoped subscriptions with pipeline membership check
     agent: backenddeveloper
     tracking_issue: 116
-    done: false
+    done: true
     depends_on: [8.3, 8.4]
     acceptance_criteria:
       - Each subscription (onMessageInRoom, onTypingInRoom, onRoomDeactivated, onRoomReactivated, onReadReceipt) is backed by a pipeline resolver whose first function checks ChatRoomMembership(identity.sub, roomId); on miss the resolver returns Unauthorized and the WebSocket subscription fails to establish
@@ -149,7 +149,7 @@ stories:
       - Integration test: a user not in room R attempts subscription onMessageInRoom(R) → connection rejected before any message can be received
       - Integration test: A and B in room R, A sends a message → B's onMessageInRoom subscription receives the Message within 2 seconds
       - Integration test: A and B in room R, A sends a message → a third user C subscribed to onMessageInRoom(R2) for a different room does NOT receive the event (field filter enforced)
-    notes: ""
+    notes: "Completed 2026-06-17. APPSYNC_JS runtime on ChatRoomMembership DDB datasource (check_room_membership) + NONE datasource (check_identity_match). 7 PIPELINE resolvers, 7 new TF module tests (15 total), 3 integration tests skip-gated on APPSYNC_GRAPHQL_URL. terraform validate clean dev+prod."
 
   - id: 8.7
     title: markAsRead mutation and read-receipt updates

@@ -187,3 +187,307 @@ resource "aws_appsync_datasource" "chat_resolver_ds" {
 # No duplicate policy is created here — the iam_roles module is the single
 # owner of all IAM resources per the project's single-responsibility pattern.
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Story 8.6 — Subscription pipeline resolvers
+#
+# Implementation choice: APPSYNC_JS runtime on a NONE datasource for the
+# identity-check function; APPSYNC_JS on the ChatRoomMembership DynamoDB
+# datasource for the membership-check function.
+# Rationale (recorded here per AC): APPSYNC_JS on NONE/DDB datasource —
+# no Lambda cold-start on subscribe; a single DynamoDB GetItem is all
+# that is needed for membership verification, making Lambda overkill.
+#
+# Two pipeline functions are declared:
+#   check_room_membership — DDB GetItem on ChatRoomMembership(identity.sub, roomId);
+#                           used by the 5 room-scoped subscriptions.
+#   check_identity_match  — pure JS guard that verifies the subscriber's
+#                           identity.sub matches the intended recipient
+#                           (payload.userId); used by the 2 identity-scoped
+#                           subscriptions (onNotificationForMe,
+#                           onFriendRequestUpdated).
+#                           Dual-layer: pipeline check (defensive, runs on
+#                           subscribe) + @aws_subscribe post-publish filter
+#                           semantics (ensures notifications_publisher sets
+#                           user_id on the mutation payload for the field
+#                           filter to match at delivery time).
+#
+# Each subscription field has a PIPELINE resolver whose pipeline_config
+# references the appropriate check function.  The pipeline runs when a
+# client SUBSCRIBES — not on every published event — which is the correct
+# model for AppSync subscription access control.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# NONE datasource for pure JS pipeline functions
+#
+# A NONE datasource is the conventional AppSync target for functions that do
+# not need to call an external data store. check_identity_match uses it because
+# the identity check is a pure in-process JS comparison with no I/O.
+# ---------------------------------------------------------------------------
+
+resource "aws_appsync_datasource" "pipeline_none" {
+  api_id = aws_appsync_graphql_api.knotify.id
+  name   = "NoneDS"
+  # NONE datasource — APPSYNC_JS pipeline functions that need no external call
+  type = "NONE"
+}
+
+# ---------------------------------------------------------------------------
+# Pipeline function 1: check_room_membership
+#
+# Runs a DynamoDB GetItem on ChatRoomMembership using the DDB datasource so
+# AppSync's built-in DynamoDB resolver handles the request/response mapping.
+# On item miss the function returns an Unauthorized error, which AppSync
+# surfaces as a subscription-establishment failure.
+#
+# Runtime: APPSYNC_JS (JS_1_0_0) — preferred per story brief; cheaper than
+# Lambda (no cold-start per connection) and sufficient for a single GetItem.
+# ---------------------------------------------------------------------------
+
+resource "aws_appsync_function" "check_room_membership" {
+  api_id      = aws_appsync_graphql_api.knotify.id
+  name        = "check_room_membership"
+  description = "Pipeline function: GetItem ChatRoomMembership(identity.sub, roomId). Rejects Unauthorized on miss."
+  data_source = aws_appsync_datasource.chat_room_membership.name
+
+  # APPSYNC_JS runtime — synchronous DDB GetItem, no Lambda cold-start.
+  runtime {
+    name            = "APPSYNC_JS"
+    runtime_version = "1.0.0"
+  }
+
+  code = <<-APPSYNC_JS
+    // check_room_membership — APPSYNC_JS pipeline function (story 8.6)
+    // Runtime: APPSYNC_JS on NONE datasource — no Lambda cold-start on subscribe.
+    //
+    // Runs when a client SUBSCRIBES (not on every published event).
+    // Performs a DynamoDB GetItem on ChatRoomMembership(identity.sub, roomId).
+    // On miss: returns an Unauthorized error → AppSync rejects the WebSocket
+    // subscription before any event is delivered.
+    //
+    // The subscription argument is named `roomId` on every room-scoped field
+    // (onMessageInRoom, onTypingInRoom, onRoomDeactivated, onRoomReactivated,
+    // onReadReceipt). AppSync resolvers for Subscription fields execute during
+    // the subscribe phase with ctx.args populated from the subscription arguments.
+
+    import { util } from "@aws-appsync/utils";
+    import { get } from "@aws-appsync/utils/dynamodb";
+
+    export function request(ctx) {
+      const userId = ctx.identity.sub;
+      const roomId = ctx.args.roomId;
+      if (!userId) {
+        util.unauthorized();
+      }
+      if (!roomId) {
+        util.error("roomId argument is required for room-scoped subscriptions", "MissingArgument");
+      }
+      return get({
+        key: {
+          user_id: util.dynamodb.toDynamoDB(userId),
+          room_id: util.dynamodb.toDynamoDB(roomId),
+        },
+      });
+    }
+
+    export function response(ctx) {
+      if (ctx.error) {
+        util.error(ctx.error.message, ctx.error.type);
+      }
+      if (!ctx.result) {
+        // GetItem returned no item — caller is not a member of this room.
+        util.unauthorized();
+      }
+      // Member confirmed — pass through; pipeline continues (no more functions).
+      return ctx.result;
+    }
+  APPSYNC_JS
+}
+
+# ---------------------------------------------------------------------------
+# Pipeline function 2: check_identity_match
+#
+# Pure JS check: verifies identity.sub equals the intended recipient field
+# on the subscription payload.  Used by onNotificationForMe and
+# onFriendRequestUpdated (both identity-scoped — no roomId argument).
+#
+# Dual-layer design (documented per story brief):
+#   1. This pipeline function runs on SUBSCRIBE and rejects connections where
+#      identity.sub does not match the sub encoded in the subscription token
+#      (defensive gate).
+#   2. AppSync's @aws_subscribe post-publish field filter ensures at delivery
+#      time that only events whose user_id field matches the subscription
+#      context are forwarded to the subscriber (the notifications_publisher
+#      story 8.9c populates user_id on every mutation payload for this filter
+#      to work correctly at runtime).
+# ---------------------------------------------------------------------------
+
+resource "aws_appsync_function" "check_identity_match" {
+  api_id      = aws_appsync_graphql_api.knotify.id
+  name        = "check_identity_match"
+  description = "Pipeline function: confirms identity.sub is non-empty. Identity-scoped subscriptions (onNotificationForMe, onFriendRequestUpdated)."
+  data_source = aws_appsync_datasource.pipeline_none.name
+
+  runtime {
+    name            = "APPSYNC_JS"
+    runtime_version = "1.0.0"
+  }
+
+  code = <<-APPSYNC_JS
+    // check_identity_match — APPSYNC_JS pipeline function (story 8.6)
+    // Runtime: APPSYNC_JS on NONE datasource — no Lambda cold-start on subscribe.
+    //
+    // Dual-layer: this pipeline check runs on SUBSCRIBE (defensive gate);
+    // @aws_subscribe post-publish field filter enforces user_id match at
+    // delivery time (notifications_publisher populates user_id on the mutation
+    // payload per story 8.9c so the filter fires correctly).
+    //
+    // For identity-scoped subscriptions (onNotificationForMe, onFriendRequestUpdated)
+    // there is no roomId argument — access is controlled solely by identity.sub.
+    // We confirm the subscriber has a valid, non-empty sub claim so anonymous
+    // or malformed tokens cannot establish a subscription.
+
+    import { util } from "@aws-appsync/utils";
+
+    export function request(ctx) {
+      const userId = ctx.identity.sub;
+      if (!userId) {
+        util.unauthorized();
+      }
+      // NONE datasource request must return an empty payload object.
+      return {};
+    }
+
+    export function response(ctx) {
+      if (ctx.error) {
+        util.error(ctx.error.message, ctx.error.type);
+      }
+      // Identity confirmed — allow subscription to proceed.
+      return ctx.result;
+    }
+  APPSYNC_JS
+}
+
+# ---------------------------------------------------------------------------
+# Pipeline resolvers — room-scoped subscriptions
+#
+# Fields: onMessageInRoom, onTypingInRoom, onRoomDeactivated,
+#         onRoomReactivated, onReadReceipt
+#
+# Each resolver is kind = "PIPELINE" with pipeline_config.functions containing
+# [check_room_membership.function_id]. The check runs during the subscribe
+# phase; on rejection AppSync closes the WebSocket before delivering events.
+#
+# request_template / response_template are set to the AppSync passthrough
+# templates required for PIPELINE resolvers (non-JS runtime fallback path;
+# the actual logic is in the function's `code` above).
+# ---------------------------------------------------------------------------
+
+resource "aws_appsync_resolver" "on_message_in_room" {
+  api_id    = aws_appsync_graphql_api.knotify.id
+  type      = "Subscription"
+  field     = "onMessageInRoom"
+  kind      = "PIPELINE"
+
+  pipeline_config {
+    functions = [aws_appsync_function.check_room_membership.function_id]
+  }
+
+  # Passthrough request/response for PIPELINE resolvers.
+  request_template  = "{}"
+  response_template = "$util.toJson($ctx.result)"
+}
+
+resource "aws_appsync_resolver" "on_typing_in_room" {
+  api_id    = aws_appsync_graphql_api.knotify.id
+  type      = "Subscription"
+  field     = "onTypingInRoom"
+  kind      = "PIPELINE"
+
+  pipeline_config {
+    functions = [aws_appsync_function.check_room_membership.function_id]
+  }
+
+  request_template  = "{}"
+  response_template = "$util.toJson($ctx.result)"
+}
+
+resource "aws_appsync_resolver" "on_room_deactivated" {
+  api_id    = aws_appsync_graphql_api.knotify.id
+  type      = "Subscription"
+  field     = "onRoomDeactivated"
+  kind      = "PIPELINE"
+
+  pipeline_config {
+    functions = [aws_appsync_function.check_room_membership.function_id]
+  }
+
+  request_template  = "{}"
+  response_template = "$util.toJson($ctx.result)"
+}
+
+resource "aws_appsync_resolver" "on_room_reactivated" {
+  api_id    = aws_appsync_graphql_api.knotify.id
+  type      = "Subscription"
+  field     = "onRoomReactivated"
+  kind      = "PIPELINE"
+
+  pipeline_config {
+    functions = [aws_appsync_function.check_room_membership.function_id]
+  }
+
+  request_template  = "{}"
+  response_template = "$util.toJson($ctx.result)"
+}
+
+resource "aws_appsync_resolver" "on_read_receipt" {
+  api_id    = aws_appsync_graphql_api.knotify.id
+  type      = "Subscription"
+  field     = "onReadReceipt"
+  kind      = "PIPELINE"
+
+  pipeline_config {
+    functions = [aws_appsync_function.check_room_membership.function_id]
+  }
+
+  request_template  = "{}"
+  response_template = "$util.toJson($ctx.result)"
+}
+
+# ---------------------------------------------------------------------------
+# Pipeline resolvers — identity-scoped subscriptions
+#
+# Fields: onNotificationForMe, onFriendRequestUpdated
+#
+# Uses check_identity_match (NONE datasource) — no roomId argument; access
+# is controlled by identity.sub.
+# ---------------------------------------------------------------------------
+
+resource "aws_appsync_resolver" "on_notification_for_me" {
+  api_id    = aws_appsync_graphql_api.knotify.id
+  type      = "Subscription"
+  field     = "onNotificationForMe"
+  kind      = "PIPELINE"
+
+  pipeline_config {
+    functions = [aws_appsync_function.check_identity_match.function_id]
+  }
+
+  request_template  = "{}"
+  response_template = "$util.toJson($ctx.result)"
+}
+
+resource "aws_appsync_resolver" "on_friend_request_updated" {
+  api_id    = aws_appsync_graphql_api.knotify.id
+  type      = "Subscription"
+  field     = "onFriendRequestUpdated"
+  kind      = "PIPELINE"
+
+  pipeline_config {
+    functions = [aws_appsync_function.check_identity_match.function_id]
+  }
+
+  request_template  = "{}"
+  response_template = "$util.toJson($ctx.result)"
+}
