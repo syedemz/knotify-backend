@@ -913,3 +913,311 @@ def test_given_profile_incomplete_when_messages_by_chat_room_via_handler_then_un
     )
     assert result.get("reason") == "PROFILE_INCOMPLETE"
     mock_ddb.get_item.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Section I — markAsRead resolver (story 8.7)
+#
+# markAsRead(roomId, lastMessageId) performs:
+#   1. GetItem ChatRoomMembership(identity.sub, roomId) — Unauthorized on miss.
+#   2. TransactWriteItems with two operations:
+#        a. PutItem MessageReads   (PK=room_id, SK=user_id)
+#           attributes: last_read_message_id, last_read_at
+#        b. UpdateItem ChatRoomMembership (PK=user_id, SK=room_id)
+#           same cached values: last_read_message_id, last_read_at
+#   3. Return MessageRead dict: roomId, userId, lastReadMessageId, lastReadAt
+#      (type subscribed by onReadReceipt(roomId)).
+#
+# Tests in this section are pure unit tests — no AWS calls.
+# ---------------------------------------------------------------------------
+
+
+def test_given_mark_as_read_when_dispatched_then_not_unimplemented() -> None:
+    """given (Mutation, markAsRead) after story 8.7 is wired, when _dispatch called,
+    then result is NOT Unimplemented (route is live)."""
+    mod = _import_handler()
+
+    # GetItem returns membership present → proceed; transact_write_items succeeds.
+    mock_ddb = MagicMock()
+    mock_ddb.get_item.return_value = {
+        "Item": {
+            "user_id": {"S": "caller-sub"},
+            "room_id": {"S": "room-abc"},
+        }
+    }
+    mock_ddb.transact_write_items.return_value = {}
+    mod._dynamodb_client = mock_ddb
+
+    event = _make_appsync_event("Mutation", "markAsRead", user_sub="caller-sub")
+    event["arguments"] = {"roomId": "room-abc", "lastMessageId": "2024-01-01T00:00:00+00:00#ULID"}
+    result = mod._dispatch(event)
+
+    assert result.get("errorType") != "Unimplemented", (
+        f"markAsRead must be routed but returned Unimplemented: {result}"
+    )
+
+
+def test_given_non_member_caller_when_mark_as_read_then_unauthorized() -> None:
+    """given caller not in room (ChatRoomMembership GetItem returns no Item),
+    when markAsRead is called, then returns Unauthorized."""
+    mod = _import_handler()
+
+    mock_ddb = MagicMock()
+    # No Item → membership absent
+    mock_ddb.get_item.return_value = {}
+    mod._dynamodb_client = mock_ddb
+
+    event = _make_appsync_event("Mutation", "markAsRead", user_sub="outsider-sub")
+    event["arguments"] = {"roomId": "room-xyz", "lastMessageId": "some-msg-id"}
+    result = mod._dispatch(event)
+
+    assert result.get("errorType") == "Unauthorized", (
+        f"Expected Unauthorized for non-member, got: {result}"
+    )
+    # transact_write_items must NOT have been called — no write before auth check
+    mock_ddb.transact_write_items.assert_not_called()
+
+
+def test_given_member_caller_when_mark_as_read_then_transact_write_called() -> None:
+    """given a member caller, when markAsRead is called, then TransactWriteItems
+    is called exactly once with two items."""
+    mod = _import_handler()
+
+    user_id = "user-sub-mark"
+    room_id = "room-mark-test"
+    last_message_id = "2024-06-17T10:00:00+00:00#ULID99"
+
+    mock_ddb = MagicMock()
+    mock_ddb.get_item.return_value = {
+        "Item": {"user_id": {"S": user_id}, "room_id": {"S": room_id}}
+    }
+    mock_ddb.transact_write_items.return_value = {}
+    mod._dynamodb_client = mock_ddb
+
+    event = _make_appsync_event("Mutation", "markAsRead", user_sub=user_id)
+    event["arguments"] = {"roomId": room_id, "lastMessageId": last_message_id}
+    result = mod._dispatch(event)
+
+    assert mock_ddb.transact_write_items.called, "Expected TransactWriteItems to be called"
+    call_kwargs = mock_ddb.transact_write_items.call_args[1]
+    items = call_kwargs.get("TransactItems", [])
+    assert len(items) == 2, f"Expected 2 transact items, got {len(items)}"
+
+
+def test_given_member_caller_when_mark_as_read_then_message_reads_put_item_uses_correct_keys() -> None:
+    """given a member caller, when markAsRead succeeds, then the first TransactItem
+    is a PutItem on MessageReads with PK=room_id and SK=user_id."""
+    mod = _import_handler()
+
+    user_id = "user-sub-reads-key"
+    room_id = "room-reads-key"
+    last_message_id = "2024-06-17T11:00:00+00:00#ULID88"
+
+    mock_ddb = MagicMock()
+    mock_ddb.get_item.return_value = {
+        "Item": {"user_id": {"S": user_id}, "room_id": {"S": room_id}}
+    }
+    mock_ddb.transact_write_items.return_value = {}
+    mod._dynamodb_client = mock_ddb
+
+    event = _make_appsync_event("Mutation", "markAsRead", user_sub=user_id)
+    event["arguments"] = {"roomId": room_id, "lastMessageId": last_message_id}
+    mod._dispatch(event)
+
+    call_kwargs = mock_ddb.transact_write_items.call_args[1]
+    items = call_kwargs["TransactItems"]
+
+    # First item must be the MessageReads PutItem
+    put_op = items[0]["Put"]
+    assert put_op["TableName"] == "MessageReads"
+    item_keys = put_op["Item"]
+    # PK=room_id, SK=user_id — exact attribute names from dynamodb/main.tf
+    assert item_keys.get("room_id", {}).get("S") == room_id, (
+        f"Expected room_id={room_id!r} in MessageReads PutItem, got: {item_keys}"
+    )
+    assert item_keys.get("user_id", {}).get("S") == user_id, (
+        f"Expected user_id={user_id!r} in MessageReads PutItem, got: {item_keys}"
+    )
+
+
+def test_given_member_caller_when_mark_as_read_then_message_reads_contains_last_read_fields() -> None:
+    """given a member caller, when markAsRead succeeds, then MessageReads PutItem
+    contains last_read_message_id and last_read_at attributes."""
+    mod = _import_handler()
+
+    user_id = "user-sub-reads-attrs"
+    room_id = "room-reads-attrs"
+    last_message_id = "2024-06-17T12:00:00+00:00#ULIDAA"
+
+    mock_ddb = MagicMock()
+    mock_ddb.get_item.return_value = {
+        "Item": {"user_id": {"S": user_id}, "room_id": {"S": room_id}}
+    }
+    mock_ddb.transact_write_items.return_value = {}
+    mod._dynamodb_client = mock_ddb
+
+    event = _make_appsync_event("Mutation", "markAsRead", user_sub=user_id)
+    event["arguments"] = {"roomId": room_id, "lastMessageId": last_message_id}
+    mod._dispatch(event)
+
+    call_kwargs = mock_ddb.transact_write_items.call_args[1]
+    items = call_kwargs["TransactItems"]
+    put_item = items[0]["Put"]["Item"]
+
+    # last_read_message_id must equal the lastMessageId argument
+    assert put_item.get("last_read_message_id", {}).get("S") == last_message_id, (
+        f"Expected last_read_message_id={last_message_id!r}, got: {put_item}"
+    )
+    # last_read_at must be a non-empty string (server-set ISO timestamp)
+    last_read_at = put_item.get("last_read_at", {}).get("S", "")
+    assert last_read_at, "Expected last_read_at to be set on MessageReads PutItem"
+
+
+def test_given_member_caller_when_mark_as_read_then_membership_update_uses_correct_keys() -> None:
+    """given a member caller, when markAsRead succeeds, then the second TransactItem
+    is an UpdateItem on ChatRoomMembership with PK=user_id, SK=room_id."""
+    mod = _import_handler()
+
+    user_id = "user-sub-membership-key"
+    room_id = "room-membership-key"
+    last_message_id = "2024-06-17T13:00:00+00:00#ULIDBB"
+
+    mock_ddb = MagicMock()
+    mock_ddb.get_item.return_value = {
+        "Item": {"user_id": {"S": user_id}, "room_id": {"S": room_id}}
+    }
+    mock_ddb.transact_write_items.return_value = {}
+    mod._dynamodb_client = mock_ddb
+
+    event = _make_appsync_event("Mutation", "markAsRead", user_sub=user_id)
+    event["arguments"] = {"roomId": room_id, "lastMessageId": last_message_id}
+    mod._dispatch(event)
+
+    call_kwargs = mock_ddb.transact_write_items.call_args[1]
+    items = call_kwargs["TransactItems"]
+
+    # Second item must be the ChatRoomMembership UpdateItem
+    update_op = items[1]["Update"]
+    assert update_op["TableName"] == "ChatRoomMembership"
+    key = update_op["Key"]
+    # PK=user_id, SK=room_id — exact attribute names from dynamodb/main.tf
+    assert key.get("user_id", {}).get("S") == user_id, (
+        f"Expected user_id={user_id!r} in ChatRoomMembership UpdateItem key, got: {key}"
+    )
+    assert key.get("room_id", {}).get("S") == room_id, (
+        f"Expected room_id={room_id!r} in ChatRoomMembership UpdateItem key, got: {key}"
+    )
+
+
+def test_given_member_caller_when_mark_as_read_then_membership_update_contains_last_read_fields() -> None:
+    """given a member caller, when markAsRead succeeds, then ChatRoomMembership UpdateItem
+    sets last_read_message_id and last_read_at (cached copy) in the ExpressionAttributeValues."""
+    mod = _import_handler()
+
+    user_id = "user-sub-membership-attrs"
+    room_id = "room-membership-attrs"
+    last_message_id = "2024-06-17T14:00:00+00:00#ULIDCC"
+
+    mock_ddb = MagicMock()
+    mock_ddb.get_item.return_value = {
+        "Item": {"user_id": {"S": user_id}, "room_id": {"S": room_id}}
+    }
+    mock_ddb.transact_write_items.return_value = {}
+    mod._dynamodb_client = mock_ddb
+
+    event = _make_appsync_event("Mutation", "markAsRead", user_sub=user_id)
+    event["arguments"] = {"roomId": room_id, "lastMessageId": last_message_id}
+    mod._dispatch(event)
+
+    call_kwargs = mock_ddb.transact_write_items.call_args[1]
+    items = call_kwargs["TransactItems"]
+    update_op = items[1]["Update"]
+
+    # ExpressionAttributeValues must include :lrmi (last_read_message_id) and :lrat (last_read_at)
+    expr_vals = update_op.get("ExpressionAttributeValues", {})
+    # Find the value bound to last_read_message_id
+    lrmi_val = expr_vals.get(":lrmi", {}).get("S")
+    assert lrmi_val == last_message_id, (
+        f"Expected :lrmi={last_message_id!r} in ChatRoomMembership UpdateItem, got: {expr_vals}"
+    )
+    lrat_val = expr_vals.get(":lrat", {}).get("S", "")
+    assert lrat_val, (
+        "Expected :lrat (last_read_at) to be set in ChatRoomMembership UpdateItem"
+    )
+
+
+def test_given_member_caller_when_mark_as_read_succeeds_then_returns_message_read_type() -> None:
+    """given a member caller and successful write, when markAsRead is called,
+    then the result is a MessageRead dict matching the GraphQL type:
+    {roomId, userId, lastReadMessageId, lastReadAt}."""
+    mod = _import_handler()
+
+    user_id = "user-sub-return-type"
+    room_id = "room-return-type"
+    last_message_id = "2024-06-17T15:00:00+00:00#ULIDDD"
+
+    mock_ddb = MagicMock()
+    mock_ddb.get_item.return_value = {
+        "Item": {"user_id": {"S": user_id}, "room_id": {"S": room_id}}
+    }
+    mock_ddb.transact_write_items.return_value = {}
+    mod._dynamodb_client = mock_ddb
+
+    event = _make_appsync_event("Mutation", "markAsRead", user_sub=user_id)
+    event["arguments"] = {"roomId": room_id, "lastMessageId": last_message_id}
+    result = mod._dispatch(event)
+
+    assert "errorType" not in result, f"Expected success but got error: {result}"
+    # MessageRead type fields (camelCase per schema.graphql)
+    assert result.get("roomId") == room_id, f"Expected roomId={room_id!r}, got: {result}"
+    assert result.get("userId") == user_id, f"Expected userId={user_id!r}, got: {result}"
+    assert result.get("lastReadMessageId") == last_message_id, (
+        f"Expected lastReadMessageId={last_message_id!r}, got: {result}"
+    )
+    assert result.get("lastReadAt"), "Expected lastReadAt to be set in response"
+
+
+def test_given_member_caller_when_mark_as_read_then_response_roomId_matches_argument() -> None:
+    """given markAsRead result, then roomId in response matches the roomId argument
+    (required so onReadReceipt subscription field filter fires correctly)."""
+    mod = _import_handler()
+
+    user_id = "user-sub-roomid-check"
+    room_id = "room-specific-id-for-subscription"
+    last_message_id = "2024-06-17T16:00:00+00:00#ULIDEE"
+
+    mock_ddb = MagicMock()
+    mock_ddb.get_item.return_value = {
+        "Item": {"user_id": {"S": user_id}, "room_id": {"S": room_id}}
+    }
+    mock_ddb.transact_write_items.return_value = {}
+    mod._dynamodb_client = mock_ddb
+
+    event = _make_appsync_event("Mutation", "markAsRead", user_sub=user_id)
+    event["arguments"] = {"roomId": room_id, "lastMessageId": last_message_id}
+    result = mod._dispatch(event)
+
+    # The subscription onReadReceipt(roomId) filters by result.roomId.
+    # If this doesn't match the argument, the subscription never fires.
+    assert result.get("roomId") == room_id, (
+        f"roomId in response ({result.get('roomId')!r}) must match argument ({room_id!r}) "
+        "for onReadReceipt subscription field filter to work"
+    )
+
+
+def test_given_profile_incomplete_when_mark_as_read_via_handler_then_unauthorized() -> None:
+    """given custom:profile_complete != 'true', when handler() called for markAsRead,
+    then decorator returns Unauthorized before any DDB call."""
+    mod = _make_handler_module_with_real_decorator()
+    mock_ddb = MagicMock()
+    mod._dynamodb_client = mock_ddb
+
+    event = _make_appsync_event("Mutation", "markAsRead", profile_complete=None)
+    event["arguments"] = {"roomId": "some-room", "lastMessageId": "some-msg"}
+    result = mod.handler(event, {})
+
+    assert result.get("errorType") == "Unauthorized", (
+        f"Expected Unauthorized from decorator, got: {result}"
+    )
+    assert result.get("reason") == "PROFILE_INCOMPLETE"
+    mock_ddb.get_item.assert_not_called()

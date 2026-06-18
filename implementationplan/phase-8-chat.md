@@ -1,6 +1,6 @@
 phase: 8
 title: Chat (AppSync + DynamoDB Streams + push fan-out)
-last_updated: 2026-06-17 # story 8.6 done
+last_updated: 2026-06-17 # story 8.7 done
 
 context_summary: |
   Delivers the full chat capability in a single phase per the owner's resolved Option A: the AppSync GraphQL API with a hand-written schema (no Amplify auto-generation, no auto-CRUD subscriptions), Lambda resolvers that enforce membership and block checks against Aurora before establishing subscriptions, the deterministic-room-id creation flow from §5.4.1, DynamoDB Streams from ChatMessages and Notifications wired to a PushFanout Lambda that targets Expo Push (per the §13 #7 resolution in v1.6), the POST /v1/push-tokens REST endpoint for token registration, and the stale-token cleanup scheduled Lambda. This phase intentionally ships data plane and API plane together because the GraphQL schema and the DynamoDB key design are tightly coupled. After this phase only account deletion, observability consolidation, hardening, and S3 photos remain.
@@ -155,7 +155,7 @@ stories:
     title: markAsRead mutation and read-receipt updates
     agent: backenddeveloper
     tracking_issue: 117
-    done: false
+    done: true
     depends_on: [8.4]
     acceptance_criteria:
       - markAsRead(roomId, lastMessageId) resolver: TransactWriteItems updates MessageReads(PK=roomId, SK=identity.sub) with last_read_message_id + last_read_at AND ChatRoomMembership(identity.sub, roomId) with the same cached values
@@ -164,7 +164,7 @@ stories:
       - @require_profile_complete_appsync applied
       - Integration test: A sends message m1, B calls markAsRead(R, m1) → MessageReads has B's row with last_read_message_id=m1; A's onReadReceipt subscription receives the event within 2 seconds
       - Integration test: a user not in the room attempts markAsRead → Unauthorized
-    notes: ""
+    notes: "Completed 2026-06-17. _handle_mark_as_read in handler.py; PutItem MessageReads (PK=room_id, SK=user_id) + UpdateItem ChatRoomMembership (PK=user_id, SK=room_id) in single TransactWriteItems; 9 new unit tests pass (46 total); 2 integration tests skip-gated in test_markAsRead.py."
 
   - id: 8.8
     title: setTyping mutation with no storage

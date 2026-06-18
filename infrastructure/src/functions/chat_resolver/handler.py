@@ -904,6 +904,127 @@ def _handle_messages_by_chat_room(event: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# markAsRead handler — story 8.7
+# ---------------------------------------------------------------------------
+
+
+def _handle_mark_as_read(event: dict) -> dict:
+    """
+    Implement the markAsRead mutation.
+
+    Steps:
+      1. Extract caller_id from identity.sub, room_id and last_message_id from
+         arguments.
+      2. GetItem ChatRoomMembership(caller_id, room_id) — reject Unauthorized
+         if the row is absent (caller is not a member of the room).
+      3. Server-set read timestamp (last_read_at = NOW()).
+      4. TransactWriteItems — two operations in a single atomic call:
+           a. PutItem MessageReads
+                PK: room_id (S)  — as declared in dynamodb/main.tf hash_key
+                SK: user_id (S)  — as declared in dynamodb/main.tf range_key
+                Attributes: last_read_message_id, last_read_at
+              PutItem is correct here: MessageReads is upsert-semantics (one row
+              per (room_id, user_id) pair). PutItem overwrites the whole item on
+              each call, which is exactly what we want for a read-cursor advance.
+           b. UpdateItem ChatRoomMembership
+                PK: user_id (S), SK: room_id (S)
+                SET last_read_message_id, last_read_at (cached copy for fast
+                unread-badge queries downstream — avoids a separate GetItem on
+                MessageReads for every room list fetch).
+      5. Return a MessageRead dict matching the GraphQL MessageRead type
+         (roomId, userId, lastReadMessageId, lastReadAt).
+         The roomId field in the response is what onReadReceipt(roomId) uses for
+         its subscription field filter — it must equal the argument roomId.
+
+    Args:
+        event: AppSync Lambda resolver event dict.
+
+    Returns:
+        MessageRead dict on success, or an Unauthorized error dict on failure.
+    """
+    caller_id: str = event.get("identity", {}).get("sub", "")
+    arguments: dict = event.get("arguments", {})
+    room_id: str = arguments.get("roomId", "")
+    last_message_id: str = arguments.get("lastMessageId", "")
+
+    ddb = _get_dynamodb()
+
+    # 2. Membership check — caller must be in the room before any write.
+    membership_resp = ddb.get_item(
+        TableName="ChatRoomMembership",
+        Key={
+            "user_id": {"S": caller_id},
+            "room_id": {"S": room_id},
+        },
+    )
+    if "Item" not in membership_resp:
+        return _unauthorized_response(REASON_NOT_FRIENDS)
+
+    # 3. Server-set timestamp.
+    last_read_at: str = datetime.now(tz=timezone.utc).isoformat()
+
+    # 4. Atomic write: MessageReads PutItem + ChatRoomMembership UpdateItem.
+    transact_items = [
+        {
+            # 4a. MessageReads — upsert the read cursor for this (room, user) pair.
+            #     PK=room_id, SK=user_id — attribute names match dynamodb/main.tf exactly.
+            "Put": {
+                "TableName": "MessageReads",
+                "Item": {
+                    "room_id": {"S": room_id},
+                    "user_id": {"S": caller_id},
+                    "last_read_message_id": {"S": last_message_id},
+                    "last_read_at": {"S": last_read_at},
+                },
+            }
+        },
+        {
+            # 4b. ChatRoomMembership — cache the read cursor on the membership row
+            #     so listMyRooms / unread-badge queries can compute "unread count"
+            #     with a single DynamoDB read (no join against MessageReads needed).
+            #     PK=user_id, SK=room_id — attribute names match dynamodb/main.tf exactly.
+            "Update": {
+                "TableName": "ChatRoomMembership",
+                "Key": {
+                    "user_id": {"S": caller_id},
+                    "room_id": {"S": room_id},
+                },
+                "UpdateExpression": (
+                    "SET last_read_message_id = :lrmi, "
+                    "last_read_at = :lrat"
+                ),
+                "ExpressionAttributeValues": {
+                    ":lrmi": {"S": last_message_id},
+                    ":lrat": {"S": last_read_at},
+                },
+            }
+        },
+    ]
+
+    ddb.transact_write_items(TransactItems=transact_items)
+
+    logger.info(
+        "mark_as_read_success",
+        extra={
+            "caller_id": caller_id,
+            "room_id": room_id,
+            "last_message_id": last_message_id,
+        },
+    )
+
+    # 5. Return MessageRead type — fields match schema.graphql's MessageRead type.
+    #    roomId is included so the onReadReceipt(roomId) subscription field filter
+    #    fires correctly: AppSync matches result.roomId against the subscriber's
+    #    roomId argument.
+    return {
+        "roomId": room_id,
+        "userId": caller_id,
+        "lastReadMessageId": last_message_id,
+        "lastReadAt": last_read_at,
+    }
+
+
+# ---------------------------------------------------------------------------
 # AppSync resolver dispatcher
 #
 # The single entry point for all (typeName, fieldName) pairs routed to this
@@ -927,9 +1048,10 @@ def _dispatch(event: dict) -> Any:
         (Mutation, sendMessage)          → _handle_send_message         [story 8.4]
         (Query,    listMyRooms)          → _handle_list_my_rooms        [story 8.5]
         (Query,    messagesByChatRoom)   → _handle_messages_by_chat_room [story 8.5]
+        (Mutation, markAsRead)           → _handle_mark_as_read         [story 8.7]
 
     Later stories add:
-        ...
+        (Mutation, setTyping)            → _handle_set_typing           [story 8.8]
 
     Args:
         event: AppSync Lambda resolver event dict.
@@ -950,6 +1072,9 @@ def _dispatch(event: dict) -> Any:
 
     if type_name == "Mutation" and field_name == "sendMessage":
         return _handle_send_message(event)
+
+    if type_name == "Mutation" and field_name == "markAsRead":
+        return _handle_mark_as_read(event)
 
     if type_name == "Query" and field_name == "listMyRooms":
         return _handle_list_my_rooms(event)
