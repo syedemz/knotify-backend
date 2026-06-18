@@ -1307,3 +1307,28 @@ resource "aws_lambda_permission" "push_tokens_api_gateway" {
   # source_arn = api_execution_arn (NOT default_stage_arn) per hotfix #86.
   source_arn = "${module.api_gateway.api_execution_arn}/*/*/v1/push-tokens"
 }
+
+# ---------------------------------------------------------------------------
+# stale_token_cleanup Lambda — story 8.12 (prod mirror)
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+# Mirrors the dev wiring (identical role, module configuration).
+#
+# Daily EventBridge cron: scan PushNotificationTokens, delete rows whose
+# last_seen is older than 60 days.
+#
+# Placement: OUTSIDE the VPC — only touches DynamoDB (no Aurora, no external
+# HTTP).  Running outside the VPC avoids the hotfix #106 blackhole trap.
+#
+# No layers required: this Lambda only needs boto3 (bundled in the runtime).
+# ---------------------------------------------------------------------------
+
+module "stale_token_cleanup" {
+  source = "../../modules/stale_token_cleanup"
+
+  environment            = var.environment
+  function_name          = "knotify-stale-token-cleanup-${var.environment}"
+  filename               = "${path.module}/../../../build/stale_token_cleanup.zip"
+  role_arn               = module.iam_roles.role_arns["stale_token_cleanup"]
+  table_push_tokens_name = module.dynamodb.push_tokens_table_name
+}

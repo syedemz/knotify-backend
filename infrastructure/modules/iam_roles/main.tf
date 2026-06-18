@@ -1090,3 +1090,56 @@ resource "aws_iam_role_policy" "push_tokens_dynamodb" {
   role   = aws_iam_role.push_tokens.name
   policy = data.aws_iam_policy_document.push_tokens_dynamodb.json
 }
+
+# ===========================================================================
+# Role: stale_token_cleanup
+#
+# For the stale_token_cleanup Lambda (story 8.12 — daily EventBridge cron).
+# Scans PushNotificationTokens and deletes rows whose last_seen is older
+# than 60 days.
+#
+# OUTSIDE the VPC: only touches DynamoDB (no Aurora, no external HTTP).
+# AWSLambdaBasicExecutionRole is sufficient — no ENI attachment needed.
+# Consistent with push_fanout and room_state_publisher placement strategy
+# (hotfix #106 lesson: private subnets without NAT cannot reach DynamoDB
+# service endpoints when placed outside a VPC endpoint; running outside the
+# VPC is simpler for DynamoDB-only Lambdas).
+#
+# DynamoDB permissions (PushNotificationTokens only — least privilege):
+#   dynamodb:Scan   — paginated full-table scan to find stale items.
+#   dynamodb:DeleteItem — remove each stale row by (user_id, device_id).
+# ===========================================================================
+
+resource "aws_iam_role" "stale_token_cleanup" {
+  name               = "knotify-${var.environment}-stale-token-cleanup"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+# Basic Lambda execution — CloudWatch Logs only.
+# No VPC access policy: this Lambda runs OUTSIDE the VPC.
+resource "aws_iam_role_policy_attachment" "stale_token_cleanup_basic_execution" {
+  role       = aws_iam_role.stale_token_cleanup.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# DynamoDB Scan + DeleteItem on PushNotificationTokens — scoped to exact ARN.
+# Default wildcard fallback is used only in isolated IAM unit tests.
+data "aws_iam_policy_document" "stale_token_cleanup_dynamodb" {
+  statement {
+    sid    = "PushTokensScanAndDelete"
+    effect = "Allow"
+    actions = [
+      "dynamodb:Scan",
+      "dynamodb:DeleteItem",
+    ]
+    resources = [
+      var.push_notification_tokens_table_arn != "" ? var.push_notification_tokens_table_arn : "arn:aws:dynamodb:*:*:table/PushNotificationTokens",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "stale_token_cleanup_dynamodb" {
+  name   = "stale-token-cleanup-dynamodb"
+  role   = aws_iam_role.stale_token_cleanup.name
+  policy = data.aws_iam_policy_document.stale_token_cleanup_dynamodb.json
+}

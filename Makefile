@@ -129,6 +129,8 @@ package-all:
 	$(MAKE) package FUNC=push_fanout
 	@echo "[package-all] Building push_tokens function ..."
 	$(MAKE) package FUNC=push_tokens
+	@echo "[package-all] Building stale_token_cleanup function ..."
+	$(MAKE) package FUNC=stale_token_cleanup
 	@echo "[package-all] Done — all artifacts in $(BUILD_DIR)/"
 
 # ---------------------------------------------------------------------------

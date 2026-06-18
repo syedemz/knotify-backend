@@ -24,5 +24,7 @@ output "role_arns" {
     push_fanout                   = aws_iam_role.push_fanout.arn
     # Story 8.11 — push_tokens IAM role
     push_tokens                   = aws_iam_role.push_tokens.arn
+    # Story 8.12 — stale_token_cleanup IAM role
+    stale_token_cleanup           = aws_iam_role.stale_token_cleanup.arn
   }
 }

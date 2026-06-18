@@ -1183,3 +1183,83 @@ run "role_arns_output_contains_push_tokens" {
     error_message = "role_arns[push_tokens] must be wired to aws_iam_role.push_tokens.arn"
   }
 }
+
+# ===========================================================================
+# Tests 38–40: stale_token_cleanup IAM role (story 8.12)
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Test 38: stale_token_cleanup role exists with Lambda trust policy
+#
+# Satisfies AC: "IAM role with dynamodb:Scan + DeleteItem on
+#               PushNotificationTokens"
+# ---------------------------------------------------------------------------
+run "stale_token_cleanup_role_exists_with_lambda_trust_policy" {
+  command = plan
+
+  variables {
+    environment                        = "test"
+    aurora_master_user_secret_arn      = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    push_notification_tokens_table_arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/PushNotificationTokens"
+  }
+
+  assert {
+    condition     = aws_iam_role.stale_token_cleanup.assume_role_policy != ""
+    error_message = "stale_token_cleanup assume_role_policy must not be empty"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 39: stale_token_cleanup DynamoDB inline policy exists with correct name
+#
+# Satisfies AC: "dynamodb:Scan + DeleteItem on PushNotificationTokens scoped
+#               to exact table ARN"
+# ---------------------------------------------------------------------------
+run "stale_token_cleanup_dynamodb_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                        = "test"
+    aurora_master_user_secret_arn      = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    push_notification_tokens_table_arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/PushNotificationTokens"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.stale_token_cleanup_dynamodb.name == "stale-token-cleanup-dynamodb"
+    error_message = "stale_token_cleanup DynamoDB policy must be named stale-token-cleanup-dynamodb"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.stale_token_cleanup_dynamodb.role == aws_iam_role.stale_token_cleanup.name
+    error_message = "stale_token_cleanup DynamoDB policy must be attached to stale_token_cleanup role"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 40: role_arns output map contains stale_token_cleanup
+#
+# Satisfies the module output shape requirement so root modules can reference
+# module.iam_roles.role_arns["stale_token_cleanup"].
+# ---------------------------------------------------------------------------
+run "role_arns_output_contains_stale_token_cleanup" {
+  command = plan
+
+  variables {
+    environment                        = "test"
+    aurora_master_user_secret_arn      = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    push_notification_tokens_table_arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/PushNotificationTokens"
+  }
+
+  override_resource {
+    target = aws_iam_role.stale_token_cleanup
+    values = {
+      arn = "arn:aws:iam::123456789012:role/knotify-test-stale-token-cleanup"
+    }
+    override_during = plan
+  }
+
+  assert {
+    condition     = output.role_arns["stale_token_cleanup"] == "arn:aws:iam::123456789012:role/knotify-test-stale-token-cleanup"
+    error_message = "role_arns[stale_token_cleanup] must be wired to aws_iam_role.stale_token_cleanup.arn"
+  }
+}
