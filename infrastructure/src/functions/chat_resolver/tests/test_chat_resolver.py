@@ -428,8 +428,13 @@ def test_given_different_room_ids_when_derive_token_called_then_different_hashes
     assert token_a != token_b
 
 
-def test_given_any_inputs_when_derive_token_called_then_result_is_64_char_hex_string() -> None:
-    """given valid inputs, when derive_token called, then result is a 64-character hex SHA-256."""
+def test_given_any_inputs_when_derive_token_called_then_result_is_32_char_hex_string() -> None:
+    """given valid inputs, when derive_token called, then result is a 32-char hex prefix of SHA-256.
+
+    Truncated from 64 to 32 chars (128 bits) to satisfy DynamoDB's 36-char
+    ClientRequestToken cap; still collision-resistant within the 10-minute
+    idempotency window.
+    """
     mod = _import_handler()
     token = mod.derive_client_request_token(
         sender_id="user-aaa",
@@ -438,7 +443,8 @@ def test_given_any_inputs_when_derive_token_called_then_result_is_64_char_hex_st
         epoch_second=1_718_000_000,
     )
     assert isinstance(token, str)
-    assert len(token) == 64
+    assert len(token) == 32
+    assert len(token) <= 36, "must fit DynamoDB's 36-char ClientRequestToken cap"
     assert all(c in "0123456789abcdef" for c in token)
 
 
