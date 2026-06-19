@@ -1,5 +1,5 @@
 project: knotify-backend
-last_updated: 2026-06-17 # phase-8 complete — all 17 stories done, ready for PR #127 merge + tag
+last_updated: 2026-06-19 # phase 8 closeout — E2E probe all-green after hotfix sweep (PRs #130–#134), phase-8-complete tag applied
 
 phases:
 
