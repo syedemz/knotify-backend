@@ -395,6 +395,7 @@ def _handle_create_or_get_room(event: dict) -> dict:
     # 4. Deterministic room ID
     room_id: str = chat_room_id(caller_id, other_user_id)
     lo, hi = _canonical_pair(caller_id, other_user_id)
+    created_at: str = datetime.now(timezone.utc).isoformat()
 
     ddb = _get_dynamodb()
 
@@ -412,6 +413,7 @@ def _handle_create_or_get_room(event: dict) -> dict:
                     "user_b": {"S": hi},
                     "status": {"S": "active"},
                     "friendship_active": {"BOOL": True},
+                    "created_at": {"S": created_at},
                 },
                 "ConditionExpression": "attribute_not_exists(room_id)",
             }
@@ -448,12 +450,14 @@ def _handle_create_or_get_room(event: dict) -> dict:
             "create_or_get_room_created",
             extra={"room_id": room_id, "caller_id": caller_id},
         )
+        # camelCase keys must match the ChatRoom GraphQL type in schema.graphql.
         return {
-            "room_id": room_id,
-            "user_a": lo,
-            "user_b": hi,
+            "roomId": room_id,
+            "userA": lo,
+            "userB": hi,
             "status": "active",
-            "friendship_active": True,
+            "friendshipActive": True,
+            "createdAt": created_at,
         }
     except Exception as exc:
         # 7. Detect ConditionalCheckFailed — room already exists.
@@ -501,13 +505,7 @@ def _fetch_existing_room(ddb: Any, room_id: str) -> dict:
         Key={"room_id": {"S": room_id}},
     )
     item = response.get("Item", {})
-    return {
-        "room_id": item.get("room_id", {}).get("S", room_id),
-        "user_a": item.get("user_a", {}).get("S", ""),
-        "user_b": item.get("user_b", {}).get("S", ""),
-        "status": item.get("status", {}).get("S", ""),
-        "friendship_active": item.get("friendship_active", {}).get("BOOL", False),
-    }
+    return _decode_room(item)
 
 
 # ---------------------------------------------------------------------------
