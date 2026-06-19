@@ -319,9 +319,10 @@ def test_given_friends_not_blocked_when_new_room_then_transact_write_called_and_
     # TransactWriteItems must have been called exactly once
     mock_ddb.transact_write_items.assert_called_once()
 
-    # Result must contain a room_id (not an error)
+    # Result must contain a roomId (not an error) — camelCase to match the
+    # ChatRoom GraphQL type in schema.graphql.
     assert "errorType" not in result, f"Expected success but got: {result}"
-    assert "room_id" in result, f"Expected room_id in result but got: {result}"
+    assert "roomId" in result, f"Expected roomId in result but got: {result}"
 
 
 def test_given_new_room_created_when_result_returned_then_room_carries_status_active_and_friendship_active() -> None:
@@ -338,7 +339,7 @@ def test_given_new_room_created_when_result_returned_then_room_carries_status_ac
     result = mod._dispatch(event)
 
     assert result.get("status") == "active", f"Expected status=active in: {result}"
-    assert result.get("friendship_active") is True, f"Expected friendship_active=True in: {result}"
+    assert result.get("friendshipActive") is True, f"Expected friendshipActive=True in: {result}"
 
 
 def test_given_new_room_created_when_result_returned_then_room_id_is_symmetric_sha256() -> None:
@@ -360,7 +361,7 @@ def test_given_new_room_created_when_result_returned_then_room_id_is_symmetric_s
     event = _make_event(caller_id=caller_id, other_user_id=other_id)
     result = mod._dispatch(event)
 
-    assert result.get("room_id") == expected_room_id
+    assert result.get("roomId") == expected_room_id
 
 
 def test_given_new_room_when_transact_write_called_then_three_put_items_in_batch() -> None:
@@ -441,7 +442,7 @@ def test_given_room_already_exists_when_conditional_check_failed_then_existing_r
 
     # Result must be the existing room, not an error
     assert "errorType" not in result, f"Expected existing room but got error: {result}"
-    assert result.get("room_id") == room_id
+    assert result.get("roomId") == room_id
 
 
 def test_given_room_exists_when_called_twice_then_room_id_is_same() -> None:
@@ -490,4 +491,4 @@ def test_given_room_exists_when_called_twice_then_room_id_is_same() -> None:
     )
     result2 = mod2._dispatch(_make_event(caller_id=caller_id, other_user_id=other_id))
 
-    assert result1.get("room_id") == result2.get("room_id") == room_id
+    assert result1.get("roomId") == result2.get("roomId") == room_id
