@@ -1,6 +1,6 @@
 phase: 9
 title: Account deletion (Step Functions, soft delete)
-last_updated: 2026-05-21
+last_updated: 2026-06-19
 
 context_summary: |
   Implements the account-deletion workflow per §11 of architecture.md with the §13 #8 resolution applied: soft delete (UPDATE users SET deleted_at, strip PII) with a 30-day retention before a scheduled hard purge via cascade. ChatMessages are anonymized rather than deleted per §13 #21 — sender_id rewritten to '[deleted-user]' while content is preserved. Step Functions Standard workflow orchestrates the steps; each step is an idempotent Python 3.14 Lambda. An audit log table records initiation and completion. A purge_immediately flag supports GDPR right-to-be-forgotten by skipping the 30-day wait. This phase ships after chat because the workflow needs to deactivate ChatRooms and anonymize ChatMessages — both DynamoDB tables created in phase 2 and operated on by phase 8.
@@ -146,3 +146,94 @@ stories:
       - The user calls DELETE /v1/profile/me, the test polls deletion-status until SUCCEEDED
       - The test asserts: Cognito user deleted (AdminGetUser returns UserNotFoundException), Aurora users row has deleted_at set with PII nulled, all 3 ChatMessages rows the user sent now have sender_id='[deleted-user]' with content preserved, ChatRooms row is status='deactivated' with reason='user_deleted_account', Notifications and PushNotificationTokens for the user are empty, and an audit row "deletion_completed" exists
     notes: ""
+
+# ---------------------------------------------------------------------------
+# Open questions — surfaced 2026-06-19 from phase-8 E2E probe walkthrough.
+#
+# These are NOT acceptance criteria yet. They are gaps to resolve in the
+# phase-9 brainstorm (Step 0 of /implement-phase 9). Each gap should either:
+#   (a) be folded into an existing story's acceptance_criteria, OR
+#   (b) spawn a new story with a clear decision, OR
+#   (c) be explicitly accepted as "out of scope, document the rationale".
+# ---------------------------------------------------------------------------
+open_questions:
+  - id: oq-9.A
+    title: ChatRoomMembership rows are never touched by any deletion story
+    affects: [9.4, 9.6]
+    description: |
+      Stories 9.4 (deactivate ChatRooms) and 9.6 (anonymize ChatMessages) touch
+      the ChatRooms and ChatMessages tables, but no story removes the deleted
+      user's ChatRoomMembership rows. The surviving participant's membership row
+      also persists, and there is no cascade between Aurora's `users` delete and
+      these DDB rows. Decisions needed:
+        - Should the deleted user's ChatRoomMembership rows be removed (so
+          listMyRooms stops returning the dead rooms server-side), or kept (so
+          some hypothetical admin tool can still trace participation)?
+        - Should the surviving participant's row stay (so they can still see
+          message history under the [deleted-user] anonymized banner)?
+      Leading answer: delete the deleted user's row, keep the surviving
+      participant's row. Confirms with the "history preserved for survivors"
+      principle from the phase-9 context summary.
+
+  - id: oq-9.B
+    title: 30-day hard purge does not cascade to DynamoDB
+    affects: [9.11]
+    description: |
+      Story 9.11 lists the Aurora cascade (siblings, friendships, friend_requests,
+      bookmarks, blocks) but does not touch DDB. After the 30-day window the
+      ChatRooms rows still sit in `status=deactivated` indefinitely, the
+      anonymized ChatMessages stay forever, and any surviving ChatRoomMembership
+      rows reference a user_id that no longer exists in Aurora. Decisions needed:
+        - Is permanent retention of anonymized chat history the intended policy
+          (likely yes — preserves the other user's record)?
+        - If yes, document the rationale explicitly in §11 of architecture.md
+          and add a note in the audit log entry so legal/compliance has
+          visibility.
+        - If no, define a parallel DDB-side purge (separate Lambda? extend
+          hard_purge to also issue DeleteItem on ChatRooms / ChatMessages
+          where one of the participants is the user being purged?).
+      Leading answer: retain anonymized DDB history permanently; document it.
+      Right-to-be-forgotten (purge_immediately) is the escape hatch for
+      regulated requests, and should also delete the DDB rows in that path.
+
+  - id: oq-9.C
+    title: block_filter behavior after a blocked user's hard purge
+    affects: [9.5, 9.11]
+    description: |
+      If user A had been blocked by user B, and A's account is hard-purged
+      (Aurora cascade removes B's `blocks` row referencing A), then any
+      message-history query by B that previously called `block_filter()` to
+      hide A would suddenly stop filtering — A's anonymized ChatMessages rows
+      (sender_id='[deleted-user]') could resurface in B's UI. Decisions needed:
+        - Does block_filter() correctly treat sender_id='[deleted-user]' as
+          a non-joinable identity (so it neither blocks nor exposes, just
+          renders as anonymized)? Almost certainly yes, but needs a test.
+        - Should hard-purge skip cascade-delete on the `blocks` table to
+          preserve B's "I never want to see anything from this person" intent
+          across the dead-user transition?
+      Leading answer: anonymized messages should remain blocked-equivalent by
+      virtue of being anonymized. Add a regression test: B blocks A, A is
+      hard-purged, B's message-history query for the (now-deactivated) shared
+      room returns rows with sender_id='[deleted-user]' but B's deck/list/feed
+      queries do NOT surface anything attributable to A.
+
+  - id: oq-9.D
+    title: purge_immediately path needs DDB-side cleanup too
+    affects: [9.12]
+    description: |
+      Story 9.12 routes through HardPurgeNow (Aurora-only) for GDPR
+      right-to-be-forgotten requests. But story 9.6 only anonymizes the
+      ChatMessages — anonymized content of a user's chats remains in DDB
+      forever. For a true right-to-be-forgotten, the messages the requesting
+      user sent should be hard-deleted (DeleteItem) in this branch, not just
+      anonymized. Decisions needed:
+        - In the purge_immediately branch, should AnonymizeChatMessages be
+          replaced (or followed) by a HardDeleteUserChatMessages step that
+          issues DeleteItem on each ChatMessage where sender_id matches?
+        - What happens to the other participant's UI when half a conversation
+          vanishes? (Likely acceptable; the legal driver outranks UX continuity.)
+      Leading answer: in the purge_immediately path, hard-delete the requesting
+      user's ChatMessages and ChatRoomMembership rows. Keep the ChatRooms row
+      (other participant's history of the room is preserved with the deleted
+      user's messages gone — same shape as "the other person deleted all
+      their messages and left the chat").
