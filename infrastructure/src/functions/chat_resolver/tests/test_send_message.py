@@ -436,8 +436,11 @@ def test_given_valid_request_when_send_message_then_message_id_matches_iso_hash_
 # ---------------------------------------------------------------------------
 
 
-def test_given_valid_request_when_send_message_then_client_request_token_is_64_char_hex() -> None:
-    """given valid request, when TransactWriteItems called, then ClientRequestToken is 64-char hex."""
+def test_given_valid_request_when_send_message_then_client_request_token_is_32_char_hex() -> None:
+    """given valid request, when TransactWriteItems called, then ClientRequestToken is 32-char hex.
+
+    Truncated to 32 chars (128 bits) because DynamoDB caps ClientRequestToken at 36.
+    """
     mod = _import_handler(
         membership_item=_MEMBERSHIP_ITEM,
         room_item=_ACTIVE_ROOM_ITEM,
@@ -454,7 +457,8 @@ def test_given_valid_request_when_send_message_then_client_request_token_is_64_c
     )
     assert token is not None, "ClientRequestToken must be passed to TransactWriteItems"
     assert isinstance(token, str), f"ClientRequestToken must be a string, got {type(token)}"
-    assert len(token) == 64, f"ClientRequestToken must be 64-char hex, got len={len(token)}"
+    assert len(token) == 32, f"ClientRequestToken must be 32-char hex, got len={len(token)}"
+    assert len(token) <= 36, "ClientRequestToken must fit DynamoDB's 36-char cap"
     assert all(c in "0123456789abcdef" for c in token), (
         f"ClientRequestToken must be lowercase hex, got: {token!r}"
     )

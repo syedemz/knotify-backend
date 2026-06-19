@@ -207,6 +207,10 @@ def derive_client_request_token(
     Why SHA-256?  It is deterministic, collision-resistant, and available in
     Python's standard library — no extra dependency required.
 
+    The digest is truncated to 32 hex chars (128 bits) because DynamoDB caps
+    ClientRequestToken at 36 chars. 128 bits is still far more than enough to
+    avoid collisions within the 10-minute idempotency window.
+
     Args:
         sender_id:    Cognito sub of the message sender (server-set from JWT).
         room_id:      ChatRooms PK for the target room.
@@ -216,10 +220,10 @@ def derive_client_request_token(
                       determinism without depending on the system clock.
 
     Returns:
-        64-character lowercase hex SHA-256 digest.
+        32-character lowercase hex string (first 16 bytes of the SHA-256 digest).
     """
     raw = f"{sender_id}|{room_id}|{content}|{epoch_second}"
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
 
 # ---------------------------------------------------------------------------
