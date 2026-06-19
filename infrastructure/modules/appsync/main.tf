@@ -193,6 +193,130 @@ resource "aws_appsync_datasource" "chat_resolver_ds" {
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
+# Client-facing chat resolvers — UNIT, AWS_LAMBDA datasource
+#
+# Phase-8 hotfix (post-merge): stories 8.3, 8.4, 8.5, 8.7 added the dispatch
+# logic to the chat_resolver Lambda handler (handler.py:_dispatch) but the
+# Terraform resolver-attachment resources that connect each schema field to
+# the chat_resolver_ds Lambda datasource were never authored. AppSync was
+# accepting the operations and returning null because Resolver Count == 0.
+#
+# All five resolvers use the same APPSYNC_JS pass-through pattern: forward
+# (typeName, fieldName, identity, args, source) to the Lambda and re-raise
+# any structured {errorType, message} the handler returns as a GraphQL error.
+# ---------------------------------------------------------------------------
+
+locals {
+  chat_resolver_lambda_invoke_js = <<-APPSYNC_JS
+    import { util } from "@aws-appsync/utils";
+
+    export function request(ctx) {
+      return {
+        operation: "Invoke",
+        payload: {
+          typeName:  ctx.info.parentTypeName,
+          fieldName: ctx.info.fieldName,
+          identity:  ctx.identity,
+          arguments: ctx.args,
+          source:    ctx.source,
+        },
+      };
+    }
+
+    export function response(ctx) {
+      if (ctx.error) {
+        util.error(ctx.error.message, ctx.error.type);
+      }
+      const result = ctx.result;
+      if (result && result.errorType) {
+        util.error(result.message || "resolver error", result.errorType);
+      }
+      return result;
+    }
+  APPSYNC_JS
+}
+
+# Story 8.3 — Mutation.createOrGetRoom
+resource "aws_appsync_resolver" "create_or_get_room" {
+  api_id      = aws_appsync_graphql_api.knotify.id
+  type        = "Mutation"
+  field       = "createOrGetRoom"
+  data_source = aws_appsync_datasource.chat_resolver_ds.name
+  kind        = "UNIT"
+
+  runtime {
+    name            = "APPSYNC_JS"
+    runtime_version = "1.0.0"
+  }
+
+  code = local.chat_resolver_lambda_invoke_js
+}
+
+# Story 8.4 — Mutation.sendMessage
+resource "aws_appsync_resolver" "send_message" {
+  api_id      = aws_appsync_graphql_api.knotify.id
+  type        = "Mutation"
+  field       = "sendMessage"
+  data_source = aws_appsync_datasource.chat_resolver_ds.name
+  kind        = "UNIT"
+
+  runtime {
+    name            = "APPSYNC_JS"
+    runtime_version = "1.0.0"
+  }
+
+  code = local.chat_resolver_lambda_invoke_js
+}
+
+# Story 8.7 — Mutation.markAsRead
+resource "aws_appsync_resolver" "mark_as_read" {
+  api_id      = aws_appsync_graphql_api.knotify.id
+  type        = "Mutation"
+  field       = "markAsRead"
+  data_source = aws_appsync_datasource.chat_resolver_ds.name
+  kind        = "UNIT"
+
+  runtime {
+    name            = "APPSYNC_JS"
+    runtime_version = "1.0.0"
+  }
+
+  code = local.chat_resolver_lambda_invoke_js
+}
+
+# Story 8.5 — Query.listMyRooms
+resource "aws_appsync_resolver" "list_my_rooms" {
+  api_id      = aws_appsync_graphql_api.knotify.id
+  type        = "Query"
+  field       = "listMyRooms"
+  data_source = aws_appsync_datasource.chat_resolver_ds.name
+  kind        = "UNIT"
+
+  runtime {
+    name            = "APPSYNC_JS"
+    runtime_version = "1.0.0"
+  }
+
+  code = local.chat_resolver_lambda_invoke_js
+}
+
+# Story 8.5 — Query.messagesByChatRoom
+resource "aws_appsync_resolver" "messages_by_chat_room" {
+  api_id      = aws_appsync_graphql_api.knotify.id
+  type        = "Query"
+  field       = "messagesByChatRoom"
+  data_source = aws_appsync_datasource.chat_resolver_ds.name
+  kind        = "UNIT"
+
+  runtime {
+    name            = "APPSYNC_JS"
+    runtime_version = "1.0.0"
+  }
+
+  code = local.chat_resolver_lambda_invoke_js
+}
+
+# ---------------------------------------------------------------------------
 # Story 8.6 — Subscription pipeline resolvers
 #
 # Implementation choice: APPSYNC_JS runtime on a NONE datasource for the
