@@ -113,11 +113,12 @@ WHERE (user_a = %s::uuid AND user_b = %s::uuid)
    OR (user_a = %s::uuid AND user_b = %s::uuid)
 """
 
-# Delete any pending friend_requests between the pair in either direction
+# Delete any pending friend_requests between the pair in either direction.
+# Columns per migration 0005: from_user_id / to_user_id (NOT requester_id/receiver_id).
 _DELETE_FRIEND_REQUESTS_SQL = """
 DELETE FROM friend_requests
-WHERE (requester_id = %s::uuid AND receiver_id = %s::uuid)
-   OR (requester_id = %s::uuid AND receiver_id = %s::uuid)
+WHERE (from_user_id = %s::uuid AND to_user_id = %s::uuid)
+   OR (from_user_id = %s::uuid AND to_user_id = %s::uuid)
 """
 
 # Delete a block row
