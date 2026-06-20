@@ -114,7 +114,7 @@ stories:
   - id: 9.8
     title: Audit log table and WriteAuditLog Lambda
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: []
     tracking_issue: 142
     acceptance_criteria:
