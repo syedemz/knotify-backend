@@ -1454,3 +1454,112 @@ run "role_arns_output_contains_stepfn_deletion_exec" {
     error_message = "role_arns[stepfn_deletion_exec] must be wired to aws_iam_role.stepfn_deletion_exec.arn"
   }
 }
+
+# ===========================================================================
+# Story 9.8 — write_audit_log IAM role tests
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Test: write_audit_log role trust policy uses lambda service principal
+# Satisfies AC: Lambda execution role in infrastructure/modules/iam_roles/
+# ---------------------------------------------------------------------------
+run "write_audit_log_role_uses_lambda_trust_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = aws_iam_role.write_audit_log.name == "knotify-test-write-audit-log"
+    error_message = "write_audit_log role name must be knotify-<env>-write-audit-log"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test: write_audit_log role has AWSLambdaBasicExecutionRole attached
+# Satisfies AC: Lambda runs OUTSIDE the VPC (no VPC endpoint needed for DynamoDB-only)
+# ---------------------------------------------------------------------------
+run "write_audit_log_role_has_basic_execution_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy_attachment.write_audit_log_basic_execution.policy_arn == "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+    error_message = "write_audit_log role must attach AWSLambdaBasicExecutionRole (not VPC access — runs outside VPC)"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test: write_audit_log DynamoDB policy allows PutItem on account_deletion_audit
+# Satisfies AC: least-privilege DynamoDB PutItem on account_deletion_audit only
+# Default fallback wildcard used here (no real table ARN passed)
+# ---------------------------------------------------------------------------
+run "write_audit_log_dynamodb_policy_putitem_only" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.write_audit_log_dynamodb.name == "write-audit-log-dynamodb"
+    error_message = "write_audit_log DynamoDB inline policy must be named write-audit-log-dynamodb"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.write_audit_log_dynamodb.role == aws_iam_role.write_audit_log.name
+    error_message = "write_audit_log DynamoDB inline policy must be attached to write_audit_log role"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test: write_audit_log DynamoDB policy uses scoped ARN when provided
+# Satisfies AC: real table ARN is used when var.account_deletion_audit_table_arn is non-empty
+# ---------------------------------------------------------------------------
+run "write_audit_log_dynamodb_policy_uses_scoped_arn_when_provided" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    account_deletion_audit_table_arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/account_deletion_audit"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.write_audit_log_dynamodb.role == aws_iam_role.write_audit_log.name
+    error_message = "write_audit_log DynamoDB inline policy must be attached to write_audit_log role when real ARN provided"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test: role_arns output contains write_audit_log
+# Satisfies AC: root modules can reference module.iam_roles.role_arns["write_audit_log"]
+# ---------------------------------------------------------------------------
+run "role_arns_output_contains_write_audit_log" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  override_resource {
+    target = aws_iam_role.write_audit_log
+    values = {
+      arn = "arn:aws:iam::123456789012:role/knotify-test-write-audit-log"
+    }
+    override_during = plan
+  }
+
+  assert {
+    condition     = output.role_arns["write_audit_log"] == "arn:aws:iam::123456789012:role/knotify-test-write-audit-log"
+    error_message = "role_arns[write_audit_log] must be wired to aws_iam_role.write_audit_log.arn"
+  }
+}

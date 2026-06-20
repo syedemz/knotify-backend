@@ -127,3 +127,13 @@ variable "deletion_sfn_log_group_arn" {
   type        = string
   default     = ""
 }
+
+# ---------------------------------------------------------------------------
+# Story 9.8 — write_audit_log IAM role scoping
+# ---------------------------------------------------------------------------
+
+variable "account_deletion_audit_table_arn" {
+  description = "ARN of the account_deletion_audit DynamoDB table. Used to scope write_audit_log role's dynamodb:PutItem permission (story 9.8). Pass module.dynamodb.account_deletion_audit_arn from each environment root module."
+  type        = string
+  default     = ""
+}

@@ -1190,6 +1190,58 @@ resource "aws_iam_role_policy" "stepfn_deletion_exec_logs" {
 }
 
 # ===========================================================================
+# Role: write_audit_log
+#
+# For the knotify-write-audit-log Lambda (story 9.8).
+# Writes audit records to the account_deletion_audit DynamoDB table on every
+# account-deletion workflow event (initiated / completed / failed).
+#
+# OUTSIDE the VPC: DynamoDB is reachable via public service endpoints or
+# a VPC endpoint; however, this Lambda has no Aurora access and no AppSync
+# calls so running it outside the VPC avoids the ENI attachment cold-start
+# penalty and prevents the blackhole failure documented in hotfix #106.
+# AWSLambdaBasicExecutionRole is sufficient — no VPC access policy attached.
+#
+# DynamoDB permission:
+#   dynamodb:PutItem on account_deletion_audit only — no read, no delete,
+#   no other tables.  Least-privilege per codingprinciples.md.
+# ===========================================================================
+
+resource "aws_iam_role" "write_audit_log" {
+  name               = "knotify-${var.environment}-write-audit-log"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+# Basic Lambda execution — CloudWatch Logs only.
+# No VPC access policy: this Lambda runs OUTSIDE the VPC.
+resource "aws_iam_role_policy_attachment" "write_audit_log_basic_execution" {
+  role       = aws_iam_role.write_audit_log.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# DynamoDB PutItem on account_deletion_audit — scoped to exact table ARN.
+# Default wildcard fallback is used only in isolated IAM unit tests where
+# the dynamodb module is not wired.
+data "aws_iam_policy_document" "write_audit_log_dynamodb" {
+  statement {
+    sid    = "AuditLogPutItem"
+    effect = "Allow"
+    actions = [
+      "dynamodb:PutItem",
+    ]
+    resources = [
+      var.account_deletion_audit_table_arn != "" ? var.account_deletion_audit_table_arn : "arn:aws:dynamodb:*:*:table/account_deletion_audit",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "write_audit_log_dynamodb" {
+  name   = "write-audit-log-dynamodb"
+  role   = aws_iam_role.write_audit_log.name
+  policy = data.aws_iam_policy_document.write_audit_log_dynamodb.json
+}
+
+# ===========================================================================
 # Role: stale_token_cleanup
 #
 # For the stale_token_cleanup Lambda (story 8.12 — daily EventBridge cron).

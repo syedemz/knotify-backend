@@ -28,5 +28,7 @@ output "role_arns" {
     stale_token_cleanup = aws_iam_role.stale_token_cleanup.arn
     # Story 9.1 — stepfn_deletion_exec IAM role (Step Functions execution role)
     stepfn_deletion_exec = aws_iam_role.stepfn_deletion_exec.arn
+    # Story 9.8 — write_audit_log IAM role (DynamoDB PutItem on account_deletion_audit)
+    write_audit_log = aws_iam_role.write_audit_log.arn
   }
 }
