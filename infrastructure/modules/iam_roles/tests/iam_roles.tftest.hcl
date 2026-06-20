@@ -1263,3 +1263,194 @@ run "role_arns_output_contains_stale_token_cleanup" {
     error_message = "role_arns[stale_token_cleanup] must be wired to aws_iam_role.stale_token_cleanup.arn"
   }
 }
+
+# ===========================================================================
+# Tests 41–45: stepfn_deletion_exec IAM role (story 9.1)
+#
+# Dedicated Step Functions execution role for the account-deletion state machine.
+# Trust principal: states.amazonaws.com
+# Inline policies:
+#   1. lambda:InvokeFunction on all nine deletion task Lambda ARNs
+#   2. cloudwatch:PutMetricData (DeletionFailed metric, no resource restriction needed)
+#   3. logs:* on the Step Functions CloudWatch log group ARN
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Test 41: stepfn_deletion_exec role exists with states.amazonaws.com trust policy
+#
+# Satisfies AC: "A dedicated Step Functions execution role is declared in
+#               infrastructure/modules/iam_roles/ with ... trust principal states.amazonaws.com"
+# ---------------------------------------------------------------------------
+run "stepfn_deletion_exec_role_exists_with_states_trust_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    deletion_task_lambda_arns = [
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-validate-deletion-request-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-cognito-user-state-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-deactivate-chat-rooms-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-soft-delete-aurora-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-delete-dynamodb-personal-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-anonymize-chat-messages-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-hard-purge-now-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-hard-delete-user-chat-msgs-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-write-audit-log-test:live",
+    ]
+    deletion_sfn_log_group_arn = "arn:aws:logs:eu-central-1:123456789012:log-group:/aws/states/knotify-test-account-deletion:*"
+  }
+
+  assert {
+    condition     = aws_iam_role.stepfn_deletion_exec.assume_role_policy != ""
+    error_message = "stepfn_deletion_exec assume_role_policy must not be empty"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 42: stepfn_deletion_exec lambda invoke inline policy exists
+#
+# Satisfies AC: "lambda:InvokeFunction scoped to each task Lambda ARN"
+# ---------------------------------------------------------------------------
+run "stepfn_deletion_exec_lambda_invoke_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    deletion_task_lambda_arns = [
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-validate-deletion-request-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-cognito-user-state-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-deactivate-chat-rooms-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-soft-delete-aurora-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-delete-dynamodb-personal-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-anonymize-chat-messages-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-hard-purge-now-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-hard-delete-user-chat-msgs-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-write-audit-log-test:live",
+    ]
+    deletion_sfn_log_group_arn = "arn:aws:logs:eu-central-1:123456789012:log-group:/aws/states/knotify-test-account-deletion:*"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.stepfn_deletion_exec_lambda_invoke.name == "stepfn-deletion-exec-lambda-invoke"
+    error_message = "stepfn_deletion_exec lambda invoke policy must be named stepfn-deletion-exec-lambda-invoke"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.stepfn_deletion_exec_lambda_invoke.role == aws_iam_role.stepfn_deletion_exec.name
+    error_message = "stepfn_deletion_exec lambda invoke policy must be attached to the stepfn_deletion_exec role"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 43: stepfn_deletion_exec cloudwatch put metric inline policy exists
+#
+# Satisfies AC: "cloudwatch:PutMetricData for the DeletionFailed metric"
+# ---------------------------------------------------------------------------
+run "stepfn_deletion_exec_cloudwatch_metric_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    deletion_task_lambda_arns = [
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-validate-deletion-request-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-cognito-user-state-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-deactivate-chat-rooms-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-soft-delete-aurora-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-delete-dynamodb-personal-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-anonymize-chat-messages-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-hard-purge-now-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-hard-delete-user-chat-msgs-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-write-audit-log-test:live",
+    ]
+    deletion_sfn_log_group_arn = "arn:aws:logs:eu-central-1:123456789012:log-group:/aws/states/knotify-test-account-deletion:*"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.stepfn_deletion_exec_cloudwatch.name == "stepfn-deletion-exec-cloudwatch"
+    error_message = "stepfn_deletion_exec cloudwatch policy must be named stepfn-deletion-exec-cloudwatch"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.stepfn_deletion_exec_cloudwatch.role == aws_iam_role.stepfn_deletion_exec.name
+    error_message = "stepfn_deletion_exec cloudwatch policy must be attached to the stepfn_deletion_exec role"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 44: stepfn_deletion_exec logs inline policy exists
+#
+# Satisfies AC: "logs:* for the log group"
+# ---------------------------------------------------------------------------
+run "stepfn_deletion_exec_logs_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    deletion_task_lambda_arns = [
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-validate-deletion-request-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-cognito-user-state-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-deactivate-chat-rooms-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-soft-delete-aurora-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-delete-dynamodb-personal-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-anonymize-chat-messages-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-hard-purge-now-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-hard-delete-user-chat-msgs-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-write-audit-log-test:live",
+    ]
+    deletion_sfn_log_group_arn = "arn:aws:logs:eu-central-1:123456789012:log-group:/aws/states/knotify-test-account-deletion:*"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.stepfn_deletion_exec_logs.name == "stepfn-deletion-exec-logs"
+    error_message = "stepfn_deletion_exec logs policy must be named stepfn-deletion-exec-logs"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.stepfn_deletion_exec_logs.role == aws_iam_role.stepfn_deletion_exec.name
+    error_message = "stepfn_deletion_exec logs policy must be attached to the stepfn_deletion_exec role"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 45: role_arns output map contains stepfn_deletion_exec
+#
+# Satisfies the module output shape requirement so root modules can reference
+# module.iam_roles.role_arns["stepfn_deletion_exec"].
+# ---------------------------------------------------------------------------
+run "role_arns_output_contains_stepfn_deletion_exec" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    deletion_task_lambda_arns = [
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-validate-deletion-request-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-cognito-user-state-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-deactivate-chat-rooms-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-soft-delete-aurora-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-delete-dynamodb-personal-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-anonymize-chat-messages-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-hard-purge-now-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-hard-delete-user-chat-msgs-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-write-audit-log-test:live",
+    ]
+    deletion_sfn_log_group_arn = "arn:aws:logs:eu-central-1:123456789012:log-group:/aws/states/knotify-test-account-deletion:*"
+  }
+
+  override_resource {
+    target = aws_iam_role.stepfn_deletion_exec
+    values = {
+      arn = "arn:aws:iam::123456789012:role/knotify-test-stepfn-deletion-exec"
+    }
+    override_during = plan
+  }
+
+  assert {
+    condition     = output.role_arns["stepfn_deletion_exec"] == "arn:aws:iam::123456789012:role/knotify-test-stepfn-deletion-exec"
+    error_message = "role_arns[stepfn_deletion_exec] must be wired to aws_iam_role.stepfn_deletion_exec.arn"
+  }
+}

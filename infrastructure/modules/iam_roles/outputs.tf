@@ -26,5 +26,7 @@ output "role_arns" {
     push_tokens = aws_iam_role.push_tokens.arn
     # Story 8.12 — stale_token_cleanup IAM role
     stale_token_cleanup = aws_iam_role.stale_token_cleanup.arn
+    # Story 9.1 — stepfn_deletion_exec IAM role (Step Functions execution role)
+    stepfn_deletion_exec = aws_iam_role.stepfn_deletion_exec.arn
   }
 }

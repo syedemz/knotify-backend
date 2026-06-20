@@ -1,0 +1,344 @@
+{
+  "Comment": "knotify account-deletion workflow — soft-delete and purge-immediately branches",
+  "StartAt": "ValidateDeletionRequest",
+  "States": {
+    "ValidateDeletionRequest": {
+      "Type": "Task",
+      "Resource": "${validate_deletion_request_arn}",
+      "ResultPath": "$.validation",
+      "Next": "ChooseDeletionBranch",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "RecordFailureAuditLog",
+          "ResultPath": "$.error"
+        }
+      ]
+    },
+    "ChooseDeletionBranch": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.purge_immediately",
+          "BooleanEquals": true,
+          "Next": "PurgeImmediately_DisableCognitoUser"
+        }
+      ],
+      "Default": "SoftDelete_DisableCognitoUser"
+    },
+
+    "SoftDelete_DisableCognitoUser": {
+      "Type": "Task",
+      "Resource": "${cognito_user_state_arn}",
+      "Parameters": {
+        "user_id.$": "$.user_id",
+        "mode": "disable"
+      },
+      "ResultPath": "$.disable_cognito",
+      "Next": "SoftDelete_DeactivateChatRooms",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "RecordFailureAuditLog",
+          "ResultPath": "$.error"
+        }
+      ]
+    },
+    "SoftDelete_DeactivateChatRooms": {
+      "Type": "Task",
+      "Resource": "${deactivate_chat_rooms_arn}",
+      "Parameters": {
+        "user_id.$": "$.user_id"
+      },
+      "ResultPath": "$.deactivate_chat_rooms",
+      "Next": "SoftDelete_ParallelCleanup",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "RecordFailureAuditLog",
+          "ResultPath": "$.error"
+        }
+      ]
+    },
+    "SoftDelete_ParallelCleanup": {
+      "Type": "Parallel",
+      "Branches": [
+        {
+          "StartAt": "SoftDeleteAurora",
+          "States": {
+            "SoftDeleteAurora": {
+              "Type": "Task",
+              "Resource": "${soft_delete_aurora_arn}",
+              "Parameters": {
+                "user_id.$": "$.user_id"
+              },
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "DeleteDynamoDBPersonalData",
+          "States": {
+            "DeleteDynamoDBPersonalData": {
+              "Type": "Task",
+              "Resource": "${delete_dynamodb_personal_arn}",
+              "Parameters": {
+                "user_id.$": "$.user_id"
+              },
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "AnonymizeChatMessages",
+          "States": {
+            "AnonymizeChatMessages": {
+              "Type": "Task",
+              "Resource": "${anonymize_chat_messages_arn}",
+              "Parameters": {
+                "user_id.$": "$.user_id",
+                "room_ids.$": "$.deactivate_chat_rooms.room_ids"
+              },
+              "Next": "CheckAnonymizeHasMore"
+            },
+            "CheckAnonymizeHasMore": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Variable": "$.has_more",
+                  "BooleanEquals": true,
+                  "Next": "AnonymizeChatMessages"
+                }
+              ],
+              "Default": "AnonymizeDone"
+            },
+            "AnonymizeDone": {
+              "Type": "Pass",
+              "End": true
+            }
+          }
+        }
+      ],
+      "ResultPath": "$.parallel_cleanup",
+      "Next": "SoftDelete_DeleteCognitoUser",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "RecordFailureAuditLog",
+          "ResultPath": "$.error"
+        }
+      ]
+    },
+    "SoftDelete_DeleteCognitoUser": {
+      "Type": "Task",
+      "Resource": "${cognito_user_state_arn}",
+      "Parameters": {
+        "user_id.$": "$.user_id",
+        "mode": "delete"
+      },
+      "ResultPath": "$.delete_cognito",
+      "Next": "SoftDelete_WriteAuditLog",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "RecordFailureAuditLog",
+          "ResultPath": "$.error"
+        }
+      ]
+    },
+    "SoftDelete_WriteAuditLog": {
+      "Type": "Task",
+      "Resource": "${write_audit_log_arn}",
+      "Parameters": {
+        "user_id.$": "$.user_id",
+        "event_type": "deletion_completed",
+        "dynamodb_retention": "permanent_anonymized",
+        "execution_arn.$": "$$.Execution.Id"
+      },
+      "ResultPath": "$.audit_log",
+      "End": true
+    },
+
+    "PurgeImmediately_DisableCognitoUser": {
+      "Type": "Task",
+      "Resource": "${cognito_user_state_arn}",
+      "Parameters": {
+        "user_id.$": "$.user_id",
+        "mode": "disable"
+      },
+      "ResultPath": "$.disable_cognito",
+      "Next": "PurgeImmediately_DeactivateChatRooms",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "RecordFailureAuditLog",
+          "ResultPath": "$.error"
+        }
+      ]
+    },
+    "PurgeImmediately_DeactivateChatRooms": {
+      "Type": "Task",
+      "Resource": "${deactivate_chat_rooms_arn}",
+      "Parameters": {
+        "user_id.$": "$.user_id"
+      },
+      "ResultPath": "$.deactivate_chat_rooms",
+      "Next": "PurgeImmediately_ParallelCleanup",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "RecordFailureAuditLog",
+          "ResultPath": "$.error"
+        }
+      ]
+    },
+    "PurgeImmediately_ParallelCleanup": {
+      "Type": "Parallel",
+      "Branches": [
+        {
+          "StartAt": "SoftDeleteAuroraForPurge",
+          "States": {
+            "SoftDeleteAuroraForPurge": {
+              "Type": "Task",
+              "Resource": "${soft_delete_aurora_arn}",
+              "Parameters": {
+                "user_id.$": "$.user_id"
+              },
+              "Next": "HardPurgeNow"
+            },
+            "HardPurgeNow": {
+              "Type": "Task",
+              "Resource": "${hard_purge_now_arn}",
+              "Parameters": {
+                "user_id.$": "$.user_id"
+              },
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "DeleteDynamoDBPersonalDataForPurge",
+          "States": {
+            "DeleteDynamoDBPersonalDataForPurge": {
+              "Type": "Task",
+              "Resource": "${delete_dynamodb_personal_arn}",
+              "Parameters": {
+                "user_id.$": "$.user_id"
+              },
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "HardDeleteUserChatMessages",
+          "States": {
+            "HardDeleteUserChatMessages": {
+              "Type": "Task",
+              "Resource": "${hard_delete_user_chat_msgs_arn}",
+              "Parameters": {
+                "user_id.$": "$.user_id",
+                "room_ids.$": "$.deactivate_chat_rooms.room_ids"
+              },
+              "Next": "CheckHardDeleteHasMore"
+            },
+            "CheckHardDeleteHasMore": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Variable": "$.has_more",
+                  "BooleanEquals": true,
+                  "Next": "HardDeleteUserChatMessages"
+                }
+              ],
+              "Default": "HardDeleteDone"
+            },
+            "HardDeleteDone": {
+              "Type": "Pass",
+              "End": true
+            }
+          }
+        }
+      ],
+      "ResultPath": "$.parallel_cleanup",
+      "Next": "PurgeImmediately_DeleteCognitoUser",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "RecordFailureAuditLog",
+          "ResultPath": "$.error"
+        }
+      ]
+    },
+    "PurgeImmediately_DeleteCognitoUser": {
+      "Type": "Task",
+      "Resource": "${cognito_user_state_arn}",
+      "Parameters": {
+        "user_id.$": "$.user_id",
+        "mode": "delete"
+      },
+      "ResultPath": "$.delete_cognito",
+      "Next": "PurgeImmediately_WriteAuditLog",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "RecordFailureAuditLog",
+          "ResultPath": "$.error"
+        }
+      ]
+    },
+    "PurgeImmediately_WriteAuditLog": {
+      "Type": "Task",
+      "Resource": "${write_audit_log_arn}",
+      "Parameters": {
+        "user_id.$": "$.user_id",
+        "event_type": "deletion_completed",
+        "dynamodb_retention": "hard_deleted",
+        "execution_arn.$": "$$.Execution.Id"
+      },
+      "ResultPath": "$.audit_log",
+      "End": true
+    },
+
+    "RecordFailureAuditLog": {
+      "Type": "Task",
+      "Resource": "${write_audit_log_arn}",
+      "Parameters": {
+        "user_id.$": "$.user_id",
+        "event_type": "deletion_failed",
+        "failed_state_name.$": "$$.State.Name",
+        "error.$": "$.error.Error",
+        "cause.$": "$.error.Cause",
+        "execution_arn.$": "$$.Execution.Id"
+      },
+      "ResultPath": "$.failure_audit",
+      "Next": "EmitDeletionFailedMetric"
+    },
+    "EmitDeletionFailedMetric": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:cloudwatch:putMetricData",
+      "Parameters": {
+        "Namespace": "knotify/AccountDeletion",
+        "MetricData": [
+          {
+            "MetricName": "DeletionFailed",
+            "Value": 1,
+            "Unit": "Count",
+            "Dimensions": [
+              {
+                "Name": "stage",
+                "Value": "${environment}"
+              }
+            ]
+          }
+        ]
+      },
+      "ResultPath": "$.metric",
+      "Next": "DeletionFailed"
+    },
+    "DeletionFailed": {
+      "Type": "Fail",
+      "Error": "DeletionFailed",
+      "Cause": "Account deletion workflow failed — see RecordFailureAuditLog step for details"
+    }
+  }
+}

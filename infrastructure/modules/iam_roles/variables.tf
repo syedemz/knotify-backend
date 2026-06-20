@@ -111,3 +111,19 @@ variable "expo_push_secret_arn" {
   type        = string
   default     = ""
 }
+
+# ---------------------------------------------------------------------------
+# Story 9.1 — stepfn_deletion_exec IAM role scoping
+# ---------------------------------------------------------------------------
+
+variable "deletion_task_lambda_arns" {
+  description = "List of Lambda ARNs for all account-deletion Step Functions task Lambdas. Used to scope stepfn_deletion_exec role's lambda:InvokeFunction permission (story 9.1). Pass the list from module.step_functions inputs in each environment root module. Empty list is the default for environments that have not yet deployed deletion Lambdas."
+  type        = list(string)
+  default     = []
+}
+
+variable "deletion_sfn_log_group_arn" {
+  description = "ARN of the CloudWatch log group used by the account-deletion Step Functions state machine (with :* suffix). Used to scope stepfn_deletion_exec role's logs:* permission (story 9.1). Pass module.step_functions.log_group_arn from each environment root module."
+  type        = string
+  default     = ""
+}

@@ -1092,6 +1092,104 @@ resource "aws_iam_role_policy" "push_tokens_dynamodb" {
 }
 
 # ===========================================================================
+# Role: stepfn_deletion_exec
+#
+# Dedicated Step Functions execution role for the account-deletion state machine
+# (story 9.1). Trust principal is states.amazonaws.com.
+#
+# Three inline policies:
+#   1. lambda:InvokeFunction — scoped to every deletion task Lambda ARN
+#      (all nine task Lambdas from stories 9.2–9.8/9.11–9.12).
+#      When deletion_task_lambda_arns is empty (unit-test default), a wildcard
+#      fallback pattern is used so validate still passes.
+#   2. cloudwatch:PutMetricData — needed to emit the DeletionFailed metric
+#      from the global Catch handler. CloudWatch PutMetricData does not support
+#      resource-level scoping; the resource is "*" per AWS documentation.
+#   3. logs:* — scoped to the Step Functions log group ARN with the :* suffix
+#      required by the Step Functions logging integration.
+#      When deletion_sfn_log_group_arn is empty (unit-test default), a wildcard
+#      fallback pattern is used so validate still passes.
+#
+# NOT a Lambda execution role — no VPC access managed policy is attached.
+# Step Functions invokes Lambdas directly; the Lambda functions themselves
+# run in the VPC under their own Lambda execution roles.
+# ===========================================================================
+
+resource "aws_iam_role" "stepfn_deletion_exec" {
+  name               = "knotify-${var.environment}-stepfn-deletion-exec"
+  assume_role_policy = data.aws_iam_policy_document.states_assume_role.json
+}
+
+# lambda:InvokeFunction scoped to each deletion task Lambda ARN.
+# codingprinciples.md forbids wildcard Resource; the fallback wildcard is used
+# only in isolated module tests where no real ARNs are provided.
+data "aws_iam_policy_document" "stepfn_deletion_exec_lambda_invoke" {
+  statement {
+    sid    = "InvokeDeletionTaskLambdas"
+    effect = "Allow"
+    actions = [
+      "lambda:InvokeFunction",
+    ]
+    resources = length(var.deletion_task_lambda_arns) > 0 ? var.deletion_task_lambda_arns : [
+      "arn:aws:lambda:*:*:function:knotify-*-deletion-*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "stepfn_deletion_exec_lambda_invoke" {
+  name   = "stepfn-deletion-exec-lambda-invoke"
+  role   = aws_iam_role.stepfn_deletion_exec.name
+  policy = data.aws_iam_policy_document.stepfn_deletion_exec_lambda_invoke.json
+}
+
+# cloudwatch:PutMetricData — no resource-level scoping available for this action.
+# The DeletionFailed custom metric is emitted from the global Catch on every
+# failed execution. The resource "*" is required by AWS; this is the one
+# permitted exception to the no-wildcard-Resource rule per AWS documentation
+# (CloudWatch PutMetricData does not support resource-level permissions).
+data "aws_iam_policy_document" "stepfn_deletion_exec_cloudwatch" {
+  statement {
+    sid    = "PutDeletionFailedMetric"
+    effect = "Allow"
+    actions = [
+      "cloudwatch:PutMetricData",
+    ]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_role_policy" "stepfn_deletion_exec_cloudwatch" {
+  name   = "stepfn-deletion-exec-cloudwatch"
+  role   = aws_iam_role.stepfn_deletion_exec.name
+  policy = data.aws_iam_policy_document.stepfn_deletion_exec_cloudwatch.json
+}
+
+# logs:* scoped to the Step Functions log group ARN.
+# Step Functions requires logs:CreateLogDelivery, logs:GetLogDelivery,
+# logs:UpdateLogDelivery, logs:DeleteLogDelivery, logs:ListLogDeliveries,
+# logs:PutResourcePolicy, logs:DescribeResourcePolicies, and
+# logs:DescribeLogGroups on the log group — using logs:* captures all of
+# these without separately listing each. Scoped to the log group ARN.
+data "aws_iam_policy_document" "stepfn_deletion_exec_logs" {
+  statement {
+    sid    = "StepFunctionsLogging"
+    effect = "Allow"
+    actions = [
+      "logs:*",
+    ]
+    resources = [
+      var.deletion_sfn_log_group_arn != "" ? var.deletion_sfn_log_group_arn : "arn:aws:logs:*:*:log-group:/aws/states/knotify-*-account-deletion:*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "stepfn_deletion_exec_logs" {
+  name   = "stepfn-deletion-exec-logs"
+  role   = aws_iam_role.stepfn_deletion_exec.name
+  policy = data.aws_iam_policy_document.stepfn_deletion_exec_logs.json
+}
+
+# ===========================================================================
 # Role: stale_token_cleanup
 #
 # For the stale_token_cleanup Lambda (story 8.12 — daily EventBridge cron).
