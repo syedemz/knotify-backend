@@ -60,7 +60,7 @@ phases:
 - phase: 9
   title: Account deletion (Step Functions, soft delete)
   file: implementationplan/phase-9-account-deletion.md
-  ready: false
+  ready: true
   done: false
 
 - phase: 10
