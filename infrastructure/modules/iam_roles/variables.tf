@@ -137,3 +137,13 @@ variable "account_deletion_audit_table_arn" {
   type        = string
   default     = ""
 }
+
+# ---------------------------------------------------------------------------
+# Story 9.9 — deletion_initiator IAM role scoping
+# ---------------------------------------------------------------------------
+
+variable "deletion_state_machine_arn" {
+  description = "ARN of the account-deletion Step Functions state machine. Used to scope deletion_initiator role's states:StartExecution permission (story 9.9). Also used to derive the states:DescribeExecution resource ARN (story 9.10 pre-declared). Pass module.step_functions.state_machine_arn from each environment root module."
+  type        = string
+  default     = ""
+}

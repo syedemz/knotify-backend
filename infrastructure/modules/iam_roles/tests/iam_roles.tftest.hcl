@@ -1987,3 +1987,71 @@ run "role_arns_output_contains_validate_deletion_request" {
     error_message = "role_arns[validate_deletion_request] must be wired to aws_iam_role.validate_deletion_request.arn"
   }
 }
+
+# ---------------------------------------------------------------------------
+# Tests: deletion_initiator IAM role (story 9.9)
+# ---------------------------------------------------------------------------
+
+run "deletion_initiator_role_uses_lambda_trust_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = can(aws_iam_role.deletion_initiator.assume_role_policy)
+    error_message = "deletion_initiator role must declare an assume_role_policy"
+  }
+}
+
+run "deletion_initiator_role_has_basic_execution_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy_attachment.deletion_initiator_basic_execution.policy_arn == "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+    error_message = "deletion_initiator must attach AWSLambdaBasicExecutionRole (Lambda runs outside VPC)"
+  }
+}
+
+run "deletion_initiator_stepfunctions_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = can(aws_iam_role_policy.deletion_initiator_stepfunctions.name)
+    error_message = "deletion_initiator stepfunctions inline policy must be declared"
+  }
+}
+
+run "role_arns_output_contains_deletion_initiator" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  override_resource {
+    target = aws_iam_role.deletion_initiator
+    values = {
+      arn = "arn:aws:iam::123456789012:role/knotify-test-deletion-initiator"
+    }
+    override_during = plan
+  }
+
+  assert {
+    condition     = output.role_arns["deletion_initiator"] == "arn:aws:iam::123456789012:role/knotify-test-deletion-initiator"
+    error_message = "role_arns[deletion_initiator] must be wired to aws_iam_role.deletion_initiator.arn"
+  }
+}

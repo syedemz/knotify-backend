@@ -1607,3 +1607,89 @@ resource "aws_iam_role_policy" "validate_deletion_request_dynamodb" {
   role   = aws_iam_role.validate_deletion_request.name
   policy = data.aws_iam_policy_document.validate_deletion_request_dynamodb.json
 }
+
+# ===========================================================================
+# Role: deletion_initiator
+#
+# For the knotify-deletion-initiator Lambda (story 9.9).
+# Serves DELETE /v1/profile/me (story 9.9) and GET /v1/profile/me/deletion-status
+# (story 9.10 — DescribeExecution permission pre-declared here so 9.10 does not
+# need a role change).
+#
+# OUTSIDE the VPC: only calls Step Functions (public HTTPS endpoints) — no Aurora,
+# no DynamoDB.  AWSLambdaBasicExecutionRole is sufficient — no ENI attachment.
+# Consistent with write_audit_log, validate_deletion_request which also run
+# outside the VPC (hotfix #106 lesson).
+#
+# Least-privilege Step Functions permissions:
+#   states:StartExecution   — initiate the account-deletion state machine (9.9)
+#   states:DescribeExecution — query execution status (9.10, pre-declared now)
+#
+# states:StartExecution is scoped to the state machine ARN.
+# states:DescribeExecution is scoped to executions of that state machine
+# (ARN format: arn:...:execution:<state-machine-name>:*).
+#
+# When deletion_state_machine_arn is empty (unit-test default), wildcard
+# fallback patterns are used so `terraform validate` passes in isolated tests.
+# ===========================================================================
+
+resource "aws_iam_role" "deletion_initiator" {
+  name               = "knotify-${var.environment}-deletion-initiator"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+# Basic Lambda execution — CloudWatch Logs only.
+# No VPC access policy: this Lambda runs OUTSIDE the VPC.
+resource "aws_iam_role_policy_attachment" "deletion_initiator_basic_execution" {
+  role       = aws_iam_role.deletion_initiator.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# states:StartExecution scoped to the state machine ARN.
+# states:DescribeExecution scoped to all executions of that state machine.
+# Both scoped to exact ARNs — default wildcard fallback for isolated tests only.
+#
+# states:DescribeExecution resource ARN pattern:
+#   arn:aws:states:<region>:<account>:execution:<machine-name>:*
+# We derive this from the state machine ARN by replacing
+#   stateMachine:<name>  →  execution:<name>:*
+# using replace() because the execution ARN has a different resource type prefix.
+#
+# When deletion_state_machine_arn is "" (test default), a wildcard fallback is
+# used for both resources so terraform validate does not fail in isolated tests.
+locals {
+  # Derive the execution ARN pattern from the state machine ARN.
+  # Real ARN:    arn:aws:states:eu-central-1:123:stateMachine:knotify-dev-account-deletion
+  # Exec ARN:    arn:aws:states:eu-central-1:123:execution:knotify-dev-account-deletion:*
+  deletion_execution_arn_pattern = var.deletion_state_machine_arn != "" ? "${replace(var.deletion_state_machine_arn, ":stateMachine:", ":execution:")}:*" : "arn:aws:states:*:*:execution:knotify-*-account-deletion:*"
+}
+
+data "aws_iam_policy_document" "deletion_initiator_stepfunctions" {
+  statement {
+    sid    = "StartDeletionExecution"
+    effect = "Allow"
+    actions = [
+      "states:StartExecution",
+    ]
+    resources = [
+      var.deletion_state_machine_arn != "" ? var.deletion_state_machine_arn : "arn:aws:states:*:*:stateMachine:knotify-*-account-deletion",
+    ]
+  }
+
+  statement {
+    sid    = "DescribeDeletionExecution"
+    effect = "Allow"
+    actions = [
+      "states:DescribeExecution",
+    ]
+    resources = [
+      local.deletion_execution_arn_pattern,
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "deletion_initiator_stepfunctions" {
+  name   = "deletion-initiator-stepfunctions"
+  role   = aws_iam_role.deletion_initiator.name
+  policy = data.aws_iam_policy_document.deletion_initiator_stepfunctions.json
+}

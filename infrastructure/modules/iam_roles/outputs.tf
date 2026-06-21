@@ -40,5 +40,7 @@ output "role_arns" {
     delete_dynamodb_personal_data = aws_iam_role.delete_dynamodb_personal_data.arn
     # Story 9.2 — validate_deletion_request IAM role (DynamoDB Query/PutItem on account_deletion_audit only)
     validate_deletion_request = aws_iam_role.validate_deletion_request.arn
+    # Story 9.9 — deletion_initiator IAM role (states:StartExecution + states:DescribeExecution)
+    deletion_initiator = aws_iam_role.deletion_initiator.arn
   }
 }
