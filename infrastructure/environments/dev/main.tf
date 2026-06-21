@@ -72,6 +72,10 @@ module "aurora" {
 
   # Postgres log retention — dev keeps a short window to limit CloudWatch cost
   postgresql_log_retention_days = var.aurora_postgresql_log_retention_days
+
+  # Data API — enabled in dev so the deletion E2E test (story 9.13) can hit
+  # Aurora from outside the VPC. Prod main.tf does NOT set this (stays false).
+  enable_data_api = true
 }
 
 # ---------------------------------------------------------------------------

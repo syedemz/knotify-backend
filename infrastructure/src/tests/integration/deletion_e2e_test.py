@@ -25,11 +25,14 @@ Three sub-tests:
 Prerequisites (operators only — CI does NOT run this by default):
   - All phase-9 infra deployed in the dev environment (Step Functions state
     machine, all deletion Lambdas, HTTP API routes).
-  - Aurora reachable from the test runner (bastion / VPN / SSM tunnel).
+  - Aurora Data API (HTTP endpoint) enabled on the cluster — set
+    enable_data_api=true in the dev aurora module and apply. No VPC tunnel
+    or bastion is required; the test reaches Aurora through rds-data.
   - AWS credentials with permissions to:
       cognito-idp: sign_up, admin_confirm_sign_up, admin_initiate_auth,
                    admin_delete_user, admin_get_user
       dynamodb: GetItem, PutItem, DeleteItem, Query, UpdateItem on all tables
+      rds-data: ExecuteStatement on the dev Aurora cluster
       secretsmanager: GetSecretValue (Aurora master secret)
       stepfunctions: StartExecution, DescribeExecution
       lambda: InvokeFunction (hard_purge Lambda — for sub-test 2)
@@ -40,8 +43,8 @@ Required environment variables (all skip-gated — tests skip when absent):
   API_BASE_URL                       — CloudFront HTTPS base URL, no trailing slash
   APPSYNC_GRAPHQL_URL                — e.g. https://<id>.appsync-api.<region>.amazonaws.com/graphql
   AWS_REGION                         — e.g. eu-central-1
-  AURORA_HOST                        — writer endpoint of the dev cluster
-  AURORA_PORT                        — normally 5432
+  AURORA_CLUSTER_ARN                 — full cluster ARN, e.g.
+                                       arn:aws:rds:eu-central-1:<acct>:cluster:knotify-dev-aurora
   AURORA_DBNAME                      — normally "knotify"
   AURORA_MASTER_SECRET_ARN           — ARN of the Aurora-managed master secret
   EDGE_SECRET                        — value of the x-knotify-edge-secret header
@@ -102,8 +105,7 @@ _REQUIRED_ENV_VARS = [
     "API_BASE_URL",
     "APPSYNC_GRAPHQL_URL",
     "AWS_REGION",
-    "AURORA_HOST",
-    "AURORA_PORT",
+    "AURORA_CLUSTER_ARN",
     "AURORA_DBNAME",
     "AURORA_MASTER_SECRET_ARN",
     "EDGE_SECRET",
@@ -166,12 +168,14 @@ def _requests():
         pytest.skip("requests is not installed — live AWS environment required")
 
 
-def _psycopg2():
-    try:
-        import psycopg2 as _p
-        return _p
-    except ImportError:
-        pytest.skip("psycopg2 is not installed — live Aurora environment required")
+def _rds_data_client(region: str):
+    """
+    Returns a boto3 rds-data client. Aurora must have the Data API
+    (HTTP endpoint) enabled on the cluster for this to work — set
+    enable_data_api=true in the dev environment's aurora module.
+    """
+    boto3 = _boto3()
+    return boto3.client("rds-data", region_name=region)
 
 
 # ---------------------------------------------------------------------------
@@ -344,52 +348,102 @@ def _delete_audit_rows(ddb, user_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _aurora_master_conn(psycopg2_module, host, port, dbname, username, password):
-    conn = psycopg2_module.connect(
-        host=host, port=port, dbname=dbname, user=username, password=password
-    )
-    conn.autocommit = True
-    return conn
+class _AuroraDataApi:
+    """
+    Thin shim over boto3 rds-data so the rest of this test file reads like the
+    old psycopg2-based code: `aurora.execute(sql, params)` returns rows as a
+    list of dicts keyed by column name.
+
+    Data API parameter style is `:name`; UUID columns require an explicit
+    cast (`cast(:user_id as uuid)`) because Data API passes all params as
+    string values.
+    """
+
+    def __init__(self, client, cluster_arn: str, secret_arn: str, database: str):
+        self._client = client
+        self._cluster_arn = cluster_arn
+        self._secret_arn = secret_arn
+        self._database = database
+
+    def execute(self, sql: str, params: dict | None = None) -> list[dict]:
+        param_list = []
+        for name, value in (params or {}).items():
+            if value is None:
+                param_list.append({"name": name, "value": {"isNull": True}})
+            else:
+                param_list.append({"name": name, "value": {"stringValue": str(value)}})
+
+        try:
+            resp = self._client.execute_statement(
+                resourceArn=self._cluster_arn,
+                secretArn=self._secret_arn,
+                database=self._database,
+                sql=sql,
+                parameters=param_list,
+                includeResultMetadata=True,
+            )
+        except self._client.exceptions.BadRequestException as exc:
+            if "HttpEndpointNotEnabled" in str(exc) or "HTTP endpoint" in str(exc):
+                pytest.skip(
+                    "Aurora Data API is not enabled on the dev cluster. "
+                    "Set enable_data_api=true in infrastructure/environments/dev "
+                    "and apply, then re-run."
+                )
+            raise
+
+        cols = [c["name"] for c in resp.get("columnMetadata", [])]
+        rows: list[dict] = []
+        for record in resp.get("records", []):
+            row: dict = {}
+            for name, field in zip(cols, record):
+                if field.get("isNull"):
+                    row[name] = None
+                elif "stringValue" in field:
+                    row[name] = field["stringValue"]
+                elif "longValue" in field:
+                    row[name] = field["longValue"]
+                elif "doubleValue" in field:
+                    row[name] = field["doubleValue"]
+                elif "booleanValue" in field:
+                    row[name] = field["booleanValue"]
+                elif "blobValue" in field:
+                    row[name] = field["blobValue"]
+                elif "arrayValue" in field:
+                    row[name] = field["arrayValue"]
+                else:
+                    row[name] = None
+            rows.append(row)
+        return rows
+
+    def close(self) -> None:
+        # Data API is stateless — nothing to close.
+        return
 
 
-def _get_aurora_creds(sm_client, secret_arn: str) -> dict:
-    resp = sm_client.get_secret_value(SecretId=secret_arn)
-    return json.loads(resp["SecretString"])
-
-
-def _get_aurora_user_row(aurora_conn, user_id: str) -> dict | None:
+def _get_aurora_user_row(aurora: _AuroraDataApi, user_id: str) -> dict | None:
     """
     Return the users row for user_id as a dict, or None if the row does not exist.
-
-    Returns the raw column values including deleted_at and PII fields.
     """
-    with aurora_conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT user_id, email, phone_number, photo_url, chosen_profile_avatar,
-                   username, first_name, last_name, preferences, preference_vector,
-                   deleted_at
-            FROM users
-            WHERE user_id = %s::uuid
-            """,
-            (user_id,),
-        )
-        row = cur.fetchone()
-    if row is None:
-        return None
-    cols = [
-        "user_id", "email", "phone_number", "photo_url", "chosen_profile_avatar",
-        "username", "first_name", "last_name", "preferences", "preference_vector",
-        "deleted_at",
-    ]
-    return dict(zip(cols, row))
+    rows = aurora.execute(
+        """
+        SELECT user_id, email, phone_number, photo_url, chosen_profile_avatar,
+               username, first_name, last_name, preferences, preference_vector,
+               deleted_at
+        FROM users
+        WHERE user_id = cast(:user_id as uuid)
+        """,
+        {"user_id": user_id},
+    )
+    return rows[0] if rows else None
 
 
-def _delete_aurora_user(aurora_conn, user_id: str) -> None:
+def _delete_aurora_user(aurora: _AuroraDataApi, user_id: str) -> None:
     """Hard-delete a user from Aurora (teardown only)."""
     try:
-        with aurora_conn.cursor() as cur:
-            cur.execute("DELETE FROM users WHERE user_id = %s::uuid", (user_id,))
+        aurora.execute(
+            "DELETE FROM users WHERE user_id = cast(:user_id as uuid)",
+            {"user_id": user_id},
+        )
     except Exception as exc:
         print(
             f"WARN: teardown Aurora user delete {user_id!r} failed: {exc}",
@@ -397,40 +451,41 @@ def _delete_aurora_user(aurora_conn, user_id: str) -> None:
         )
 
 
-def _delete_friendship(aurora_conn, id_a: str, id_b: str) -> None:
+def _delete_friendship(aurora: _AuroraDataApi, id_a: str, id_b: str) -> None:
     try:
         user_a, user_b = min(id_a, id_b), max(id_a, id_b)
-        with aurora_conn.cursor() as cur:
-            cur.execute(
-                "DELETE FROM friendships WHERE user_a = %s::uuid AND user_b = %s::uuid",
-                (user_a, user_b),
-            )
+        aurora.execute(
+            "DELETE FROM friendships WHERE user_a = cast(:a as uuid) AND user_b = cast(:b as uuid)",
+            {"a": user_a, "b": user_b},
+        )
     except Exception as exc:
         print(f"WARN: teardown friendship delete failed: {exc}", file=sys.stderr)
 
 
-def _delete_blocks_aurora(aurora_conn, id_a: str, id_b: str) -> None:
+def _delete_blocks_aurora(aurora: _AuroraDataApi, id_a: str, id_b: str) -> None:
     try:
-        with aurora_conn.cursor() as cur:
-            cur.execute(
-                "DELETE FROM blocks WHERE "
-                "(blocker_id = %s::uuid AND blocked_id = %s::uuid) "
-                "OR (blocker_id = %s::uuid AND blocked_id = %s::uuid)",
-                (id_a, id_b, id_b, id_a),
-            )
+        aurora.execute(
+            """
+            DELETE FROM blocks WHERE
+              (blocker_id = cast(:a as uuid) AND blocked_id = cast(:b as uuid))
+              OR (blocker_id = cast(:b as uuid) AND blocked_id = cast(:a as uuid))
+            """,
+            {"a": id_a, "b": id_b},
+        )
     except Exception as exc:
         print(f"WARN: teardown blocks delete failed: {exc}", file=sys.stderr)
 
 
-def _delete_friend_requests_aurora(aurora_conn, id_a: str, id_b: str) -> None:
+def _delete_friend_requests_aurora(aurora: _AuroraDataApi, id_a: str, id_b: str) -> None:
     try:
-        with aurora_conn.cursor() as cur:
-            cur.execute(
-                "DELETE FROM friend_requests WHERE "
-                "(from_user_id = %s::uuid AND to_user_id = %s::uuid) "
-                "OR (from_user_id = %s::uuid AND to_user_id = %s::uuid)",
-                (id_a, id_b, id_b, id_a),
-            )
+        aurora.execute(
+            """
+            DELETE FROM friend_requests WHERE
+              (from_user_id = cast(:a as uuid) AND to_user_id = cast(:b as uuid))
+              OR (from_user_id = cast(:b as uuid) AND to_user_id = cast(:a as uuid))
+            """,
+            {"a": id_a, "b": id_b},
+        )
     except Exception as exc:
         print(f"WARN: teardown friend_requests delete failed: {exc}", file=sys.stderr)
 
@@ -786,31 +841,25 @@ def test_e2e_soft_delete_full_workflow():  # noqa: C901 (flat sequential by desi
 
     boto3 = _boto3()
     http_requests = _requests()
-    psycopg2 = _psycopg2()
 
     user_pool_id = _require_env("COGNITO_USER_POOL_ID")
     client_id = _require_env("COGNITO_APP_CLIENT_ID")
     api_base = _require_env("API_BASE_URL").rstrip("/")
     graphql_url = _require_env("APPSYNC_GRAPHQL_URL")
     region = _require_env("AWS_REGION")
-    aurora_host = _require_env("AURORA_HOST")
-    aurora_port = int(_require_env("AURORA_PORT"))
+    aurora_cluster_arn = _require_env("AURORA_CLUSTER_ARN")
     aurora_dbname = _require_env("AURORA_DBNAME")
     master_secret_arn = _require_env("AURORA_MASTER_SECRET_ARN")
     edge_secret = _require_env("EDGE_SECRET")
 
     cognito = boto3.client("cognito-idp", region_name=region)
-    sm = boto3.client("secretsmanager", region_name=region)
     ddb = _ddb_client(region)
 
-    master_creds = _get_aurora_creds(sm, master_secret_arn)
-    aurora = _aurora_master_conn(
-        psycopg2,
-        host=aurora_host,
-        port=aurora_port,
-        dbname=aurora_dbname,
-        username=master_creds["username"],
-        password=master_creds["password"],
+    aurora = _AuroraDataApi(
+        client=_rds_data_client(region),
+        cluster_arn=aurora_cluster_arn,
+        secret_arn=master_secret_arn,
+        database=aurora_dbname,
     )
 
     user_a: dict | None = None
@@ -1114,32 +1163,26 @@ def test_e2e_block_filter_regression():  # noqa: C901 (flat sequential by design
 
     boto3 = _boto3()
     http_requests = _requests()
-    psycopg2 = _psycopg2()
 
     user_pool_id = _require_env("COGNITO_USER_POOL_ID")
     client_id = _require_env("COGNITO_APP_CLIENT_ID")
     api_base = _require_env("API_BASE_URL").rstrip("/")
     graphql_url = _require_env("APPSYNC_GRAPHQL_URL")
     region = _require_env("AWS_REGION")
-    aurora_host = _require_env("AURORA_HOST")
-    aurora_port = int(_require_env("AURORA_PORT"))
+    aurora_cluster_arn = _require_env("AURORA_CLUSTER_ARN")
     aurora_dbname = _require_env("AURORA_DBNAME")
     master_secret_arn = _require_env("AURORA_MASTER_SECRET_ARN")
     edge_secret = _require_env("EDGE_SECRET")
     hard_purge_function = _require_env("HARD_PURGE_LAMBDA_NAME")
 
     cognito = boto3.client("cognito-idp", region_name=region)
-    sm = boto3.client("secretsmanager", region_name=region)
     ddb = _ddb_client(region)
 
-    master_creds = _get_aurora_creds(sm, master_secret_arn)
-    aurora = _aurora_master_conn(
-        psycopg2,
-        host=aurora_host,
-        port=aurora_port,
-        dbname=aurora_dbname,
-        username=master_creds["username"],
-        password=master_creds["password"],
+    aurora = _AuroraDataApi(
+        client=_rds_data_client(region),
+        cluster_arn=aurora_cluster_arn,
+        secret_arn=master_secret_arn,
+        database=aurora_dbname,
     )
 
     user_a: dict | None = None
@@ -1363,31 +1406,25 @@ def test_e2e_purge_immediately():  # noqa: C901 (flat sequential by design)
 
     boto3 = _boto3()
     http_requests = _requests()
-    psycopg2 = _psycopg2()
 
     user_pool_id = _require_env("COGNITO_USER_POOL_ID")
     client_id = _require_env("COGNITO_APP_CLIENT_ID")
     api_base = _require_env("API_BASE_URL").rstrip("/")
     graphql_url = _require_env("APPSYNC_GRAPHQL_URL")
     region = _require_env("AWS_REGION")
-    aurora_host = _require_env("AURORA_HOST")
-    aurora_port = int(_require_env("AURORA_PORT"))
+    aurora_cluster_arn = _require_env("AURORA_CLUSTER_ARN")
     aurora_dbname = _require_env("AURORA_DBNAME")
     master_secret_arn = _require_env("AURORA_MASTER_SECRET_ARN")
     edge_secret = _require_env("EDGE_SECRET")
 
     cognito = boto3.client("cognito-idp", region_name=region)
-    sm = boto3.client("secretsmanager", region_name=region)
     ddb = _ddb_client(region)
 
-    master_creds = _get_aurora_creds(sm, master_secret_arn)
-    aurora = _aurora_master_conn(
-        psycopg2,
-        host=aurora_host,
-        port=aurora_port,
-        dbname=aurora_dbname,
-        username=master_creds["username"],
-        password=master_creds["password"],
+    aurora = _AuroraDataApi(
+        client=_rds_data_client(region),
+        cluster_arn=aurora_cluster_arn,
+        secret_arn=master_secret_arn,
+        database=aurora_dbname,
     )
 
     user_c: dict | None = None
