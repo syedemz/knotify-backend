@@ -30,5 +30,7 @@ output "role_arns" {
     stepfn_deletion_exec = aws_iam_role.stepfn_deletion_exec.arn
     # Story 9.8 — write_audit_log IAM role (DynamoDB PutItem on account_deletion_audit)
     write_audit_log = aws_iam_role.write_audit_log.arn
+    # Story 9.3 — cognito_user_state IAM role (AdminDisableUser/AdminDeleteUser/AdminGetUser)
+    cognito_user_state = aws_iam_role.cognito_user_state.arn
   }
 }

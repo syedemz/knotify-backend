@@ -1563,3 +1563,143 @@ run "role_arns_output_contains_write_audit_log" {
     error_message = "role_arns[write_audit_log] must be wired to aws_iam_role.write_audit_log.arn"
   }
 }
+
+# ===========================================================================
+# Story 9.3 — cognito_user_state IAM role tests
+#
+# Dedicated Lambda execution role for the cognito_user_state Lambda.
+# Trust principal: lambda.amazonaws.com
+# Managed policy: AWSLambdaBasicExecutionRole (runs OUTSIDE the VPC — no ENI)
+# Inline policy: cognito-idp:AdminDisableUser + AdminDeleteUser + AdminGetUser
+#                scoped to the project's Cognito user pool ARN.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Test: cognito_user_state role uses Lambda trust policy
+#
+# Satisfies AC: "The Lambda's IAM role needs cognito-idp:AdminDisableUser,
+#               cognito-idp:AdminDeleteUser, and cognito-idp:AdminGetUser"
+# ---------------------------------------------------------------------------
+run "cognito_user_state_role_uses_lambda_trust_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    cognito_user_pool_arn         = "arn:aws:cognito-idp:eu-central-1:123456789012:userpool/eu-central-1_TESTPOOL"
+  }
+
+  assert {
+    condition     = aws_iam_role.cognito_user_state.name == "knotify-test-cognito-user-state"
+    error_message = "cognito_user_state role name must be knotify-<env>-cognito-user-state"
+  }
+
+  assert {
+    condition     = aws_iam_role.cognito_user_state.assume_role_policy != ""
+    error_message = "cognito_user_state assume_role_policy must not be empty"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test: cognito_user_state role has AWSLambdaBasicExecutionRole attached
+#
+# Satisfies AC: Lambda runs OUTSIDE the VPC (Cognito IDP is a public endpoint,
+# no VPC endpoint required — consistent with write_audit_log and push_fanout).
+# ---------------------------------------------------------------------------
+run "cognito_user_state_role_has_basic_execution_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    cognito_user_pool_arn         = "arn:aws:cognito-idp:eu-central-1:123456789012:userpool/eu-central-1_TESTPOOL"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy_attachment.cognito_user_state_basic_execution.policy_arn == "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+    error_message = "cognito_user_state role must attach AWSLambdaBasicExecutionRole (not VPC access — runs outside VPC)"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test: cognito_user_state Cognito IDP inline policy exists and is wired
+#
+# Satisfies AC: "cognito-idp:AdminDisableUser, cognito-idp:AdminDeleteUser,
+#               and cognito-idp:AdminGetUser scoped to the project's Cognito
+#               user pool ARN"
+# ---------------------------------------------------------------------------
+run "cognito_user_state_cognito_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    cognito_user_pool_arn         = "arn:aws:cognito-idp:eu-central-1:123456789012:userpool/eu-central-1_TESTPOOL"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.cognito_user_state_cognito.name == "cognito-user-state-cognito"
+    error_message = "cognito_user_state Cognito inline policy must be named cognito-user-state-cognito"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.cognito_user_state_cognito.role == aws_iam_role.cognito_user_state.name
+    error_message = "cognito_user_state Cognito inline policy must be attached to the cognito_user_state role"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test: cognito_user_state Cognito policy accepts real user pool ARN
+#
+# Satisfies AC: "scoped to the project's Cognito user pool ARN" — when a
+# real ARN is supplied via var.cognito_user_pool_arn, validate passes
+# with the exact ARN (not the wildcard fallback).
+# ---------------------------------------------------------------------------
+run "cognito_user_state_cognito_policy_accepts_real_user_pool_arn" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    cognito_user_pool_arn         = "arn:aws:cognito-idp:eu-central-1:123456789012:userpool/eu-central-1_REALPOOL"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.cognito_user_state_cognito.name == "cognito-user-state-cognito"
+    error_message = "cognito_user_state Cognito inline policy must exist when real user pool ARN provided"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.cognito_user_state_cognito.role == aws_iam_role.cognito_user_state.name
+    error_message = "cognito_user_state Cognito inline policy must be attached to the role when real user pool ARN provided"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test: role_arns output map contains cognito_user_state
+#
+# Satisfies the module output shape requirement so root modules can reference
+# module.iam_roles.role_arns["cognito_user_state"] to wire the Lambda role.
+# ---------------------------------------------------------------------------
+run "role_arns_output_contains_cognito_user_state" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    cognito_user_pool_arn         = "arn:aws:cognito-idp:eu-central-1:123456789012:userpool/eu-central-1_TESTPOOL"
+  }
+
+  override_resource {
+    target = aws_iam_role.cognito_user_state
+    values = {
+      arn = "arn:aws:iam::123456789012:role/knotify-test-cognito-user-state"
+    }
+    override_during = plan
+  }
+
+  assert {
+    condition     = output.role_arns["cognito_user_state"] == "arn:aws:iam::123456789012:role/knotify-test-cognito-user-state"
+    error_message = "role_arns[cognito_user_state] must be wired to aws_iam_role.cognito_user_state.arn"
+  }
+}

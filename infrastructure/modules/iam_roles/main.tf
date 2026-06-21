@@ -1242,6 +1242,64 @@ resource "aws_iam_role_policy" "write_audit_log_dynamodb" {
 }
 
 # ===========================================================================
+# Role: cognito_user_state
+#
+# For the knotify-cognito-user-state Lambda (story 9.3).
+# Dispatches to Cognito IDP AdminDisableUser or AdminDeleteUser depending on
+# the mode input.  Called twice by the account-deletion Step Functions state
+# machine: DisableCognitoUser (mode=disable) and DeleteCognitoUser (mode=delete).
+#
+# OUTSIDE the VPC: only calls Cognito IDP (public HTTPS endpoint) — no Aurora,
+# no DynamoDB.  AWSLambdaBasicExecutionRole is sufficient — no ENI attachment.
+# No VPC access policy attached — consistent with room_state_publisher and
+# write_audit_log which also run outside the VPC.
+#
+# Least-privilege Cognito IDP permissions:
+#   cognito-idp:AdminDisableUser — needed for mode=disable
+#   cognito-idp:AdminDeleteUser  — needed for mode=delete
+#   cognito-idp:AdminGetUser     — needed to verify the already-disabled state
+# All three actions are scoped to the exact Cognito user pool ARN.
+# When cognito_user_pool_arn is empty (unit-test default), a wildcard fallback
+# is used so `terraform validate` passes in isolated module tests.
+# ===========================================================================
+
+resource "aws_iam_role" "cognito_user_state" {
+  name               = "knotify-${var.environment}-cognito-user-state"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+# Basic Lambda execution — CloudWatch Logs only.
+# No VPC access policy: this Lambda runs OUTSIDE the VPC.
+resource "aws_iam_role_policy_attachment" "cognito_user_state_basic_execution" {
+  role       = aws_iam_role.cognito_user_state.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# Cognito IDP actions scoped to the project's user pool ARN.
+# AdminGetUser is included alongside the write actions because the handler uses
+# it in the idempotency check path to detect already-disabled users cleanly.
+data "aws_iam_policy_document" "cognito_user_state_cognito" {
+  statement {
+    sid    = "CognitoUserStateActions"
+    effect = "Allow"
+    actions = [
+      "cognito-idp:AdminDisableUser",
+      "cognito-idp:AdminDeleteUser",
+      "cognito-idp:AdminGetUser",
+    ]
+    resources = [
+      var.cognito_user_pool_arn != "" ? var.cognito_user_pool_arn : "arn:aws:cognito-idp:*:*:userpool/*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "cognito_user_state_cognito" {
+  name   = "cognito-user-state-cognito"
+  role   = aws_iam_role.cognito_user_state.name
+  policy = data.aws_iam_policy_document.cognito_user_state_cognito.json
+}
+
+# ===========================================================================
 # Role: stale_token_cleanup
 #
 # For the stale_token_cleanup Lambda (story 8.12 — daily EventBridge cron).
