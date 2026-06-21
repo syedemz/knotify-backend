@@ -1300,6 +1300,80 @@ resource "aws_iam_role_policy" "cognito_user_state_cognito" {
 }
 
 # ===========================================================================
+# Role: deactivate_chat_rooms
+#
+# For the knotify-deactivate-chat-rooms Lambda (story 9.4).
+# Deactivates all ChatRooms the deleted user was a member of and removes the
+# deleted user's ChatRoomMembership rows.  Called from the account-deletion
+# Step Functions state machine.
+#
+# OUTSIDE the VPC: only touches DynamoDB (ChatRooms and ChatRoomMembership).
+# No Aurora, no AppSync.  AWSLambdaBasicExecutionRole is sufficient —
+# no ENI attachment needed.  Consistent with write_audit_log and push_fanout.
+#
+# Least-privilege DynamoDB permissions (scoped to exact table ARNs):
+#   dynamodb:Query          — ChatRoomMembership (collect all room_ids for user_id)
+#   dynamodb:UpdateItem     — ChatRooms (conditional deactivation per room)
+#   dynamodb:BatchWriteItem — ChatRoomMembership (delete user's membership rows)
+# ===========================================================================
+
+resource "aws_iam_role" "deactivate_chat_rooms" {
+  name               = "knotify-${var.environment}-deactivate-chat-rooms"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+# Basic Lambda execution — CloudWatch Logs only.
+# No VPC access policy: this Lambda runs OUTSIDE the VPC.
+resource "aws_iam_role_policy_attachment" "deactivate_chat_rooms_basic_execution" {
+  role       = aws_iam_role.deactivate_chat_rooms.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# DynamoDB permissions — scoped to the exact table ARNs sourced from module.dynamodb.
+# Default wildcard fallbacks are used only in isolated IAM unit tests where
+# the dynamodb module is not wired.
+data "aws_iam_policy_document" "deactivate_chat_rooms_dynamodb" {
+  statement {
+    sid    = "ChatRoomMembershipQuery"
+    effect = "Allow"
+    actions = [
+      "dynamodb:Query",
+    ]
+    resources = [
+      var.chat_room_membership_table_arn != "" ? var.chat_room_membership_table_arn : "arn:aws:dynamodb:*:*:table/ChatRoomMembership",
+    ]
+  }
+
+  statement {
+    sid    = "ChatRoomsConditionalUpdate"
+    effect = "Allow"
+    actions = [
+      "dynamodb:UpdateItem",
+    ]
+    resources = [
+      var.chat_rooms_table_arn != "" ? var.chat_rooms_table_arn : "arn:aws:dynamodb:*:*:table/ChatRooms",
+    ]
+  }
+
+  statement {
+    sid    = "ChatRoomMembershipBatchDelete"
+    effect = "Allow"
+    actions = [
+      "dynamodb:BatchWriteItem",
+    ]
+    resources = [
+      var.chat_room_membership_table_arn != "" ? var.chat_room_membership_table_arn : "arn:aws:dynamodb:*:*:table/ChatRoomMembership",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "deactivate_chat_rooms_dynamodb" {
+  name   = "deactivate-chat-rooms-dynamodb"
+  role   = aws_iam_role.deactivate_chat_rooms.name
+  policy = data.aws_iam_policy_document.deactivate_chat_rooms_dynamodb.json
+}
+
+# ===========================================================================
 # Role: stale_token_cleanup
 #
 # For the stale_token_cleanup Lambda (story 8.12 — daily EventBridge cron).

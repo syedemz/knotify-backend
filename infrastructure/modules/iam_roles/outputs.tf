@@ -32,5 +32,7 @@ output "role_arns" {
     write_audit_log = aws_iam_role.write_audit_log.arn
     # Story 9.3 — cognito_user_state IAM role (AdminDisableUser/AdminDeleteUser/AdminGetUser)
     cognito_user_state = aws_iam_role.cognito_user_state.arn
+    # Story 9.4 — deactivate_chat_rooms IAM role (DynamoDB Query/UpdateItem/BatchWriteItem)
+    deactivate_chat_rooms = aws_iam_role.deactivate_chat_rooms.arn
   }
 }

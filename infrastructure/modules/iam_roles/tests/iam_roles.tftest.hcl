@@ -1703,3 +1703,71 @@ run "role_arns_output_contains_cognito_user_state" {
     error_message = "role_arns[cognito_user_state] must be wired to aws_iam_role.cognito_user_state.arn"
   }
 }
+
+# ===========================================================================
+# Story 9.4 — deactivate_chat_rooms IAM role tests
+# ===========================================================================
+
+run "deactivate_chat_rooms_role_uses_lambda_trust_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = can(aws_iam_role.deactivate_chat_rooms.name)
+    error_message = "deactivate_chat_rooms role must be declared"
+  }
+}
+
+run "deactivate_chat_rooms_role_has_basic_execution_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy_attachment.deactivate_chat_rooms_basic_execution.policy_arn == "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+    error_message = "deactivate_chat_rooms must attach AWSLambdaBasicExecutionRole (no VPC access — runs outside VPC)"
+  }
+}
+
+run "deactivate_chat_rooms_dynamodb_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = can(aws_iam_role_policy.deactivate_chat_rooms_dynamodb.name)
+    error_message = "deactivate_chat_rooms dynamodb inline policy must be declared"
+  }
+}
+
+run "role_arns_output_contains_deactivate_chat_rooms" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  override_resource {
+    target = aws_iam_role.deactivate_chat_rooms
+    values = {
+      arn = "arn:aws:iam::123456789012:role/knotify-test-deactivate-chat-rooms"
+    }
+    override_during = plan
+  }
+
+  assert {
+    condition     = output.role_arns["deactivate_chat_rooms"] == "arn:aws:iam::123456789012:role/knotify-test-deactivate-chat-rooms"
+    error_message = "role_arns[deactivate_chat_rooms] must be wired to aws_iam_role.deactivate_chat_rooms.arn"
+  }
+}

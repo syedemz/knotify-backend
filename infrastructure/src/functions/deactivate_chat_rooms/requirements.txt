@@ -1,0 +1,7 @@
+# deactivate_chat_rooms Lambda runtime dependencies
+#
+# This Lambda only needs boto3 (provided by the Lambda runtime) and
+# Python stdlib (logging, os, datetime).
+#
+# No Aurora access (psycopg2 not needed).
+# No Lambda layers needed — DynamoDB calls only (ChatRooms, ChatRoomMembership).
