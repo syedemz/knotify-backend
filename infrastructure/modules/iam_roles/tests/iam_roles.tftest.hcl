@@ -1771,3 +1771,71 @@ run "role_arns_output_contains_deactivate_chat_rooms" {
     error_message = "role_arns[deactivate_chat_rooms] must be wired to aws_iam_role.deactivate_chat_rooms.arn"
   }
 }
+
+# ===========================================================================
+# Tests: anonymize_chat_messages role — story 9.6
+# ===========================================================================
+
+run "anonymize_chat_messages_role_uses_lambda_trust_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = can(aws_iam_role.anonymize_chat_messages.name)
+    error_message = "anonymize_chat_messages role must be declared"
+  }
+}
+
+run "anonymize_chat_messages_role_has_basic_execution_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy_attachment.anonymize_chat_messages_basic_execution.policy_arn == "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+    error_message = "anonymize_chat_messages must attach AWSLambdaBasicExecutionRole (no VPC access — runs outside VPC)"
+  }
+}
+
+run "anonymize_chat_messages_dynamodb_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = can(aws_iam_role_policy.anonymize_chat_messages_dynamodb.name)
+    error_message = "anonymize_chat_messages dynamodb inline policy must be declared"
+  }
+}
+
+run "role_arns_output_contains_anonymize_chat_messages" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  override_resource {
+    target = aws_iam_role.anonymize_chat_messages
+    values = {
+      arn = "arn:aws:iam::123456789012:role/knotify-test-anonymize-chat-messages"
+    }
+    override_during = plan
+  }
+
+  assert {
+    condition     = output.role_arns["anonymize_chat_messages"] == "arn:aws:iam::123456789012:role/knotify-test-anonymize-chat-messages"
+    error_message = "role_arns[anonymize_chat_messages] must be wired to aws_iam_role.anonymize_chat_messages.arn"
+  }
+}

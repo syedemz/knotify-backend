@@ -1374,6 +1374,65 @@ resource "aws_iam_role_policy" "deactivate_chat_rooms_dynamodb" {
 }
 
 # ===========================================================================
+# Role: anonymize_chat_messages
+#
+# For the knotify-anonymize-chat-messages Lambda (story 9.6).
+# Rewrites sender_id to '[deleted-user]' on every ChatMessages row sent by
+# the deleted user, across all rooms they were a member of.
+# Called from the soft-delete branch of the account-deletion Step Functions
+# state machine inside ParallelCleanup.
+#
+# OUTSIDE the VPC: only touches DynamoDB (ChatMessages table) — no Aurora,
+# no AppSync.  AWSLambdaBasicExecutionRole is sufficient — no ENI attachment.
+# Consistent with write_audit_log, deactivate_chat_rooms, and push_fanout
+# which also run outside the VPC (hotfix #106 lesson).
+#
+# Least-privilege DynamoDB permissions (scoped to ChatMessages table only):
+#   dynamodb:Query      — fetch all messages in a room sent by the deleted user
+#                         (room_id PK + sender_id FilterExpression, no GSI)
+#   dynamodb:UpdateItem — rewrite sender_id to '[deleted-user]' per row
+# ===========================================================================
+
+resource "aws_iam_role" "anonymize_chat_messages" {
+  name               = "knotify-${var.environment}-anonymize-chat-messages"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+# Basic Lambda execution — CloudWatch Logs only.
+# No VPC access policy: this Lambda runs OUTSIDE the VPC.
+resource "aws_iam_role_policy_attachment" "anonymize_chat_messages_basic_execution" {
+  role       = aws_iam_role.anonymize_chat_messages.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# DynamoDB permissions scoped to the ChatMessages table only.
+# Query + UpdateItem is the minimum required to anonymize messages:
+#   Query   — find all messages sent by the deleted user in a given room
+#   UpdateItem — rewrite sender_id on each matched row
+# No other tables, no other actions — least-privilege per codingprinciples.md.
+# Default wildcard fallback is used only in isolated IAM unit tests where
+# the dynamodb module is not wired.
+data "aws_iam_policy_document" "anonymize_chat_messages_dynamodb" {
+  statement {
+    sid    = "ChatMessagesQueryAndUpdate"
+    effect = "Allow"
+    actions = [
+      "dynamodb:Query",
+      "dynamodb:UpdateItem",
+    ]
+    resources = [
+      var.chat_messages_table_arn != "" ? var.chat_messages_table_arn : "arn:aws:dynamodb:*:*:table/ChatMessages",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "anonymize_chat_messages_dynamodb" {
+  name   = "anonymize-chat-messages-dynamodb"
+  role   = aws_iam_role.anonymize_chat_messages.name
+  policy = data.aws_iam_policy_document.anonymize_chat_messages_dynamodb.json
+}
+
+# ===========================================================================
 # Role: stale_token_cleanup
 #
 # For the stale_token_cleanup Lambda (story 8.12 — daily EventBridge cron).

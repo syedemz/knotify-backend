@@ -34,5 +34,7 @@ output "role_arns" {
     cognito_user_state = aws_iam_role.cognito_user_state.arn
     # Story 9.4 — deactivate_chat_rooms IAM role (DynamoDB Query/UpdateItem/BatchWriteItem)
     deactivate_chat_rooms = aws_iam_role.deactivate_chat_rooms.arn
+    # Story 9.6 — anonymize_chat_messages IAM role (DynamoDB Query/UpdateItem on ChatMessages)
+    anonymize_chat_messages = aws_iam_role.anonymize_chat_messages.arn
   }
 }
