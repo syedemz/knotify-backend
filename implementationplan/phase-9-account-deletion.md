@@ -1,6 +1,6 @@
 phase: 9
 title: Account deletion (Step Functions, soft delete)
-last_updated: 2026-06-21 (post-merge hotfix #2: Aurora RLS + DELETE grant for soft_delete_aurora + hard_purge)
+last_updated: 2026-06-21 (post-merge hotfix #3: immutable-fields trigger bypass on soft-delete transition)
 
 context_summary: |
   Implements the account-deletion workflow per §11 of architecture.md with the §13 #8 resolution applied: soft delete (UPDATE users SET deleted_at, strip PII) with a 30-day retention before a scheduled hard purge via cascade. ChatMessages are anonymized rather than deleted per §13 #21 — sender_id rewritten to '[deleted-user]' while content is preserved. Step Functions Standard workflow orchestrates the steps; each step is an idempotent Python 3.14 Lambda. An audit log table records initiation and completion. A purge_immediately flag supports GDPR right-to-be-forgotten by branching at workflow entry into a hard-delete path that fully removes the requester's Aurora rows, ChatMessages, and ChatRoomMembership rows. This phase ships after chat because the workflow needs to deactivate ChatRooms, anonymize/hard-delete ChatMessages, and clean ChatRoomMembership — all DynamoDB tables created in phase 2 and operated on by phase 8.
@@ -345,3 +345,28 @@ post_merge_hotfixes:
         sex != '' branch of users_opposite_sex_only makes all rows
         visible, then (2) DELETEs each row in its own RLS-scoped
         transaction. Unit tests rewritten to cover the per-row loop.
+
+  # -------------------------------------------------------------------------
+  # Third post-merge hotfix (discovered 2026-06-21 after hotfix #2 reached
+  # production-dev and the E2E re-run advanced past RLS but failed inside the
+  # soft-delete UPDATE). Bundled in `hotfix/soft-delete-immutable-fields-trigger`.
+  # -------------------------------------------------------------------------
+
+  - title: Story 9.5 — enforce_immutable_fields trigger blocks the canonical soft-delete UPDATE
+    severity: high (every soft-delete branch failed at step 2 with raise_exception)
+    root_cause: |
+      Migration 0008 installed a BEFORE UPDATE trigger
+      enforce_immutable_fields() that raises EXCEPTION when first_name /
+      last_name / sex / birthday / religion / subsect transition from a
+      non-NULL value to a different value. soft_delete_aurora's §11.1
+      step-2 UPDATE rewrites first_name='Deleted' and last_name='User',
+      which the trigger correctly classifies as an attempt to modify
+      immutable fields. Unit tests did not catch it because they mock the
+      cursor; the prior RLS bug masked it because the UPDATE never
+      matched a real row.
+    fix: |
+      Migration 0018 redefines enforce_immutable_fields() to short-circuit
+      with RETURN NEW when the row is making the one-shot soft-delete
+      transition (OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL).
+      Outside that transition the original guard from migration 0008 is
+      unchanged. The trigger binding from 0008 is reused.
