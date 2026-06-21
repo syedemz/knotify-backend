@@ -862,3 +862,186 @@ run "streaming_tables_have_stream_enabled" {
     error_message = "Notifications stream_enabled must be true"
   }
 }
+
+# ===========================================================================
+# Story 9.8 — account_deletion_audit table tests
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Test 29: account_deletion_audit keys and billing mode
+# Satisfies AC: PK user_id (S), SK event_id (S), billing_mode PAY_PER_REQUEST
+# ---------------------------------------------------------------------------
+run "account_deletion_audit_keys_and_billing" {
+  command = plan
+
+  variables {
+    environment                    = "dev"
+    point_in_time_recovery_enabled = false
+    deletion_protection_enabled    = false
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.account_deletion_audit.billing_mode == "PAY_PER_REQUEST"
+    error_message = "account_deletion_audit billing_mode must be PAY_PER_REQUEST"
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.account_deletion_audit.hash_key == "user_id"
+    error_message = "account_deletion_audit hash_key must be user_id"
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.account_deletion_audit.range_key == "event_id"
+    error_message = "account_deletion_audit range_key must be event_id"
+  }
+
+  assert {
+    condition = anytrue([
+      for attr in aws_dynamodb_table.account_deletion_audit.attribute : attr.name == "user_id" && attr.type == "S"
+    ])
+    error_message = "account_deletion_audit must define attribute user_id of type S"
+  }
+
+  assert {
+    condition = anytrue([
+      for attr in aws_dynamodb_table.account_deletion_audit.attribute : attr.name == "event_id" && attr.type == "S"
+    ])
+    error_message = "account_deletion_audit must define attribute event_id of type S"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 30: account_deletion_audit TTL configured on expire_at (Number attribute)
+# Satisfies AC: ttl block with attribute_name "expire_at" and enabled true.
+# The attribute type (N) is enforced by the Lambda writer (not the table schema —
+# DynamoDB TTL does not declare the attribute type in the table definition).
+# ---------------------------------------------------------------------------
+run "account_deletion_audit_ttl_configured" {
+  command = plan
+
+  variables {
+    environment                    = "dev"
+    point_in_time_recovery_enabled = false
+    deletion_protection_enabled    = false
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.account_deletion_audit.ttl[0].attribute_name == "expire_at"
+    error_message = "account_deletion_audit TTL attribute_name must be 'expire_at'"
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.account_deletion_audit.ttl[0].enabled == true
+    error_message = "account_deletion_audit TTL must be enabled"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 31: account_deletion_audit has NO global secondary indexes
+# Satisfies AC: GSI absence — audit table has no GSIs
+# ---------------------------------------------------------------------------
+run "account_deletion_audit_no_gsi" {
+  command = plan
+
+  variables {
+    environment                    = "dev"
+    point_in_time_recovery_enabled = false
+    deletion_protection_enabled    = false
+  }
+
+  assert {
+    condition     = length(aws_dynamodb_table.account_deletion_audit.global_secondary_index) == 0
+    error_message = "account_deletion_audit must have no GSIs"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 32: account_deletion_audit server-side encryption enabled
+# Satisfies AC: server_side_encryption enabled on audit table
+# ---------------------------------------------------------------------------
+run "account_deletion_audit_server_side_encryption" {
+  command = plan
+
+  variables {
+    environment                    = "dev"
+    point_in_time_recovery_enabled = false
+    deletion_protection_enabled    = false
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.account_deletion_audit.server_side_encryption[0].enabled == true
+    error_message = "account_deletion_audit server_side_encryption must be enabled"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 33: account_deletion_audit dev safety flags
+# deletion_protection_enabled false, point_in_time_recovery disabled in dev
+# ---------------------------------------------------------------------------
+run "account_deletion_audit_dev_safety_flags" {
+  command = plan
+
+  variables {
+    environment                    = "dev"
+    point_in_time_recovery_enabled = false
+    deletion_protection_enabled    = false
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.account_deletion_audit.deletion_protection_enabled == false
+    error_message = "account_deletion_audit deletion_protection_enabled must be false in dev"
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.account_deletion_audit.point_in_time_recovery[0].enabled == false
+    error_message = "account_deletion_audit point_in_time_recovery must be disabled in dev"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 34: account_deletion_audit prod safety flags
+# deletion_protection_enabled true, point_in_time_recovery enabled in prod
+# ---------------------------------------------------------------------------
+run "account_deletion_audit_prod_safety_flags" {
+  command = plan
+
+  variables {
+    environment                    = "prod"
+    point_in_time_recovery_enabled = true
+    deletion_protection_enabled    = true
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.account_deletion_audit.deletion_protection_enabled == true
+    error_message = "account_deletion_audit deletion_protection_enabled must be true in prod"
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.account_deletion_audit.point_in_time_recovery[0].enabled == true
+    error_message = "account_deletion_audit point_in_time_recovery must be enabled in prod"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 35: account_deletion_audit tags (dev values)
+# Satisfies AC: tags for Environment and Project
+# ---------------------------------------------------------------------------
+run "account_deletion_audit_tags" {
+  command = plan
+
+  variables {
+    environment                    = "dev"
+    point_in_time_recovery_enabled = false
+    deletion_protection_enabled    = false
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.account_deletion_audit.tags["Environment"] == "dev"
+    error_message = "account_deletion_audit Environment tag must be dev"
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.account_deletion_audit.tags["Project"] == "knotify"
+    error_message = "account_deletion_audit Project tag must be knotify"
+  }
+}

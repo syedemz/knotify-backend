@@ -26,5 +26,23 @@ output "role_arns" {
     push_tokens = aws_iam_role.push_tokens.arn
     # Story 8.12 — stale_token_cleanup IAM role
     stale_token_cleanup = aws_iam_role.stale_token_cleanup.arn
+    # Story 9.1 — stepfn_deletion_exec IAM role (Step Functions execution role)
+    stepfn_deletion_exec = aws_iam_role.stepfn_deletion_exec.arn
+    # Story 9.8 — write_audit_log IAM role (DynamoDB PutItem on account_deletion_audit)
+    write_audit_log = aws_iam_role.write_audit_log.arn
+    # Story 9.3 — cognito_user_state IAM role (AdminDisableUser/AdminDeleteUser/AdminGetUser)
+    cognito_user_state = aws_iam_role.cognito_user_state.arn
+    # Story 9.4 — deactivate_chat_rooms IAM role (DynamoDB Query/UpdateItem/BatchWriteItem)
+    deactivate_chat_rooms = aws_iam_role.deactivate_chat_rooms.arn
+    # Story 9.6 — anonymize_chat_messages IAM role (DynamoDB Query/UpdateItem on ChatMessages)
+    anonymize_chat_messages = aws_iam_role.anonymize_chat_messages.arn
+    # Story 9.7 — delete_dynamodb_personal_data IAM role (DynamoDB Query/BatchWriteItem on Notifications + PushNotificationTokens)
+    delete_dynamodb_personal_data = aws_iam_role.delete_dynamodb_personal_data.arn
+    # Story 9.2 — validate_deletion_request IAM role (DynamoDB Query/PutItem on account_deletion_audit only)
+    validate_deletion_request = aws_iam_role.validate_deletion_request.arn
+    # Story 9.9 — deletion_initiator IAM role (states:StartExecution + states:DescribeExecution)
+    deletion_initiator = aws_iam_role.deletion_initiator.arn
+    # Story 9.12 — hard_delete_user_chat_messages IAM role (DynamoDB Query/DeleteItem on ChatMessages)
+    hard_delete_user_chat_messages = aws_iam_role.hard_delete_user_chat_messages.arn
   }
 }

@@ -111,3 +111,39 @@ variable "expo_push_secret_arn" {
   type        = string
   default     = ""
 }
+
+# ---------------------------------------------------------------------------
+# Story 9.1 — stepfn_deletion_exec IAM role scoping
+# ---------------------------------------------------------------------------
+
+variable "deletion_task_lambda_arns" {
+  description = "List of Lambda ARNs for all account-deletion Step Functions task Lambdas. Used to scope stepfn_deletion_exec role's lambda:InvokeFunction permission (story 9.1). Pass the list from module.step_functions inputs in each environment root module. Empty list is the default for environments that have not yet deployed deletion Lambdas."
+  type        = list(string)
+  default     = []
+}
+
+variable "deletion_sfn_log_group_arn" {
+  description = "ARN of the CloudWatch log group used by the account-deletion Step Functions state machine (with :* suffix). Used to scope stepfn_deletion_exec role's logs:* permission (story 9.1). Pass module.step_functions.log_group_arn from each environment root module."
+  type        = string
+  default     = ""
+}
+
+# ---------------------------------------------------------------------------
+# Story 9.8 — write_audit_log IAM role scoping
+# ---------------------------------------------------------------------------
+
+variable "account_deletion_audit_table_arn" {
+  description = "ARN of the account_deletion_audit DynamoDB table. Used to scope write_audit_log role's dynamodb:PutItem permission (story 9.8). Pass module.dynamodb.account_deletion_audit_arn from each environment root module."
+  type        = string
+  default     = ""
+}
+
+# ---------------------------------------------------------------------------
+# Story 9.9 — deletion_initiator IAM role scoping
+# ---------------------------------------------------------------------------
+
+variable "deletion_state_machine_arn" {
+  description = "ARN of the account-deletion Step Functions state machine. Used to scope deletion_initiator role's states:StartExecution permission (story 9.9). Also used to derive the states:DescribeExecution resource ARN (story 9.10 pre-declared). Pass module.step_functions.state_machine_arn from each environment root module."
+  type        = string
+  default     = ""
+}

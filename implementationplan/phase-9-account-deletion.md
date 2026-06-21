@@ -1,6 +1,6 @@
 phase: 9
 title: Account deletion (Step Functions, soft delete)
-last_updated: 2026-06-20
+last_updated: 2026-06-20 (story 9.12)
 
 context_summary: |
   Implements the account-deletion workflow per §11 of architecture.md with the §13 #8 resolution applied: soft delete (UPDATE users SET deleted_at, strip PII) with a 30-day retention before a scheduled hard purge via cascade. ChatMessages are anonymized rather than deleted per §13 #21 — sender_id rewritten to '[deleted-user]' while content is preserved. Step Functions Standard workflow orchestrates the steps; each step is an idempotent Python 3.14 Lambda. An audit log table records initiation and completion. A purge_immediately flag supports GDPR right-to-be-forgotten by branching at workflow entry into a hard-delete path that fully removes the requester's Aurora rows, ChatMessages, and ChatRoomMembership rows. This phase ships after chat because the workflow needs to deactivate ChatRooms, anonymize/hard-delete ChatMessages, and clean ChatRoomMembership — all DynamoDB tables created in phase 2 and operated on by phase 8.
@@ -11,8 +11,9 @@ stories:
   - id: 9.1
     title: Step Functions state machine module
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: []
+    tracking_issue: 135
     acceptance_criteria:
       - infrastructure/modules/step_functions/main.tf declares aws_sfn_state_machine of type STANDARD with the definition expressed as a templated JSON file
       - ValidateDeletionRequest (9.2) is wired with `ResultPath: '$.validation'` so the original input (including `purge_immediately` and `user_id`) is preserved past this task and remains addressable by the downstream Choice and by every subsequent task
@@ -33,8 +34,9 @@ stories:
   - id: 9.2
     title: ValidateDeletionRequest Lambda
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [9.8]
+    tracking_issue: 136
     acceptance_criteria:
       - Lambda confirms the input user_id matches the JWT sub passed via input, checks the audit table for an in-progress deletion for the same user_id (idempotency), writes a "deletion_initiated" audit record
       - The Lambda's response is a small validation summary (e.g., `{validated: true, audit_event_id: ...}`); the state-machine wiring in 9.1 uses `ResultPath: '$.validation'` so the original input fields (`user_id`, `purge_immediately`) survive unchanged and remain available to the downstream Choice and all subsequent tasks. The Lambda does NOT need to echo input fields back
@@ -44,8 +46,9 @@ stories:
   - id: 9.3
     title: Cognito user-state Lambda (disable + delete modes)
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: []
+    tracking_issue: 137
     acceptance_criteria:
       - Single Lambda accepts an input field `mode` with values "disable" | "delete" and dispatches to cognito-idp AdminDisableUser or AdminDeleteUser respectively for the user_id
       - Idempotent for both modes: catches UserNotFoundException and already-disabled cases and treats them as success; "delete" on a missing user is a no-op success
@@ -56,8 +59,9 @@ stories:
   - id: 9.4
     title: DeactivateChatRooms Lambda (also clears deleted user's ChatRoomMembership)
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: []
+    tracking_issue: 138
     acceptance_criteria:
       - Lambda queries ChatRoomMembership PK=user_id for all room_ids, then UpdateItem on each ChatRooms row to set status='deactivated', deactivated_reason='user_deleted_account', deactivated_at=NOW()
       - After deactivating the ChatRooms rows, the Lambda BatchWriteItem-deletes the deleted user's ChatRoomMembership rows (PK=user_id, SK=room_id for each room_id collected above). Surviving participants' membership rows are NOT touched
@@ -70,8 +74,9 @@ stories:
   - id: 9.5
     title: SoftDeleteAurora Lambda
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: []
+    tracking_issue: 139
     acceptance_criteria:
       - Lambda runs the §11.1 step-2 SQL: UPDATE users SET deleted_at=NOW(), email=NULL, phone_number=NULL, photo_url=NULL, chosen_profile_avatar=NULL, preferences='{}', preference_vector=NULL, username='[deleted-user]', first_name='Deleted', last_name='User' WHERE user_id=:id AND deleted_at IS NULL
       - Uses the existing db layer at infrastructure/src/layers/db/ for psycopg; reads Aurora credentials from the existing Secrets Manager pattern used by other aurora-writer Lambdas (no new secret machinery)
@@ -82,8 +87,9 @@ stories:
   - id: 9.6
     title: AnonymizeChatMessages Lambda
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: []
+    tracking_issue: 140
     acceptance_criteria:
       - Lambda receives `{user_id, room_ids: [...]}` as input (room_ids supplied by the state-machine Parameters block from 9.4's output — see 9.1). For each room_id, Query ChatMessages by room_id with a FilterExpression on sender_id, and UpdateItem each matching row to set sender_id='[deleted-user]' while preserving content. No new GSI is added to ChatMessages — cost is linear in messages-in-rooms-the-user-was-in, not total chat traffic
       - The Lambda does NOT Query ChatRoomMembership itself — by the time it runs (inside ParallelCleanup, after DeactivateChatRooms), those membership rows have been deleted. The room_ids list is the authoritative input
@@ -96,8 +102,9 @@ stories:
   - id: 9.7
     title: DeleteDynamoDBPersonalData Lambda
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: []
+    tracking_issue: 141
     acceptance_criteria:
       - Lambda deletes all Notifications rows where user_id=:id (Query then BatchWriteItem deletes in batches of 25) and all PushNotificationTokens rows where user_id=:id
       - Idempotent: re-running on an empty result set returns success
@@ -107,8 +114,9 @@ stories:
   - id: 9.8
     title: Audit log table and WriteAuditLog Lambda
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: []
+    tracking_issue: 142
     acceptance_criteria:
       - A new DynamoDB table account_deletion_audit (PK user_id, SK event_id) is added to infrastructure/modules/dynamodb/ (same module that owns every other table)
       - DynamoDB TTL configured with attribute `expire_at` of type Number (Unix epoch seconds, NOT an ISO string). The writer Lambda computes `expire_at = int(time.time()) + 7*365*86400` per row
@@ -120,8 +128,9 @@ stories:
   - id: 9.9
     title: knotify-deletion-initiator Lambda and DELETE /v1/profile/me route
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [9.1]
+    tracking_issue: 143
     acceptance_criteria:
       - infrastructure/src/functions/deletion_initiator/ Lambda extracts user_id from the JWT sub, calls states StartExecution on the state machine from 9.1 with input {user_id, purge_immediately: <body flag, default false>}, returns 202 with executionArn
       - Route DELETE /v1/profile/me wired on HTTP API with Cognito JWT authorizer. The route is wired as a separate aws_apigatewayv2_integration pointing at the deletion_initiator Lambda; the existing `profile` Lambda (which serves GET and PUT on the same path) is unaffected
@@ -132,8 +141,9 @@ stories:
   - id: 9.10
     title: GET /v1/profile/me/deletion-status endpoint
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [9.9]
+    tracking_issue: 144
     acceptance_criteria:
       - The knotify-deletion-initiator Lambda also handles GET /v1/profile/me/deletion-status?executionArn=<arn> by calling DescribeExecution and returning status, startDate, stopDate, and the names of completed steps
       - Authorization: the handler calls DescribeExecution, parses the returned `execution.input` field as JSON, and asserts `input.user_id == jwt.sub`. If they do not match, the handler returns 403 with NO execution metadata in the response body (do not leak status/timestamps to an attacker probing for valid executionArns)
@@ -143,8 +153,9 @@ stories:
   - id: 9.11
     title: Scheduled hard-purge Lambda
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [9.5]
+    tracking_issue: 145
     acceptance_criteria:
       - infrastructure/src/functions/hard_purge/ Lambda runs daily via aws_cloudwatch_event_rule; executes DELETE FROM users WHERE deleted_at IS NOT NULL AND deleted_at < NOW() - INTERVAL '30 days' against Aurora
       - Uses the existing db layer at infrastructure/src/layers/db/ and the existing Secrets Manager credential pattern (no new secret machinery)
@@ -157,8 +168,9 @@ stories:
   - id: 9.12
     title: purge_immediately branch — HardDeleteUserChatMessages Lambda + workflow wiring
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [9.1, 9.4, 9.5, 9.6, 9.11]
+    tracking_issue: 146
     acceptance_criteria:
       - infrastructure/src/functions/hard_delete_user_chat_messages/ Lambda receives `{user_id, room_ids: [...]}` as input (room_ids supplied by the state-machine Parameters block from 9.4's output — see 9.1). For each room_id, Query ChatMessages by room_id with a FilterExpression on sender_id, and DeleteItem each matching row. Same continuation-token contract as 9.6 (Choice → Task → Choice loop with `has_more` flag)
       - The Lambda does NOT Query ChatRoomMembership itself — by the time it runs, 9.4 has already deleted those rows; room_ids comes from input
@@ -174,6 +186,7 @@ stories:
     agent: backenddeveloper
     done: false
     depends_on: [9.3, 9.4, 9.5, 9.6, 9.7, 9.8, 9.9, 9.10, 9.11, 9.12]
+    tracking_issue: 147
     acceptance_criteria:
       - tests/integration/deletion_e2e_test.py signs up two users (A = deleter, B = survivor), has them become friends, exchanges three chat messages, registers a push token for A
       - A calls DELETE /v1/profile/me (purge_immediately=false), the test polls /v1/profile/me/deletion-status with A's JWT until SUCCEEDED

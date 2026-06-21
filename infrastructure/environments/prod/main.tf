@@ -166,6 +166,34 @@ module "iam_roles" {
   # Scope push_fanout Secrets Manager permission to the prod Expo push credential ARN.
   # Forward reference — Terraform resolves this after the secret resource below is declared.
   expo_push_secret_arn = aws_secretsmanager_secret.expo_push_credential.arn
+
+  # Scope stepfn_deletion_exec role's lambda:InvokeFunction to all deletion task ARNs
+  # and its logs:* to the Step Functions log group (story 9.1).
+  # Forward references: Terraform resolves these after the Lambda modules are declared.
+  deletion_task_lambda_arns = [
+    module.validate_deletion_request.lambda_arn,
+    module.cognito_user_state.lambda_arn,
+    module.deactivate_chat_rooms.lambda_arn,
+    module.soft_delete_aurora.lambda_arn,
+    module.delete_dynamodb_personal_data.lambda_arn,
+    module.anonymize_chat_messages.lambda_arn,
+    module.hard_purge.lambda_arn,
+    module.write_audit_log.lambda_arn,
+  ]
+  deletion_sfn_log_group_arn = module.step_functions.log_group_arn
+
+  # Scope write_audit_log role's dynamodb:PutItem to account_deletion_audit (story 9.8).
+  account_deletion_audit_table_arn = module.dynamodb.account_deletion_audit_arn
+
+  # Scope deletion_initiator role's states:StartExecution/DescribeExecution to
+  # the account-deletion state machine ARN (story 9.9).
+  deletion_state_machine_arn = module.step_functions.state_machine_arn
+
+  # Scope dynamodb table ARNs for deletion Lambda roles (stories 9.4, 9.6, 9.7).
+  chat_rooms_table_arn           = module.dynamodb.chat_rooms_arn
+  chat_room_membership_table_arn = module.dynamodb.chat_room_membership_arn
+  chat_messages_table_arn        = module.dynamodb.chat_messages_arn
+  notifications_table_arn        = module.dynamodb.notifications_arn
 }
 
 # ---------------------------------------------------------------------------
@@ -1315,4 +1343,295 @@ module "stale_token_cleanup" {
   filename               = "${path.module}/../../../build/stale_token_cleanup.zip"
   role_arn               = module.iam_roles.role_arns["stale_token_cleanup"]
   table_push_tokens_name = module.dynamodb.push_tokens_table_name
+}
+
+# ---------------------------------------------------------------------------
+# hard_purge Lambda — story 9.11 (prod mirror)
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+# Mirrors the dev wiring.
+#
+# Daily EventBridge cron: DELETE FROM users WHERE deleted_at IS NOT NULL
+# AND deleted_at < NOW() - INTERVAL '30 days'. Aurora ON DELETE CASCADE
+# removes rows in siblings, friendships, friend_requests, bookmarks, blocks.
+#
+# Placement: INSIDE the VPC — Aurora is VPC-private.
+# Role: aurora_writer (VPC access + Secrets Manager GetSecretValue).
+# ---------------------------------------------------------------------------
+
+module "hard_purge" {
+  source = "../../modules/hard_purge"
+
+  function_name  = "knotify-hard-purge-${var.environment}"
+  filename       = "${path.module}/../../../build/hard_purge.zip"
+  role_arn       = module.iam_roles.role_arns["aurora_writer"]
+  layers         = [module.db_layer.layer_arn, module.observability_layer.layer_arn]
+  db_secret_name = "knotify-${var.environment}-app-user-credential"
+  aurora_host    = module.aurora.cluster_endpoint
+  aurora_port    = tostring(module.aurora.port)
+  aurora_dbname  = module.aurora.database_name
+  vpc_config = {
+    subnet_ids         = module.networking.private_subnet_ids
+    security_group_ids = [module.networking.lambda_security_group_id]
+  }
+}
+
+# ---------------------------------------------------------------------------
+# validate_deletion_request Lambda — story 9.2 (prod mirror)
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+# Checks user_id == jwt_sub, queries audit table for in-progress deletion,
+# writes 'deletion_initiated' audit record.
+# Placement: OUTSIDE the VPC — DynamoDB-only.
+# ---------------------------------------------------------------------------
+
+module "validate_deletion_request" {
+  source = "../../modules/validate_deletion_request"
+
+  function_name    = "knotify-validate-deletion-request-${var.environment}"
+  filename         = "${path.module}/../../../build/validate_deletion_request.zip"
+  role_arn         = module.iam_roles.role_arns["validate_deletion_request"]
+  audit_table_name = module.dynamodb.account_deletion_audit_table_name
+}
+
+# ---------------------------------------------------------------------------
+# cognito_user_state Lambda — story 9.3 (prod mirror)
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+# Handles AdminDisableUser (mode=disable) and AdminDeleteUser (mode=delete).
+# Placement: OUTSIDE the VPC — Cognito IDP endpoint only.
+# ---------------------------------------------------------------------------
+
+module "cognito_user_state" {
+  source = "../../modules/cognito_user_state"
+
+  function_name = "knotify-cognito-user-state-${var.environment}"
+  filename      = "${path.module}/../../../build/cognito_user_state.zip"
+  role_arn      = module.iam_roles.role_arns["cognito_user_state"]
+  user_pool_id  = module.cognito.user_pool_id
+}
+
+# ---------------------------------------------------------------------------
+# deactivate_chat_rooms Lambda — story 9.4 (prod mirror)
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+# Deactivates all ChatRooms the deleted user was a member of, deletes their
+# ChatRoomMembership rows, and returns {room_ids: [...]} for downstream injection.
+# Placement: OUTSIDE the VPC — DynamoDB access only.
+# ---------------------------------------------------------------------------
+
+module "deactivate_chat_rooms" {
+  source = "../../modules/deactivate_chat_rooms"
+
+  function_name                   = "knotify-deactivate-chat-rooms-${var.environment}"
+  filename                        = "${path.module}/../../../build/deactivate_chat_rooms.zip"
+  role_arn                        = module.iam_roles.role_arns["deactivate_chat_rooms"]
+  chat_rooms_table_name           = module.dynamodb.chat_rooms_table_name
+  chat_room_membership_table_name = module.dynamodb.chat_room_membership_table_name
+}
+
+# ---------------------------------------------------------------------------
+# soft_delete_aurora Lambda — story 9.5 (prod mirror)
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+# UPDATE users SET deleted_at=NOW(), email=NULL, ... WHERE deleted_at IS NULL.
+# Idempotent on re-invocation. Placement: INSIDE the VPC — Aurora access.
+# ---------------------------------------------------------------------------
+
+module "soft_delete_aurora" {
+  source = "../../modules/soft_delete_aurora"
+
+  function_name  = "knotify-soft-delete-aurora-${var.environment}"
+  filename       = "${path.module}/../../../build/soft_delete_aurora.zip"
+  role_arn       = module.iam_roles.role_arns["aurora_writer"]
+  layers         = [module.db_layer.layer_arn, module.observability_layer.layer_arn]
+  db_secret_name = "knotify-${var.environment}-app-user-credential"
+  aurora_host    = module.aurora.cluster_endpoint
+  aurora_port    = tostring(module.aurora.port)
+  aurora_dbname  = module.aurora.database_name
+  vpc_config = {
+    subnet_ids         = module.networking.private_subnet_ids
+    security_group_ids = [module.networking.lambda_security_group_id]
+  }
+}
+
+# ---------------------------------------------------------------------------
+# anonymize_chat_messages Lambda — story 9.6 (prod mirror)
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+# Rewrites sender_id to '[deleted-user]' on ChatMessages rows the deleted user
+# sent across their rooms. Continuation-token contract for Step Functions loop.
+# Placement: OUTSIDE the VPC — DynamoDB access only.
+# ---------------------------------------------------------------------------
+
+module "anonymize_chat_messages" {
+  source = "../../modules/anonymize_chat_messages"
+
+  function_name            = "knotify-anonymize-chat-messages-${var.environment}"
+  filename                 = "${path.module}/../../../build/anonymize_chat_messages.zip"
+  role_arn                 = module.iam_roles.role_arns["anonymize_chat_messages"]
+  chat_messages_table_name = module.dynamodb.chat_messages_table_name
+}
+
+# ---------------------------------------------------------------------------
+# delete_dynamodb_personal_data Lambda — story 9.7 (prod mirror)
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+# Deletes all Notifications and PushNotificationTokens rows for the deleted user.
+# Placement: OUTSIDE the VPC — DynamoDB access only.
+# ---------------------------------------------------------------------------
+
+module "delete_dynamodb_personal_data" {
+  source = "../../modules/delete_dynamodb_personal_data"
+
+  function_name                       = "knotify-delete-dynamodb-personal-data-${var.environment}"
+  filename                            = "${path.module}/../../../build/delete_dynamodb_personal_data.zip"
+  role_arn                            = module.iam_roles.role_arns["delete_dynamodb_personal_data"]
+  notifications_table_name            = module.dynamodb.notifications_table_name
+  push_notification_tokens_table_name = module.dynamodb.push_tokens_table_name
+}
+
+# ---------------------------------------------------------------------------
+# write_audit_log Lambda — story 9.8 (prod mirror)
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+# Writes deletion_initiated, deletion_completed, deletion_failed records to
+# account_deletion_audit DynamoDB table.
+# Placement: OUTSIDE the VPC — DynamoDB access only.
+# ---------------------------------------------------------------------------
+
+module "write_audit_log" {
+  source = "../../modules/write_audit_log"
+
+  function_name    = "knotify-write-audit-log-${var.environment}"
+  filename         = "${path.module}/../../../build/write_audit_log.zip"
+  role_arn         = module.iam_roles.role_arns["write_audit_log"]
+  audit_table_name = module.dynamodb.account_deletion_audit_table_name
+}
+
+# ---------------------------------------------------------------------------
+# hard_delete_user_chat_messages Lambda — story 9.12 (prod mirror)
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+#
+# Hard-deletes all ChatMessages rows sent by the deleted user across their
+# rooms. Called from the purge_immediately branch of the account-deletion
+# Step Functions state machine inside PurgeImmediately_ParallelCleanup
+# (after DeactivateChatRooms has already deleted the user's ChatRoomMembership).
+# Replaces AnonymizeChatMessages in the purge_immediately branch.
+#
+# Continuation-token contract for Step Functions Choice->Task->Choice loop
+# on has_more flag.
+# Placement: OUTSIDE the VPC — DynamoDB access only.
+# ---------------------------------------------------------------------------
+
+module "hard_delete_user_chat_messages" {
+  source = "../../modules/hard_delete_user_chat_messages"
+
+  function_name            = "knotify-hard-delete-user-chat-messages-${var.environment}"
+  filename                 = "${path.module}/../../../build/hard_delete_user_chat_messages.zip"
+  role_arn                 = module.iam_roles.role_arns["hard_delete_user_chat_messages"]
+  chat_messages_table_name = module.dynamodb.chat_messages_table_name
+}
+
+# ---------------------------------------------------------------------------
+# step_functions — account-deletion state machine — story 9.1 (prod mirror)
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+# STANDARD state machine orchestrating the full account-deletion workflow.
+# ---------------------------------------------------------------------------
+
+module "step_functions" {
+  source = "../../modules/step_functions"
+
+  environment        = var.environment
+  execution_role_arn = module.iam_roles.role_arns["stepfn_deletion_exec"]
+
+  lambda_arns = {
+    validate_deletion_request  = module.validate_deletion_request.lambda_arn
+    cognito_user_state         = module.cognito_user_state.lambda_arn
+    deactivate_chat_rooms      = module.deactivate_chat_rooms.lambda_arn
+    soft_delete_aurora         = module.soft_delete_aurora.lambda_arn
+    delete_dynamodb_personal   = module.delete_dynamodb_personal_data.lambda_arn
+    anonymize_chat_messages    = module.anonymize_chat_messages.lambda_arn
+    hard_purge_now             = module.hard_purge.lambda_arn
+    hard_delete_user_chat_msgs = module.hard_delete_user_chat_messages.lambda_arn
+    write_audit_log            = module.write_audit_log.lambda_arn
+  }
+}
+
+# ---------------------------------------------------------------------------
+# deletion_initiator Lambda — story 9.9 (prod mirror)
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+# Handles two HTTP API routes:
+#   DELETE /v1/profile/me              — initiate account deletion
+#   GET    /v1/profile/me/deletion-status — query status (stub, 9.10)
+#
+# Placement: OUTSIDE the VPC — Step Functions HTTPS endpoint only.
+# No Aurora, no DynamoDB access.
+# ---------------------------------------------------------------------------
+
+module "deletion_initiator" {
+  source = "../../modules/deletion_initiator"
+
+  function_name     = "knotify-deletion-initiator-${var.environment}"
+  filename          = "${path.module}/../../../build/deletion_initiator.zip"
+  role_arn          = module.iam_roles.role_arns["deletion_initiator"]
+  state_machine_arn = module.step_functions.state_machine_arn
+  edge_secret       = module.cloudfront.edge_secret
+
+  layers = [
+    module.observability_layer.layer_arn,
+  ]
+}
+
+# ---------------------------------------------------------------------------
+# API Gateway wiring — story 9.9 (prod mirror)
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+#
+# Adds DELETE /v1/profile/me and GET /v1/profile/me/deletion-status routes
+# on the existing HTTP API, each backed by the deletion_initiator Lambda.
+# The existing profile Lambda (GET/PATCH /v1/profile/me) uses a separate
+# integration and is unaffected.
+#
+# source_arn uses api_execution_arn (execute-api ARN) per hotfix #86 lesson:
+# using default_stage_arn causes 5xx with no Lambda invocation log entry.
+# ---------------------------------------------------------------------------
+
+resource "aws_apigatewayv2_integration" "deletion_initiator" {
+  api_id                 = module.api_gateway.api_id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = module.deletion_initiator.invoke_arn
+  payload_format_version = "2.0"
+}
+
+resource "aws_apigatewayv2_route" "delete_profile_me" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "DELETE /v1/profile/me"
+  target             = "integrations/${aws_apigatewayv2_integration.deletion_initiator.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+resource "aws_apigatewayv2_route" "get_profile_me_deletion_status" {
+  api_id             = module.api_gateway.api_id
+  route_key          = "GET /v1/profile/me/deletion-status"
+  target             = "integrations/${aws_apigatewayv2_integration.deletion_initiator.id}"
+  authorization_type = "JWT"
+  authorizer_id      = module.api_gateway.authorizer_id
+}
+
+# Lambda permission — allow API Gateway to invoke deletion_initiator on all
+# routes served by this Lambda (DELETE /v1/profile/me and GET deletion-status).
+# Wildcard over /v1/profile/me* scopes tightly to this Lambda.
+# source_arn = api_execution_arn (NOT default_stage_arn) per hotfix #86.
+resource "aws_lambda_permission" "deletion_initiator_api_gateway" {
+  statement_id  = "AllowDeletionInitiatorAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = module.deletion_initiator.function_name
+  qualifier     = "live"
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${module.api_gateway.api_execution_arn}/*/*/v1/profile/me*"
 }

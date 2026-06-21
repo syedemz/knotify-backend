@@ -72,3 +72,13 @@ output "push_notification_tokens_arn" {
   description = "ARN of the PushNotificationTokens DynamoDB table — consumed by IAM policies in stories 8.10, 8.11, 8.12"
   value       = aws_dynamodb_table.push_notification_tokens.arn
 }
+
+output "account_deletion_audit_arn" {
+  description = "ARN of the account_deletion_audit DynamoDB table — consumed by the write_audit_log IAM role (story 9.8)"
+  value       = aws_dynamodb_table.account_deletion_audit.arn
+}
+
+output "account_deletion_audit_table_name" {
+  description = "Name of the account_deletion_audit DynamoDB table"
+  value       = aws_dynamodb_table.account_deletion_audit.name
+}

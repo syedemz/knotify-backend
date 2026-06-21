@@ -1,0 +1,8 @@
+# write_audit_log Lambda runtime dependencies
+#
+# This Lambda only needs boto3 (provided by the Lambda runtime) and
+# Python stdlib (uuid, time).
+#
+# No Aurora access (psycopg2 not needed).
+# No requests (no outbound HTTP to external services).
+# No Lambda layers needed — DynamoDB-only, no knotify_obs layer required.

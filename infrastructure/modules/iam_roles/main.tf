@@ -1092,6 +1092,406 @@ resource "aws_iam_role_policy" "push_tokens_dynamodb" {
 }
 
 # ===========================================================================
+# Role: stepfn_deletion_exec
+#
+# Dedicated Step Functions execution role for the account-deletion state machine
+# (story 9.1). Trust principal is states.amazonaws.com.
+#
+# Three inline policies:
+#   1. lambda:InvokeFunction — scoped to every deletion task Lambda ARN
+#      (all nine task Lambdas from stories 9.2–9.8/9.11–9.12).
+#      When deletion_task_lambda_arns is empty (unit-test default), a wildcard
+#      fallback pattern is used so validate still passes.
+#   2. cloudwatch:PutMetricData — needed to emit the DeletionFailed metric
+#      from the global Catch handler. CloudWatch PutMetricData does not support
+#      resource-level scoping; the resource is "*" per AWS documentation.
+#   3. logs:* — scoped to the Step Functions log group ARN with the :* suffix
+#      required by the Step Functions logging integration.
+#      When deletion_sfn_log_group_arn is empty (unit-test default), a wildcard
+#      fallback pattern is used so validate still passes.
+#
+# NOT a Lambda execution role — no VPC access managed policy is attached.
+# Step Functions invokes Lambdas directly; the Lambda functions themselves
+# run in the VPC under their own Lambda execution roles.
+# ===========================================================================
+
+resource "aws_iam_role" "stepfn_deletion_exec" {
+  name               = "knotify-${var.environment}-stepfn-deletion-exec"
+  assume_role_policy = data.aws_iam_policy_document.states_assume_role.json
+}
+
+# lambda:InvokeFunction scoped to each deletion task Lambda ARN.
+# codingprinciples.md forbids wildcard Resource; the fallback wildcard is used
+# only in isolated module tests where no real ARNs are provided.
+data "aws_iam_policy_document" "stepfn_deletion_exec_lambda_invoke" {
+  statement {
+    sid    = "InvokeDeletionTaskLambdas"
+    effect = "Allow"
+    actions = [
+      "lambda:InvokeFunction",
+    ]
+    resources = length(var.deletion_task_lambda_arns) > 0 ? var.deletion_task_lambda_arns : [
+      "arn:aws:lambda:*:*:function:knotify-*-deletion-*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "stepfn_deletion_exec_lambda_invoke" {
+  name   = "stepfn-deletion-exec-lambda-invoke"
+  role   = aws_iam_role.stepfn_deletion_exec.name
+  policy = data.aws_iam_policy_document.stepfn_deletion_exec_lambda_invoke.json
+}
+
+# cloudwatch:PutMetricData — no resource-level scoping available for this action.
+# The DeletionFailed custom metric is emitted from the global Catch on every
+# failed execution. The resource "*" is required by AWS; this is the one
+# permitted exception to the no-wildcard-Resource rule per AWS documentation
+# (CloudWatch PutMetricData does not support resource-level permissions).
+data "aws_iam_policy_document" "stepfn_deletion_exec_cloudwatch" {
+  statement {
+    sid    = "PutDeletionFailedMetric"
+    effect = "Allow"
+    actions = [
+      "cloudwatch:PutMetricData",
+    ]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_role_policy" "stepfn_deletion_exec_cloudwatch" {
+  name   = "stepfn-deletion-exec-cloudwatch"
+  role   = aws_iam_role.stepfn_deletion_exec.name
+  policy = data.aws_iam_policy_document.stepfn_deletion_exec_cloudwatch.json
+}
+
+# logs:* scoped to the Step Functions log group ARN.
+# Step Functions requires logs:CreateLogDelivery, logs:GetLogDelivery,
+# logs:UpdateLogDelivery, logs:DeleteLogDelivery, logs:ListLogDeliveries,
+# logs:PutResourcePolicy, logs:DescribeResourcePolicies, and
+# logs:DescribeLogGroups on the log group — using logs:* captures all of
+# these without separately listing each. Scoped to the log group ARN.
+data "aws_iam_policy_document" "stepfn_deletion_exec_logs" {
+  statement {
+    sid    = "StepFunctionsLogging"
+    effect = "Allow"
+    actions = [
+      "logs:*",
+    ]
+    resources = [
+      var.deletion_sfn_log_group_arn != "" ? var.deletion_sfn_log_group_arn : "arn:aws:logs:*:*:log-group:/aws/states/knotify-*-account-deletion:*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "stepfn_deletion_exec_logs" {
+  name   = "stepfn-deletion-exec-logs"
+  role   = aws_iam_role.stepfn_deletion_exec.name
+  policy = data.aws_iam_policy_document.stepfn_deletion_exec_logs.json
+}
+
+# ===========================================================================
+# Role: write_audit_log
+#
+# For the knotify-write-audit-log Lambda (story 9.8).
+# Writes audit records to the account_deletion_audit DynamoDB table on every
+# account-deletion workflow event (initiated / completed / failed).
+#
+# OUTSIDE the VPC: DynamoDB is reachable via public service endpoints or
+# a VPC endpoint; however, this Lambda has no Aurora access and no AppSync
+# calls so running it outside the VPC avoids the ENI attachment cold-start
+# penalty and prevents the blackhole failure documented in hotfix #106.
+# AWSLambdaBasicExecutionRole is sufficient — no VPC access policy attached.
+#
+# DynamoDB permission:
+#   dynamodb:PutItem on account_deletion_audit only — no read, no delete,
+#   no other tables.  Least-privilege per codingprinciples.md.
+# ===========================================================================
+
+resource "aws_iam_role" "write_audit_log" {
+  name               = "knotify-${var.environment}-write-audit-log"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+# Basic Lambda execution — CloudWatch Logs only.
+# No VPC access policy: this Lambda runs OUTSIDE the VPC.
+resource "aws_iam_role_policy_attachment" "write_audit_log_basic_execution" {
+  role       = aws_iam_role.write_audit_log.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# DynamoDB PutItem on account_deletion_audit — scoped to exact table ARN.
+# Default wildcard fallback is used only in isolated IAM unit tests where
+# the dynamodb module is not wired.
+data "aws_iam_policy_document" "write_audit_log_dynamodb" {
+  statement {
+    sid    = "AuditLogPutItem"
+    effect = "Allow"
+    actions = [
+      "dynamodb:PutItem",
+    ]
+    resources = [
+      var.account_deletion_audit_table_arn != "" ? var.account_deletion_audit_table_arn : "arn:aws:dynamodb:*:*:table/account_deletion_audit",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "write_audit_log_dynamodb" {
+  name   = "write-audit-log-dynamodb"
+  role   = aws_iam_role.write_audit_log.name
+  policy = data.aws_iam_policy_document.write_audit_log_dynamodb.json
+}
+
+# ===========================================================================
+# Role: cognito_user_state
+#
+# For the knotify-cognito-user-state Lambda (story 9.3).
+# Dispatches to Cognito IDP AdminDisableUser or AdminDeleteUser depending on
+# the mode input.  Called twice by the account-deletion Step Functions state
+# machine: DisableCognitoUser (mode=disable) and DeleteCognitoUser (mode=delete).
+#
+# OUTSIDE the VPC: only calls Cognito IDP (public HTTPS endpoint) — no Aurora,
+# no DynamoDB.  AWSLambdaBasicExecutionRole is sufficient — no ENI attachment.
+# No VPC access policy attached — consistent with room_state_publisher and
+# write_audit_log which also run outside the VPC.
+#
+# Least-privilege Cognito IDP permissions:
+#   cognito-idp:AdminDisableUser — needed for mode=disable
+#   cognito-idp:AdminDeleteUser  — needed for mode=delete
+#   cognito-idp:AdminGetUser     — needed to verify the already-disabled state
+# All three actions are scoped to the exact Cognito user pool ARN.
+# When cognito_user_pool_arn is empty (unit-test default), a wildcard fallback
+# is used so `terraform validate` passes in isolated module tests.
+# ===========================================================================
+
+resource "aws_iam_role" "cognito_user_state" {
+  name               = "knotify-${var.environment}-cognito-user-state"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+# Basic Lambda execution — CloudWatch Logs only.
+# No VPC access policy: this Lambda runs OUTSIDE the VPC.
+resource "aws_iam_role_policy_attachment" "cognito_user_state_basic_execution" {
+  role       = aws_iam_role.cognito_user_state.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# Cognito IDP actions scoped to the project's user pool ARN.
+# AdminGetUser is included alongside the write actions because the handler uses
+# it in the idempotency check path to detect already-disabled users cleanly.
+data "aws_iam_policy_document" "cognito_user_state_cognito" {
+  statement {
+    sid    = "CognitoUserStateActions"
+    effect = "Allow"
+    actions = [
+      "cognito-idp:AdminDisableUser",
+      "cognito-idp:AdminDeleteUser",
+      "cognito-idp:AdminGetUser",
+    ]
+    resources = [
+      var.cognito_user_pool_arn != "" ? var.cognito_user_pool_arn : "arn:aws:cognito-idp:*:*:userpool/*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "cognito_user_state_cognito" {
+  name   = "cognito-user-state-cognito"
+  role   = aws_iam_role.cognito_user_state.name
+  policy = data.aws_iam_policy_document.cognito_user_state_cognito.json
+}
+
+# ===========================================================================
+# Role: deactivate_chat_rooms
+#
+# For the knotify-deactivate-chat-rooms Lambda (story 9.4).
+# Deactivates all ChatRooms the deleted user was a member of and removes the
+# deleted user's ChatRoomMembership rows.  Called from the account-deletion
+# Step Functions state machine.
+#
+# OUTSIDE the VPC: only touches DynamoDB (ChatRooms and ChatRoomMembership).
+# No Aurora, no AppSync.  AWSLambdaBasicExecutionRole is sufficient —
+# no ENI attachment needed.  Consistent with write_audit_log and push_fanout.
+#
+# Least-privilege DynamoDB permissions (scoped to exact table ARNs):
+#   dynamodb:Query          — ChatRoomMembership (collect all room_ids for user_id)
+#   dynamodb:UpdateItem     — ChatRooms (conditional deactivation per room)
+#   dynamodb:BatchWriteItem — ChatRoomMembership (delete user's membership rows)
+# ===========================================================================
+
+resource "aws_iam_role" "deactivate_chat_rooms" {
+  name               = "knotify-${var.environment}-deactivate-chat-rooms"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+# Basic Lambda execution — CloudWatch Logs only.
+# No VPC access policy: this Lambda runs OUTSIDE the VPC.
+resource "aws_iam_role_policy_attachment" "deactivate_chat_rooms_basic_execution" {
+  role       = aws_iam_role.deactivate_chat_rooms.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# DynamoDB permissions — scoped to the exact table ARNs sourced from module.dynamodb.
+# Default wildcard fallbacks are used only in isolated IAM unit tests where
+# the dynamodb module is not wired.
+data "aws_iam_policy_document" "deactivate_chat_rooms_dynamodb" {
+  statement {
+    sid    = "ChatRoomMembershipQuery"
+    effect = "Allow"
+    actions = [
+      "dynamodb:Query",
+    ]
+    resources = [
+      var.chat_room_membership_table_arn != "" ? var.chat_room_membership_table_arn : "arn:aws:dynamodb:*:*:table/ChatRoomMembership",
+    ]
+  }
+
+  statement {
+    sid    = "ChatRoomsConditionalUpdate"
+    effect = "Allow"
+    actions = [
+      "dynamodb:UpdateItem",
+    ]
+    resources = [
+      var.chat_rooms_table_arn != "" ? var.chat_rooms_table_arn : "arn:aws:dynamodb:*:*:table/ChatRooms",
+    ]
+  }
+
+  statement {
+    sid    = "ChatRoomMembershipBatchDelete"
+    effect = "Allow"
+    actions = [
+      "dynamodb:BatchWriteItem",
+    ]
+    resources = [
+      var.chat_room_membership_table_arn != "" ? var.chat_room_membership_table_arn : "arn:aws:dynamodb:*:*:table/ChatRoomMembership",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "deactivate_chat_rooms_dynamodb" {
+  name   = "deactivate-chat-rooms-dynamodb"
+  role   = aws_iam_role.deactivate_chat_rooms.name
+  policy = data.aws_iam_policy_document.deactivate_chat_rooms_dynamodb.json
+}
+
+# ===========================================================================
+# Role: anonymize_chat_messages
+#
+# For the knotify-anonymize-chat-messages Lambda (story 9.6).
+# Rewrites sender_id to '[deleted-user]' on every ChatMessages row sent by
+# the deleted user, across all rooms they were a member of.
+# Called from the soft-delete branch of the account-deletion Step Functions
+# state machine inside ParallelCleanup.
+#
+# OUTSIDE the VPC: only touches DynamoDB (ChatMessages table) — no Aurora,
+# no AppSync.  AWSLambdaBasicExecutionRole is sufficient — no ENI attachment.
+# Consistent with write_audit_log, deactivate_chat_rooms, and push_fanout
+# which also run outside the VPC (hotfix #106 lesson).
+#
+# Least-privilege DynamoDB permissions (scoped to ChatMessages table only):
+#   dynamodb:Query      — fetch all messages in a room sent by the deleted user
+#                         (room_id PK + sender_id FilterExpression, no GSI)
+#   dynamodb:UpdateItem — rewrite sender_id to '[deleted-user]' per row
+# ===========================================================================
+
+resource "aws_iam_role" "anonymize_chat_messages" {
+  name               = "knotify-${var.environment}-anonymize-chat-messages"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+# Basic Lambda execution — CloudWatch Logs only.
+# No VPC access policy: this Lambda runs OUTSIDE the VPC.
+resource "aws_iam_role_policy_attachment" "anonymize_chat_messages_basic_execution" {
+  role       = aws_iam_role.anonymize_chat_messages.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# DynamoDB permissions scoped to the ChatMessages table only.
+# Query + UpdateItem is the minimum required to anonymize messages:
+#   Query   — find all messages sent by the deleted user in a given room
+#   UpdateItem — rewrite sender_id on each matched row
+# No other tables, no other actions — least-privilege per codingprinciples.md.
+# Default wildcard fallback is used only in isolated IAM unit tests where
+# the dynamodb module is not wired.
+data "aws_iam_policy_document" "anonymize_chat_messages_dynamodb" {
+  statement {
+    sid    = "ChatMessagesQueryAndUpdate"
+    effect = "Allow"
+    actions = [
+      "dynamodb:Query",
+      "dynamodb:UpdateItem",
+    ]
+    resources = [
+      var.chat_messages_table_arn != "" ? var.chat_messages_table_arn : "arn:aws:dynamodb:*:*:table/ChatMessages",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "anonymize_chat_messages_dynamodb" {
+  name   = "anonymize-chat-messages-dynamodb"
+  role   = aws_iam_role.anonymize_chat_messages.name
+  policy = data.aws_iam_policy_document.anonymize_chat_messages_dynamodb.json
+}
+
+# ===========================================================================
+# Role: hard_delete_user_chat_messages
+#
+# For the knotify-hard-delete-user-chat-messages Lambda (story 9.12).
+# Hard-deletes (DeleteItem) all ChatMessages rows sent by the deleted user
+# across all rooms they were a member of.  Called from the purge_immediately
+# branch of the account-deletion Step Functions state machine inside
+# PurgeImmediately_ParallelCleanup.
+#
+# OUTSIDE the VPC: only touches DynamoDB (ChatMessages table) — no Aurora,
+# no AppSync.  AWSLambdaBasicExecutionRole is sufficient — no ENI attachment.
+# Consistent with anonymize_chat_messages (story 9.6), write_audit_log,
+# deactivate_chat_rooms, and push_fanout (hotfix #106 lesson).
+#
+# Least-privilege DynamoDB permissions (scoped to ChatMessages table only):
+#   dynamodb:Query      — fetch all messages in a room sent by the deleted user
+#                         (room_id PK + sender_id FilterExpression, no GSI)
+#   dynamodb:DeleteItem — remove each matched row from the table
+# ===========================================================================
+
+resource "aws_iam_role" "hard_delete_user_chat_messages" {
+  name               = "knotify-${var.environment}-hard-delete-user-chat-messages"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+# Basic Lambda execution — CloudWatch Logs only.
+# No VPC access policy: this Lambda runs OUTSIDE the VPC.
+resource "aws_iam_role_policy_attachment" "hard_delete_user_chat_messages_basic_execution" {
+  role       = aws_iam_role.hard_delete_user_chat_messages.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# DynamoDB permissions scoped to the ChatMessages table only.
+# Query + DeleteItem is the minimum required to hard-delete messages:
+#   Query      — find all messages sent by the deleted user in a given room
+#   DeleteItem — remove each matched row entirely (not UpdateItem — rows are gone)
+# No other tables, no other actions — least-privilege per codingprinciples.md.
+# Default wildcard fallback is used only in isolated IAM unit tests where
+# the dynamodb module is not wired.
+data "aws_iam_policy_document" "hard_delete_user_chat_messages_dynamodb" {
+  statement {
+    sid    = "ChatMessagesQueryAndDelete"
+    effect = "Allow"
+    actions = [
+      "dynamodb:Query",
+      "dynamodb:DeleteItem",
+    ]
+    resources = [
+      var.chat_messages_table_arn != "" ? var.chat_messages_table_arn : "arn:aws:dynamodb:*:*:table/ChatMessages",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "hard_delete_user_chat_messages_dynamodb" {
+  name   = "hard-delete-user-chat-messages-dynamodb"
+  role   = aws_iam_role.hard_delete_user_chat_messages.name
+  policy = data.aws_iam_policy_document.hard_delete_user_chat_messages_dynamodb.json
+}
+
+# ===========================================================================
 # Role: stale_token_cleanup
 #
 # For the stale_token_cleanup Lambda (story 8.12 — daily EventBridge cron).
@@ -1142,4 +1542,214 @@ resource "aws_iam_role_policy" "stale_token_cleanup_dynamodb" {
   name   = "stale-token-cleanup-dynamodb"
   role   = aws_iam_role.stale_token_cleanup.name
   policy = data.aws_iam_policy_document.stale_token_cleanup_dynamodb.json
+}
+
+# ===========================================================================
+# Role: delete_dynamodb_personal_data
+#
+# For the knotify-delete-dynamodb-personal-data Lambda (story 9.7).
+# Deletes all Notifications and PushNotificationTokens rows for the deleted
+# user.  Called from the account-deletion Step Functions state machine inside
+# the ParallelCleanup block.
+#
+# OUTSIDE the VPC: only touches DynamoDB (Notifications and
+# PushNotificationTokens tables) — no Aurora, no AppSync.
+# AWSLambdaBasicExecutionRole is sufficient — no ENI attachment needed.
+# Consistent with deactivate_chat_rooms, anonymize_chat_messages,
+# write_audit_log, and push_fanout (hotfix #106 lesson).
+#
+# Least-privilege DynamoDB permissions:
+#   dynamodb:Query          — find all rows for user_id in each table
+#   dynamodb:BatchWriteItem — delete found rows in chunks of ≤25
+# Both actions are scoped to the exact table ARNs only — no wildcard resources.
+# ===========================================================================
+
+resource "aws_iam_role" "delete_dynamodb_personal_data" {
+  name               = "knotify-${var.environment}-delete-dynamodb-personal-data"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+# Basic Lambda execution — CloudWatch Logs only.
+# No VPC access policy: this Lambda runs OUTSIDE the VPC.
+resource "aws_iam_role_policy_attachment" "delete_dynamodb_personal_data_basic_execution" {
+  role       = aws_iam_role.delete_dynamodb_personal_data.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# DynamoDB Query + BatchWriteItem on Notifications and PushNotificationTokens.
+# Both tables are scoped to their exact ARNs.  Default wildcard fallbacks are
+# used only in isolated IAM unit tests where the dynamodb module is not wired.
+data "aws_iam_policy_document" "delete_dynamodb_personal_data_dynamodb" {
+  statement {
+    sid    = "NotificationsQueryAndDelete"
+    effect = "Allow"
+    actions = [
+      "dynamodb:Query",
+      "dynamodb:BatchWriteItem",
+    ]
+    resources = [
+      var.notifications_table_arn != "" ? var.notifications_table_arn : "arn:aws:dynamodb:*:*:table/Notifications",
+    ]
+  }
+
+  statement {
+    sid    = "PushNotificationTokensQueryAndDelete"
+    effect = "Allow"
+    actions = [
+      "dynamodb:Query",
+      "dynamodb:BatchWriteItem",
+    ]
+    resources = [
+      var.push_notification_tokens_table_arn != "" ? var.push_notification_tokens_table_arn : "arn:aws:dynamodb:*:*:table/PushNotificationTokens",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "delete_dynamodb_personal_data_dynamodb" {
+  name   = "delete-dynamodb-personal-data-dynamodb"
+  role   = aws_iam_role.delete_dynamodb_personal_data.name
+  policy = data.aws_iam_policy_document.delete_dynamodb_personal_data_dynamodb.json
+}
+
+# ===========================================================================
+# Role: validate_deletion_request
+#
+# For the knotify-validate-deletion-request Lambda (story 9.2).
+# First task in the account-deletion Step Functions state machine.
+# Validates the deletion request: checks user_id == jwt_sub, queries the
+# audit table for an in-progress deletion, and writes a "deletion_initiated"
+# audit record.
+#
+# OUTSIDE the VPC: only touches DynamoDB (account_deletion_audit) via the
+# regional public endpoint — no Aurora, no AppSync.
+# AWSLambdaBasicExecutionRole is sufficient — no ENI attachment needed.
+# Consistent with write_audit_log, deactivate_chat_rooms, anonymize_chat_messages,
+# and delete_dynamodb_personal_data (hotfix #106 lesson).
+#
+# Least-privilege DynamoDB permissions:
+#   dynamodb:Query   — idempotency check (fetch all audit rows for user_id)
+#   dynamodb:PutItem — write the "deletion_initiated" audit record
+# Both actions scoped to account_deletion_audit only — no other tables.
+# ===========================================================================
+
+resource "aws_iam_role" "validate_deletion_request" {
+  name               = "knotify-${var.environment}-validate-deletion-request"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+# Basic Lambda execution — CloudWatch Logs only.
+# No VPC access policy: this Lambda runs OUTSIDE the VPC.
+resource "aws_iam_role_policy_attachment" "validate_deletion_request_basic_execution" {
+  role       = aws_iam_role.validate_deletion_request.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# DynamoDB Query + PutItem on account_deletion_audit.
+# Default wildcard fallback is used only in isolated IAM unit tests where
+# the dynamodb module is not wired.
+data "aws_iam_policy_document" "validate_deletion_request_dynamodb" {
+  statement {
+    sid    = "AuditTableQueryAndPutItem"
+    effect = "Allow"
+    actions = [
+      "dynamodb:Query",
+      "dynamodb:PutItem",
+    ]
+    resources = [
+      var.account_deletion_audit_table_arn != "" ? var.account_deletion_audit_table_arn : "arn:aws:dynamodb:*:*:table/account_deletion_audit",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "validate_deletion_request_dynamodb" {
+  name   = "validate-deletion-request-dynamodb"
+  role   = aws_iam_role.validate_deletion_request.name
+  policy = data.aws_iam_policy_document.validate_deletion_request_dynamodb.json
+}
+
+# ===========================================================================
+# Role: deletion_initiator
+#
+# For the knotify-deletion-initiator Lambda (story 9.9).
+# Serves DELETE /v1/profile/me (story 9.9) and GET /v1/profile/me/deletion-status
+# (story 9.10 — DescribeExecution permission pre-declared here so 9.10 does not
+# need a role change).
+#
+# OUTSIDE the VPC: only calls Step Functions (public HTTPS endpoints) — no Aurora,
+# no DynamoDB.  AWSLambdaBasicExecutionRole is sufficient — no ENI attachment.
+# Consistent with write_audit_log, validate_deletion_request which also run
+# outside the VPC (hotfix #106 lesson).
+#
+# Least-privilege Step Functions permissions:
+#   states:StartExecution   — initiate the account-deletion state machine (9.9)
+#   states:DescribeExecution — query execution status (9.10, pre-declared now)
+#
+# states:StartExecution is scoped to the state machine ARN.
+# states:DescribeExecution is scoped to executions of that state machine
+# (ARN format: arn:...:execution:<state-machine-name>:*).
+#
+# When deletion_state_machine_arn is empty (unit-test default), wildcard
+# fallback patterns are used so `terraform validate` passes in isolated tests.
+# ===========================================================================
+
+resource "aws_iam_role" "deletion_initiator" {
+  name               = "knotify-${var.environment}-deletion-initiator"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+# Basic Lambda execution — CloudWatch Logs only.
+# No VPC access policy: this Lambda runs OUTSIDE the VPC.
+resource "aws_iam_role_policy_attachment" "deletion_initiator_basic_execution" {
+  role       = aws_iam_role.deletion_initiator.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# states:StartExecution scoped to the state machine ARN.
+# states:DescribeExecution scoped to all executions of that state machine.
+# Both scoped to exact ARNs — default wildcard fallback for isolated tests only.
+#
+# states:DescribeExecution resource ARN pattern:
+#   arn:aws:states:<region>:<account>:execution:<machine-name>:*
+# We derive this from the state machine ARN by replacing
+#   stateMachine:<name>  →  execution:<name>:*
+# using replace() because the execution ARN has a different resource type prefix.
+#
+# When deletion_state_machine_arn is "" (test default), a wildcard fallback is
+# used for both resources so terraform validate does not fail in isolated tests.
+locals {
+  # Derive the execution ARN pattern from the state machine ARN.
+  # Real ARN:    arn:aws:states:eu-central-1:123:stateMachine:knotify-dev-account-deletion
+  # Exec ARN:    arn:aws:states:eu-central-1:123:execution:knotify-dev-account-deletion:*
+  deletion_execution_arn_pattern = var.deletion_state_machine_arn != "" ? "${replace(var.deletion_state_machine_arn, ":stateMachine:", ":execution:")}:*" : "arn:aws:states:*:*:execution:knotify-*-account-deletion:*"
+}
+
+data "aws_iam_policy_document" "deletion_initiator_stepfunctions" {
+  statement {
+    sid    = "StartDeletionExecution"
+    effect = "Allow"
+    actions = [
+      "states:StartExecution",
+    ]
+    resources = [
+      var.deletion_state_machine_arn != "" ? var.deletion_state_machine_arn : "arn:aws:states:*:*:stateMachine:knotify-*-account-deletion",
+    ]
+  }
+
+  statement {
+    sid    = "DescribeDeletionExecution"
+    effect = "Allow"
+    actions = [
+      "states:DescribeExecution",
+      "states:GetExecutionHistory",
+    ]
+    resources = [
+      local.deletion_execution_arn_pattern,
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "deletion_initiator_stepfunctions" {
+  name   = "deletion-initiator-stepfunctions"
+  role   = aws_iam_role.deletion_initiator.name
+  policy = data.aws_iam_policy_document.deletion_initiator_stepfunctions.json
 }

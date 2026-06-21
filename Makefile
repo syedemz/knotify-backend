@@ -131,6 +131,26 @@ package-all:
 	$(MAKE) package FUNC=push_tokens
 	@echo "[package-all] Building stale_token_cleanup function ..."
 	$(MAKE) package FUNC=stale_token_cleanup
+	@echo "[package-all] Building validate_deletion_request function ..."
+	$(MAKE) package FUNC=validate_deletion_request
+	@echo "[package-all] Building cognito_user_state function ..."
+	$(MAKE) package FUNC=cognito_user_state
+	@echo "[package-all] Building deactivate_chat_rooms function ..."
+	$(MAKE) package FUNC=deactivate_chat_rooms
+	@echo "[package-all] Building soft_delete_aurora function ..."
+	$(MAKE) package FUNC=soft_delete_aurora
+	@echo "[package-all] Building anonymize_chat_messages function ..."
+	$(MAKE) package FUNC=anonymize_chat_messages
+	@echo "[package-all] Building delete_dynamodb_personal_data function ..."
+	$(MAKE) package FUNC=delete_dynamodb_personal_data
+	@echo "[package-all] Building write_audit_log function ..."
+	$(MAKE) package FUNC=write_audit_log
+	@echo "[package-all] Building deletion_initiator function ..."
+	$(MAKE) package FUNC=deletion_initiator
+	@echo "[package-all] Building hard_purge function ..."
+	$(MAKE) package FUNC=hard_purge
+	@echo "[package-all] Building hard_delete_user_chat_messages function ..."
+	$(MAKE) package FUNC=hard_delete_user_chat_messages
 	@echo "[package-all] Done — all artifacts in $(BUILD_DIR)/"
 
 # ---------------------------------------------------------------------------

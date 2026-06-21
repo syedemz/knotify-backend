@@ -1263,3 +1263,863 @@ run "role_arns_output_contains_stale_token_cleanup" {
     error_message = "role_arns[stale_token_cleanup] must be wired to aws_iam_role.stale_token_cleanup.arn"
   }
 }
+
+# ===========================================================================
+# Tests 41–45: stepfn_deletion_exec IAM role (story 9.1)
+#
+# Dedicated Step Functions execution role for the account-deletion state machine.
+# Trust principal: states.amazonaws.com
+# Inline policies:
+#   1. lambda:InvokeFunction on all nine deletion task Lambda ARNs
+#   2. cloudwatch:PutMetricData (DeletionFailed metric, no resource restriction needed)
+#   3. logs:* on the Step Functions CloudWatch log group ARN
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Test 41: stepfn_deletion_exec role exists with states.amazonaws.com trust policy
+#
+# Satisfies AC: "A dedicated Step Functions execution role is declared in
+#               infrastructure/modules/iam_roles/ with ... trust principal states.amazonaws.com"
+# ---------------------------------------------------------------------------
+run "stepfn_deletion_exec_role_exists_with_states_trust_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    deletion_task_lambda_arns = [
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-validate-deletion-request-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-cognito-user-state-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-deactivate-chat-rooms-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-soft-delete-aurora-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-delete-dynamodb-personal-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-anonymize-chat-messages-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-hard-purge-now-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-hard-delete-user-chat-msgs-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-write-audit-log-test:live",
+    ]
+    deletion_sfn_log_group_arn = "arn:aws:logs:eu-central-1:123456789012:log-group:/aws/states/knotify-test-account-deletion:*"
+  }
+
+  assert {
+    condition     = aws_iam_role.stepfn_deletion_exec.assume_role_policy != ""
+    error_message = "stepfn_deletion_exec assume_role_policy must not be empty"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 42: stepfn_deletion_exec lambda invoke inline policy exists
+#
+# Satisfies AC: "lambda:InvokeFunction scoped to each task Lambda ARN"
+# ---------------------------------------------------------------------------
+run "stepfn_deletion_exec_lambda_invoke_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    deletion_task_lambda_arns = [
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-validate-deletion-request-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-cognito-user-state-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-deactivate-chat-rooms-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-soft-delete-aurora-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-delete-dynamodb-personal-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-anonymize-chat-messages-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-hard-purge-now-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-hard-delete-user-chat-msgs-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-write-audit-log-test:live",
+    ]
+    deletion_sfn_log_group_arn = "arn:aws:logs:eu-central-1:123456789012:log-group:/aws/states/knotify-test-account-deletion:*"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.stepfn_deletion_exec_lambda_invoke.name == "stepfn-deletion-exec-lambda-invoke"
+    error_message = "stepfn_deletion_exec lambda invoke policy must be named stepfn-deletion-exec-lambda-invoke"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.stepfn_deletion_exec_lambda_invoke.role == aws_iam_role.stepfn_deletion_exec.name
+    error_message = "stepfn_deletion_exec lambda invoke policy must be attached to the stepfn_deletion_exec role"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 43: stepfn_deletion_exec cloudwatch put metric inline policy exists
+#
+# Satisfies AC: "cloudwatch:PutMetricData for the DeletionFailed metric"
+# ---------------------------------------------------------------------------
+run "stepfn_deletion_exec_cloudwatch_metric_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    deletion_task_lambda_arns = [
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-validate-deletion-request-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-cognito-user-state-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-deactivate-chat-rooms-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-soft-delete-aurora-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-delete-dynamodb-personal-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-anonymize-chat-messages-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-hard-purge-now-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-hard-delete-user-chat-msgs-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-write-audit-log-test:live",
+    ]
+    deletion_sfn_log_group_arn = "arn:aws:logs:eu-central-1:123456789012:log-group:/aws/states/knotify-test-account-deletion:*"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.stepfn_deletion_exec_cloudwatch.name == "stepfn-deletion-exec-cloudwatch"
+    error_message = "stepfn_deletion_exec cloudwatch policy must be named stepfn-deletion-exec-cloudwatch"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.stepfn_deletion_exec_cloudwatch.role == aws_iam_role.stepfn_deletion_exec.name
+    error_message = "stepfn_deletion_exec cloudwatch policy must be attached to the stepfn_deletion_exec role"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 44: stepfn_deletion_exec logs inline policy exists
+#
+# Satisfies AC: "logs:* for the log group"
+# ---------------------------------------------------------------------------
+run "stepfn_deletion_exec_logs_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    deletion_task_lambda_arns = [
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-validate-deletion-request-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-cognito-user-state-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-deactivate-chat-rooms-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-soft-delete-aurora-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-delete-dynamodb-personal-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-anonymize-chat-messages-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-hard-purge-now-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-hard-delete-user-chat-msgs-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-write-audit-log-test:live",
+    ]
+    deletion_sfn_log_group_arn = "arn:aws:logs:eu-central-1:123456789012:log-group:/aws/states/knotify-test-account-deletion:*"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.stepfn_deletion_exec_logs.name == "stepfn-deletion-exec-logs"
+    error_message = "stepfn_deletion_exec logs policy must be named stepfn-deletion-exec-logs"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.stepfn_deletion_exec_logs.role == aws_iam_role.stepfn_deletion_exec.name
+    error_message = "stepfn_deletion_exec logs policy must be attached to the stepfn_deletion_exec role"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 45: role_arns output map contains stepfn_deletion_exec
+#
+# Satisfies the module output shape requirement so root modules can reference
+# module.iam_roles.role_arns["stepfn_deletion_exec"].
+# ---------------------------------------------------------------------------
+run "role_arns_output_contains_stepfn_deletion_exec" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    deletion_task_lambda_arns = [
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-validate-deletion-request-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-cognito-user-state-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-deactivate-chat-rooms-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-soft-delete-aurora-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-delete-dynamodb-personal-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-anonymize-chat-messages-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-hard-purge-now-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-hard-delete-user-chat-msgs-test:live",
+      "arn:aws:lambda:eu-central-1:123456789012:function:knotify-write-audit-log-test:live",
+    ]
+    deletion_sfn_log_group_arn = "arn:aws:logs:eu-central-1:123456789012:log-group:/aws/states/knotify-test-account-deletion:*"
+  }
+
+  override_resource {
+    target = aws_iam_role.stepfn_deletion_exec
+    values = {
+      arn = "arn:aws:iam::123456789012:role/knotify-test-stepfn-deletion-exec"
+    }
+    override_during = plan
+  }
+
+  assert {
+    condition     = output.role_arns["stepfn_deletion_exec"] == "arn:aws:iam::123456789012:role/knotify-test-stepfn-deletion-exec"
+    error_message = "role_arns[stepfn_deletion_exec] must be wired to aws_iam_role.stepfn_deletion_exec.arn"
+  }
+}
+
+# ===========================================================================
+# Story 9.8 — write_audit_log IAM role tests
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Test: write_audit_log role trust policy uses lambda service principal
+# Satisfies AC: Lambda execution role in infrastructure/modules/iam_roles/
+# ---------------------------------------------------------------------------
+run "write_audit_log_role_uses_lambda_trust_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = aws_iam_role.write_audit_log.name == "knotify-test-write-audit-log"
+    error_message = "write_audit_log role name must be knotify-<env>-write-audit-log"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test: write_audit_log role has AWSLambdaBasicExecutionRole attached
+# Satisfies AC: Lambda runs OUTSIDE the VPC (no VPC endpoint needed for DynamoDB-only)
+# ---------------------------------------------------------------------------
+run "write_audit_log_role_has_basic_execution_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy_attachment.write_audit_log_basic_execution.policy_arn == "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+    error_message = "write_audit_log role must attach AWSLambdaBasicExecutionRole (not VPC access — runs outside VPC)"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test: write_audit_log DynamoDB policy allows PutItem on account_deletion_audit
+# Satisfies AC: least-privilege DynamoDB PutItem on account_deletion_audit only
+# Default fallback wildcard used here (no real table ARN passed)
+# ---------------------------------------------------------------------------
+run "write_audit_log_dynamodb_policy_putitem_only" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.write_audit_log_dynamodb.name == "write-audit-log-dynamodb"
+    error_message = "write_audit_log DynamoDB inline policy must be named write-audit-log-dynamodb"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.write_audit_log_dynamodb.role == aws_iam_role.write_audit_log.name
+    error_message = "write_audit_log DynamoDB inline policy must be attached to write_audit_log role"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test: write_audit_log DynamoDB policy uses scoped ARN when provided
+# Satisfies AC: real table ARN is used when var.account_deletion_audit_table_arn is non-empty
+# ---------------------------------------------------------------------------
+run "write_audit_log_dynamodb_policy_uses_scoped_arn_when_provided" {
+  command = plan
+
+  variables {
+    environment                      = "test"
+    aurora_master_user_secret_arn    = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    account_deletion_audit_table_arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/account_deletion_audit"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.write_audit_log_dynamodb.role == aws_iam_role.write_audit_log.name
+    error_message = "write_audit_log DynamoDB inline policy must be attached to write_audit_log role when real ARN provided"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test: role_arns output contains write_audit_log
+# Satisfies AC: root modules can reference module.iam_roles.role_arns["write_audit_log"]
+# ---------------------------------------------------------------------------
+run "role_arns_output_contains_write_audit_log" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  override_resource {
+    target = aws_iam_role.write_audit_log
+    values = {
+      arn = "arn:aws:iam::123456789012:role/knotify-test-write-audit-log"
+    }
+    override_during = plan
+  }
+
+  assert {
+    condition     = output.role_arns["write_audit_log"] == "arn:aws:iam::123456789012:role/knotify-test-write-audit-log"
+    error_message = "role_arns[write_audit_log] must be wired to aws_iam_role.write_audit_log.arn"
+  }
+}
+
+# ===========================================================================
+# Story 9.3 — cognito_user_state IAM role tests
+#
+# Dedicated Lambda execution role for the cognito_user_state Lambda.
+# Trust principal: lambda.amazonaws.com
+# Managed policy: AWSLambdaBasicExecutionRole (runs OUTSIDE the VPC — no ENI)
+# Inline policy: cognito-idp:AdminDisableUser + AdminDeleteUser + AdminGetUser
+#                scoped to the project's Cognito user pool ARN.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Test: cognito_user_state role uses Lambda trust policy
+#
+# Satisfies AC: "The Lambda's IAM role needs cognito-idp:AdminDisableUser,
+#               cognito-idp:AdminDeleteUser, and cognito-idp:AdminGetUser"
+# ---------------------------------------------------------------------------
+run "cognito_user_state_role_uses_lambda_trust_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    cognito_user_pool_arn         = "arn:aws:cognito-idp:eu-central-1:123456789012:userpool/eu-central-1_TESTPOOL"
+  }
+
+  assert {
+    condition     = aws_iam_role.cognito_user_state.name == "knotify-test-cognito-user-state"
+    error_message = "cognito_user_state role name must be knotify-<env>-cognito-user-state"
+  }
+
+  assert {
+    condition     = aws_iam_role.cognito_user_state.assume_role_policy != ""
+    error_message = "cognito_user_state assume_role_policy must not be empty"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test: cognito_user_state role has AWSLambdaBasicExecutionRole attached
+#
+# Satisfies AC: Lambda runs OUTSIDE the VPC (Cognito IDP is a public endpoint,
+# no VPC endpoint required — consistent with write_audit_log and push_fanout).
+# ---------------------------------------------------------------------------
+run "cognito_user_state_role_has_basic_execution_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    cognito_user_pool_arn         = "arn:aws:cognito-idp:eu-central-1:123456789012:userpool/eu-central-1_TESTPOOL"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy_attachment.cognito_user_state_basic_execution.policy_arn == "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+    error_message = "cognito_user_state role must attach AWSLambdaBasicExecutionRole (not VPC access — runs outside VPC)"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test: cognito_user_state Cognito IDP inline policy exists and is wired
+#
+# Satisfies AC: "cognito-idp:AdminDisableUser, cognito-idp:AdminDeleteUser,
+#               and cognito-idp:AdminGetUser scoped to the project's Cognito
+#               user pool ARN"
+# ---------------------------------------------------------------------------
+run "cognito_user_state_cognito_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    cognito_user_pool_arn         = "arn:aws:cognito-idp:eu-central-1:123456789012:userpool/eu-central-1_TESTPOOL"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.cognito_user_state_cognito.name == "cognito-user-state-cognito"
+    error_message = "cognito_user_state Cognito inline policy must be named cognito-user-state-cognito"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.cognito_user_state_cognito.role == aws_iam_role.cognito_user_state.name
+    error_message = "cognito_user_state Cognito inline policy must be attached to the cognito_user_state role"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test: cognito_user_state Cognito policy accepts real user pool ARN
+#
+# Satisfies AC: "scoped to the project's Cognito user pool ARN" — when a
+# real ARN is supplied via var.cognito_user_pool_arn, validate passes
+# with the exact ARN (not the wildcard fallback).
+# ---------------------------------------------------------------------------
+run "cognito_user_state_cognito_policy_accepts_real_user_pool_arn" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    cognito_user_pool_arn         = "arn:aws:cognito-idp:eu-central-1:123456789012:userpool/eu-central-1_REALPOOL"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.cognito_user_state_cognito.name == "cognito-user-state-cognito"
+    error_message = "cognito_user_state Cognito inline policy must exist when real user pool ARN provided"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.cognito_user_state_cognito.role == aws_iam_role.cognito_user_state.name
+    error_message = "cognito_user_state Cognito inline policy must be attached to the role when real user pool ARN provided"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test: role_arns output map contains cognito_user_state
+#
+# Satisfies the module output shape requirement so root modules can reference
+# module.iam_roles.role_arns["cognito_user_state"] to wire the Lambda role.
+# ---------------------------------------------------------------------------
+run "role_arns_output_contains_cognito_user_state" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    cognito_user_pool_arn         = "arn:aws:cognito-idp:eu-central-1:123456789012:userpool/eu-central-1_TESTPOOL"
+  }
+
+  override_resource {
+    target = aws_iam_role.cognito_user_state
+    values = {
+      arn = "arn:aws:iam::123456789012:role/knotify-test-cognito-user-state"
+    }
+    override_during = plan
+  }
+
+  assert {
+    condition     = output.role_arns["cognito_user_state"] == "arn:aws:iam::123456789012:role/knotify-test-cognito-user-state"
+    error_message = "role_arns[cognito_user_state] must be wired to aws_iam_role.cognito_user_state.arn"
+  }
+}
+
+# ===========================================================================
+# Story 9.4 — deactivate_chat_rooms IAM role tests
+# ===========================================================================
+
+run "deactivate_chat_rooms_role_uses_lambda_trust_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = can(aws_iam_role.deactivate_chat_rooms.name)
+    error_message = "deactivate_chat_rooms role must be declared"
+  }
+}
+
+run "deactivate_chat_rooms_role_has_basic_execution_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy_attachment.deactivate_chat_rooms_basic_execution.policy_arn == "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+    error_message = "deactivate_chat_rooms must attach AWSLambdaBasicExecutionRole (no VPC access — runs outside VPC)"
+  }
+}
+
+run "deactivate_chat_rooms_dynamodb_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = can(aws_iam_role_policy.deactivate_chat_rooms_dynamodb.name)
+    error_message = "deactivate_chat_rooms dynamodb inline policy must be declared"
+  }
+}
+
+run "role_arns_output_contains_deactivate_chat_rooms" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  override_resource {
+    target = aws_iam_role.deactivate_chat_rooms
+    values = {
+      arn = "arn:aws:iam::123456789012:role/knotify-test-deactivate-chat-rooms"
+    }
+    override_during = plan
+  }
+
+  assert {
+    condition     = output.role_arns["deactivate_chat_rooms"] == "arn:aws:iam::123456789012:role/knotify-test-deactivate-chat-rooms"
+    error_message = "role_arns[deactivate_chat_rooms] must be wired to aws_iam_role.deactivate_chat_rooms.arn"
+  }
+}
+
+# ===========================================================================
+# Tests: anonymize_chat_messages role — story 9.6
+# ===========================================================================
+
+run "anonymize_chat_messages_role_uses_lambda_trust_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = can(aws_iam_role.anonymize_chat_messages.name)
+    error_message = "anonymize_chat_messages role must be declared"
+  }
+}
+
+run "anonymize_chat_messages_role_has_basic_execution_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy_attachment.anonymize_chat_messages_basic_execution.policy_arn == "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+    error_message = "anonymize_chat_messages must attach AWSLambdaBasicExecutionRole (no VPC access — runs outside VPC)"
+  }
+}
+
+run "anonymize_chat_messages_dynamodb_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = can(aws_iam_role_policy.anonymize_chat_messages_dynamodb.name)
+    error_message = "anonymize_chat_messages dynamodb inline policy must be declared"
+  }
+}
+
+run "role_arns_output_contains_anonymize_chat_messages" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  override_resource {
+    target = aws_iam_role.anonymize_chat_messages
+    values = {
+      arn = "arn:aws:iam::123456789012:role/knotify-test-anonymize-chat-messages"
+    }
+    override_during = plan
+  }
+
+  assert {
+    condition     = output.role_arns["anonymize_chat_messages"] == "arn:aws:iam::123456789012:role/knotify-test-anonymize-chat-messages"
+    error_message = "role_arns[anonymize_chat_messages] must be wired to aws_iam_role.anonymize_chat_messages.arn"
+  }
+}
+
+# ===========================================================================
+# Story 9.7 — delete_dynamodb_personal_data role tests
+# ===========================================================================
+
+run "delete_dynamodb_personal_data_role_uses_lambda_trust_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = can(aws_iam_role.delete_dynamodb_personal_data.name)
+    error_message = "delete_dynamodb_personal_data role must be declared"
+  }
+}
+
+run "delete_dynamodb_personal_data_role_has_basic_execution_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy_attachment.delete_dynamodb_personal_data_basic_execution.policy_arn == "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+    error_message = "delete_dynamodb_personal_data must attach AWSLambdaBasicExecutionRole (no VPC access — runs outside VPC)"
+  }
+}
+
+run "delete_dynamodb_personal_data_dynamodb_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = can(aws_iam_role_policy.delete_dynamodb_personal_data_dynamodb.name)
+    error_message = "delete_dynamodb_personal_data dynamodb inline policy must be declared"
+  }
+}
+
+run "role_arns_output_contains_delete_dynamodb_personal_data" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  override_resource {
+    target = aws_iam_role.delete_dynamodb_personal_data
+    values = {
+      arn = "arn:aws:iam::123456789012:role/knotify-test-delete-dynamodb-personal-data"
+    }
+    override_during = plan
+  }
+
+  assert {
+    condition     = output.role_arns["delete_dynamodb_personal_data"] == "arn:aws:iam::123456789012:role/knotify-test-delete-dynamodb-personal-data"
+    error_message = "role_arns[delete_dynamodb_personal_data] must be wired to aws_iam_role.delete_dynamodb_personal_data.arn"
+  }
+}
+
+# ===========================================================================
+# Story 9.2 — validate_deletion_request IAM role tests
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Test: validate_deletion_request role exists with lambda trust policy
+# ---------------------------------------------------------------------------
+run "validate_deletion_request_role_uses_lambda_trust_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = can(aws_iam_role.validate_deletion_request.name)
+    error_message = "validate_deletion_request role must be declared"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test: validate_deletion_request attaches AWSLambdaBasicExecutionRole (no VPC)
+# ---------------------------------------------------------------------------
+run "validate_deletion_request_role_has_basic_execution_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy_attachment.validate_deletion_request_basic_execution.policy_arn == "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+    error_message = "validate_deletion_request must attach AWSLambdaBasicExecutionRole (no VPC access — runs outside VPC)"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test: validate_deletion_request has DynamoDB inline policy declared
+# ---------------------------------------------------------------------------
+run "validate_deletion_request_dynamodb_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = can(aws_iam_role_policy.validate_deletion_request_dynamodb.name)
+    error_message = "validate_deletion_request dynamodb inline policy must be declared"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test: role_arns output contains validate_deletion_request
+# ---------------------------------------------------------------------------
+run "role_arns_output_contains_validate_deletion_request" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  override_resource {
+    target = aws_iam_role.validate_deletion_request
+    values = {
+      arn = "arn:aws:iam::123456789012:role/knotify-test-validate-deletion-request"
+    }
+    override_during = plan
+  }
+
+  assert {
+    condition     = output.role_arns["validate_deletion_request"] == "arn:aws:iam::123456789012:role/knotify-test-validate-deletion-request"
+    error_message = "role_arns[validate_deletion_request] must be wired to aws_iam_role.validate_deletion_request.arn"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Tests: deletion_initiator IAM role (story 9.9)
+# ---------------------------------------------------------------------------
+
+run "deletion_initiator_role_uses_lambda_trust_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = can(aws_iam_role.deletion_initiator.assume_role_policy)
+    error_message = "deletion_initiator role must declare an assume_role_policy"
+  }
+}
+
+run "deletion_initiator_role_has_basic_execution_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy_attachment.deletion_initiator_basic_execution.policy_arn == "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+    error_message = "deletion_initiator must attach AWSLambdaBasicExecutionRole (Lambda runs outside VPC)"
+  }
+}
+
+run "deletion_initiator_stepfunctions_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = can(aws_iam_role_policy.deletion_initiator_stepfunctions.name)
+    error_message = "deletion_initiator stepfunctions inline policy must be declared"
+  }
+}
+
+run "role_arns_output_contains_deletion_initiator" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  override_resource {
+    target = aws_iam_role.deletion_initiator
+    values = {
+      arn = "arn:aws:iam::123456789012:role/knotify-test-deletion-initiator"
+    }
+    override_during = plan
+  }
+
+  assert {
+    condition     = output.role_arns["deletion_initiator"] == "arn:aws:iam::123456789012:role/knotify-test-deletion-initiator"
+    error_message = "role_arns[deletion_initiator] must be wired to aws_iam_role.deletion_initiator.arn"
+  }
+}
+
+# ===========================================================================
+# Story 9.12 — hard_delete_user_chat_messages role tests
+# ===========================================================================
+
+run "hard_delete_user_chat_messages_role_uses_lambda_trust_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = can(aws_iam_role.hard_delete_user_chat_messages.name)
+    error_message = "hard_delete_user_chat_messages role must be declared"
+  }
+}
+
+run "hard_delete_user_chat_messages_role_has_basic_execution_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy_attachment.hard_delete_user_chat_messages_basic_execution.policy_arn == "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+    error_message = "hard_delete_user_chat_messages must attach AWSLambdaBasicExecutionRole (no VPC access — runs outside VPC)"
+  }
+}
+
+run "hard_delete_user_chat_messages_dynamodb_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = can(aws_iam_role_policy.hard_delete_user_chat_messages_dynamodb.name)
+    error_message = "hard_delete_user_chat_messages dynamodb inline policy must be declared"
+  }
+}
+
+run "role_arns_output_contains_hard_delete_user_chat_messages" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  override_resource {
+    target = aws_iam_role.hard_delete_user_chat_messages
+    values = {
+      arn = "arn:aws:iam::123456789012:role/knotify-test-hard-delete-user-chat-messages"
+    }
+    override_during = plan
+  }
+
+  assert {
+    condition     = output.role_arns["hard_delete_user_chat_messages"] == "arn:aws:iam::123456789012:role/knotify-test-hard-delete-user-chat-messages"
+    error_message = "role_arns[hard_delete_user_chat_messages] must be wired to aws_iam_role.hard_delete_user_chat_messages.arn"
+  }
+}

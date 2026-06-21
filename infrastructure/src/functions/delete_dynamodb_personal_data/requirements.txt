@@ -1,0 +1,7 @@
+# delete_dynamodb_personal_data Lambda runtime dependencies
+#
+# This Lambda only needs boto3 (provided by the Lambda runtime) and
+# Python stdlib (logging, os).
+#
+# No Aurora access (psycopg2 not needed).
+# No Lambda layers needed — DynamoDB calls only (Notifications, PushNotificationTokens).
