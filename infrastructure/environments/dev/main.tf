@@ -1443,3 +1443,35 @@ module "stale_token_cleanup" {
   role_arn               = module.iam_roles.role_arns["stale_token_cleanup"]
   table_push_tokens_name = module.dynamodb.push_tokens_table_name
 }
+
+# ---------------------------------------------------------------------------
+# hard_purge Lambda — story 9.11
+#
+# Daily EventBridge cron: DELETE FROM users WHERE deleted_at IS NOT NULL
+# AND deleted_at < NOW() - INTERVAL '30 days'. Aurora ON DELETE CASCADE
+# removes rows in siblings, friendships, friend_requests, bookmarks, blocks.
+#
+# Also supports per-user invocation (user_id input) so the purge_immediately
+# branch in the Step Functions state machine (story 9.1) can invoke it as
+# HardPurgeNow immediately after SoftDeleteAurora, bypassing the 30-day window.
+#
+# Placement: INSIDE the VPC — Aurora is VPC-private.
+# Role: aurora_writer (VPC access + Secrets Manager GetSecretValue).
+# ---------------------------------------------------------------------------
+
+module "hard_purge" {
+  source = "../../modules/hard_purge"
+
+  function_name  = "knotify-hard-purge-${var.environment}"
+  filename       = "${path.module}/../../../build/hard_purge.zip"
+  role_arn       = module.iam_roles.role_arns["aurora_writer"]
+  layers         = [module.layers.db_layer_arn, module.layers.obs_layer_arn]
+  db_secret_name = module.aurora.app_user_secret_name
+  aurora_host    = module.aurora.cluster_endpoint
+  aurora_port    = tostring(module.aurora.cluster_port)
+  aurora_dbname  = module.aurora.database_name
+  vpc_config = {
+    subnet_ids         = module.networking.private_subnet_ids
+    security_group_ids = [module.networking.lambda_security_group_id]
+  }
+}
