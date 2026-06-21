@@ -1,13 +1,11 @@
 """
 Unit tests for story 9.11 — hard_purge Lambda handler.
 
-TDD: these tests are written BEFORE handler.py to drive the implementation.
-
 Acceptance criteria tested:
-  A. Scheduled mode (no user_id in event): executes DELETE FROM users
-     WHERE deleted_at IS NOT NULL AND deleted_at < NOW() - INTERVAL '30 days'
-  B. Per-user mode (user_id present in event): executes DELETE FROM users
-     WHERE user_id = :id AND deleted_at IS NOT NULL  (30-day window dropped)
+  A. Scheduled mode (no user_id in event): SELECT eligible user_ids with a
+     30-day age guard, then DELETE each under an RLS context.
+  B. Per-user mode (user_id present in event): single DELETE under an RLS
+     context bound to that user.  30-day window dropped.
   C. Per-user mode RETAINS the soft-delete guard (deleted_at IS NOT NULL):
      a user who has NOT been soft-deleted is NOT deleted; rows_affected=0
   D. Return shape: {"rows_affected": <int>, "mode": "scheduled"|"per_user"}
@@ -15,12 +13,14 @@ Acceptance criteria tested:
   F. handler returns rows_affected=0 for a per-user invocation on a non-soft-deleted
      user and exits cleanly (no exception raised — rows_affected=0 is the signal)
   G. DB errors propagate — never swallowed
-  H. Per-user query uses a parameterised binding (no string interpolation)
-  I. Connection is rolled back on exception (no partial state left open)
+  H. Per-user DELETE uses a parameterised binding (no string interpolation)
+  I. Each DELETE runs inside knotify_db.rls_context with the target user_id —
+     this is what the migration 0017 DELETE policy requires.
 """
 
 from __future__ import annotations
 
+import contextlib
 import os
 from unittest.mock import MagicMock, patch
 
@@ -58,25 +58,39 @@ def _make_per_user_event(user_id: str = "550e8400-e29b-41d4-a716-446655440000") 
 
 
 @pytest.fixture()
-def mock_conn():
+def mock_conn(monkeypatch):
     """
-    Patch handler._get_conn so no real DB call is made and the module-level
-    connection cache is bypassed entirely.
+    Patch handler._get_conn so no real DB call is made.
 
-    The cursor is returned from conn.cursor() called as a context manager
-    (`with conn.cursor() as cur:`).  mock_cursor is both the return value
-    of cursor() and the context-manager __enter__ value.
+    Also patches knotify_db.rls_context to a no-op context manager so the
+    unit tests focus on the SQL the handler issues, not the transaction
+    bookkeeping (which is exercised end-to-end by the integration tests).
+
+    The cursor returned from `with conn.cursor() as cur:` is a single
+    MagicMock — call_args / call_args_list capture every SQL the handler
+    executes across all `with conn.cursor()` blocks.
 
     Default rowcount=1 (DELETE matched one row).
+    Default fetchall=[] (no eligible users in scheduled mode).
     """
     mock_cursor = MagicMock()
     mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
     mock_cursor.__exit__ = MagicMock(return_value=False)
     mock_cursor.rowcount = 1
+    mock_cursor.fetchall.return_value = []
 
     mock_connection = MagicMock()
     mock_connection.closed = False
     mock_connection.cursor.return_value = mock_cursor
+
+    @contextlib.contextmanager
+    def _noop_rls_context(conn, user_id, user_sex):
+        yield
+
+    monkeypatch.setattr(
+        "hard_purge.handler.knotify_db.rls_context",
+        _noop_rls_context,
+    )
 
     with patch(
         "hard_purge.handler._get_conn",
@@ -85,37 +99,46 @@ def mock_conn():
         yield mock_connection, mock_cursor
 
 
+def _executed_sql_strings(mock_cursor) -> list[str]:
+    """Return every SQL string passed to cursor.execute, lowercased."""
+    return [
+        call.args[0].lower()
+        for call in mock_cursor.execute.call_args_list
+        if call.args  # defensive: ignore calls with no positional args
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Test A: scheduled mode SQL guards
 # ---------------------------------------------------------------------------
 
 
-def test_given_empty_event_when_handler_called_then_scheduled_sql_has_age_guard(
+def test_given_empty_event_when_handler_called_then_eligibility_select_has_age_guard(
     mock_conn,
 ):
     """
-    AC-A: empty event → scheduled mode → SQL must include
-    deleted_at IS NOT NULL AND deleted_at < NOW() - INTERVAL '30 days'
+    AC-A: empty event → scheduled mode → the eligibility SELECT must include
+    deleted_at IS NOT NULL AND deleted_at < NOW() - INTERVAL '30 days'.
     """
     from hard_purge import handler
 
-    mock_connection, mock_cursor = mock_conn
+    _mock_connection, mock_cursor = mock_conn
     handler.handler(_make_scheduled_event(), None)
 
-    assert mock_cursor.execute.called, "cursor.execute was never called"
+    sqls = _executed_sql_strings(mock_cursor)
 
-    executed_sql: str = mock_cursor.execute.call_args[0][0].lower()
-
-    assert "deleted_at is not null" in executed_sql, (
-        "Scheduled SQL must include 'deleted_at IS NOT NULL'"
-    )
-    assert "interval '30 days'" in executed_sql, (
-        "Scheduled SQL must include INTERVAL '30 days' age guard"
+    assert any(
+        "deleted_at is not null" in s and "interval '30 days'" in s
+        for s in sqls
+    ), (
+        "Scheduled mode must run an eligibility SELECT with both "
+        "'deleted_at IS NOT NULL' and INTERVAL '30 days'. Executed SQLs: "
+        f"{sqls}"
     )
 
 
 # ---------------------------------------------------------------------------
-# Test B: per-user mode SQL drops the 30-day guard and uses a parameterised user_id
+# Test B: per-user mode SQL drops the 30-day guard, retains soft-delete guard
 # ---------------------------------------------------------------------------
 
 
@@ -123,21 +146,25 @@ def test_given_user_id_event_when_handler_called_then_per_user_sql_has_no_age_gu
     mock_conn,
 ):
     """
-    AC-B: per-user mode SQL must NOT contain the 30-day interval guard,
-    but MUST contain the deleted_at IS NOT NULL soft-delete guard.
+    AC-B + AC-C: per-user mode DELETE must NOT contain the 30-day interval
+    guard, but MUST contain the deleted_at IS NOT NULL soft-delete guard.
     """
     from hard_purge import handler
 
-    mock_connection, mock_cursor = mock_conn
+    _mock_connection, mock_cursor = mock_conn
     handler.handler(_make_per_user_event(), None)
 
-    executed_sql: str = mock_cursor.execute.call_args[0][0].lower()
+    sqls = _executed_sql_strings(mock_cursor)
 
-    assert "interval '30 days'" not in executed_sql, (
-        "Per-user SQL must NOT include 30-day interval guard"
+    assert not any("interval '30 days'" in s for s in sqls), (
+        f"Per-user SQL must NOT include 30-day interval guard. SQLs: {sqls}"
     )
-    assert "deleted_at is not null" in executed_sql, (
-        "Per-user SQL must RETAIN the soft-delete guard (deleted_at IS NOT NULL)"
+    assert any(
+        "delete from users" in s and "deleted_at is not null" in s
+        for s in sqls
+    ), (
+        "Per-user SQL must DELETE FROM users with the soft-delete guard. "
+        f"SQLs: {sqls}"
     )
 
 
@@ -156,7 +183,7 @@ def test_given_non_soft_deleted_user_when_per_user_handler_called_then_rows_affe
     """
     from hard_purge import handler
 
-    mock_connection, mock_cursor = mock_conn
+    _mock_connection, mock_cursor = mock_conn
     mock_cursor.rowcount = 0  # simulate: WHERE guard prevented deletion
 
     result = handler.handler(_make_per_user_event(), None)
@@ -164,7 +191,6 @@ def test_given_non_soft_deleted_user_when_per_user_handler_called_then_rows_affe
     assert result["rows_affected"] == 0, (
         f"Expected rows_affected=0 for non-soft-deleted user, got {result['rows_affected']}"
     )
-    # Must not raise — clean exit is the contract
     assert result["mode"] == "per_user"
 
 
@@ -173,21 +199,43 @@ def test_given_non_soft_deleted_user_when_per_user_handler_called_then_rows_affe
 # ---------------------------------------------------------------------------
 
 
-def test_given_empty_event_when_handler_called_then_returns_scheduled_mode(
+def test_given_empty_event_with_eligible_users_when_handler_called_then_total_rows_returned(
     mock_conn,
 ):
     """
-    AC-D + AC-E: scheduled invocation must return
-    {"rows_affected": <int>, "mode": "scheduled"}.
+    AC-D + AC-E: scheduled invocation returns the sum of per-row deletions,
+    with mode='scheduled'.  Three eligible users → three DELETEs → rows_affected=3.
     """
     from hard_purge import handler
 
-    mock_connection, mock_cursor = mock_conn
-    mock_cursor.rowcount = 3  # simulate 3 stale rows deleted
+    _mock_connection, mock_cursor = mock_conn
+    mock_cursor.fetchall.return_value = [
+        ("aaaaaaaa-0000-0000-0000-000000000001",),
+        ("aaaaaaaa-0000-0000-0000-000000000002",),
+        ("aaaaaaaa-0000-0000-0000-000000000003",),
+    ]
+    mock_cursor.rowcount = 1  # each DELETE removes 1 row
 
     result = handler.handler(_make_scheduled_event(), None)
 
     assert result["rows_affected"] == 3
+    assert result["mode"] == "scheduled"
+
+
+def test_given_empty_event_with_no_eligible_users_when_handler_called_then_zero_rows(
+    mock_conn,
+):
+    """
+    Empty eligibility set → no DELETEs → rows_affected=0, mode='scheduled'.
+    """
+    from hard_purge import handler
+
+    _mock_connection, mock_cursor = mock_conn
+    mock_cursor.fetchall.return_value = []  # no eligible users
+
+    result = handler.handler(_make_scheduled_event(), None)
+
+    assert result["rows_affected"] == 0
     assert result["mode"] == "scheduled"
 
 
@@ -200,7 +248,7 @@ def test_given_user_id_event_when_handler_called_then_returns_per_user_mode(
     """
     from hard_purge import handler
 
-    mock_connection, mock_cursor = mock_conn
+    _mock_connection, mock_cursor = mock_conn
     mock_cursor.rowcount = 1
 
     result = handler.handler(_make_per_user_event(user_id="aaaaaaaa-0000-0000-0000-000000000001"), None)
@@ -223,15 +271,15 @@ def test_given_db_error_when_handler_called_then_exception_propagates(mock_conn)
 
     from hard_purge import handler
 
-    mock_connection, mock_cursor = mock_conn
+    _mock_connection, mock_cursor = mock_conn
     mock_cursor.execute.side_effect = psycopg2.OperationalError("connection lost")
 
     with pytest.raises(psycopg2.OperationalError):
-        handler.handler(_make_scheduled_event(), None)
+        handler.handler(_make_per_user_event(), None)
 
 
 # ---------------------------------------------------------------------------
-# Test H: per-user query is parameterised (no string interpolation)
+# Test H: per-user DELETE is parameterised (no string interpolation)
 # ---------------------------------------------------------------------------
 
 
@@ -244,22 +292,25 @@ def test_given_per_user_event_when_execute_called_then_user_id_is_passed_as_para
     """
     from hard_purge import handler
 
-    mock_connection, mock_cursor = mock_conn
+    _mock_connection, mock_cursor = mock_conn
     test_user_id = "dddddddd-1234-1234-1234-dddddddddddd"
 
     handler.handler(_make_per_user_event(user_id=test_user_id), None)
 
-    call_args = mock_cursor.execute.call_args
-    assert len(call_args[0]) >= 2, (
-        "cursor.execute must be called with a params argument when in per-user mode"
-    )
+    delete_calls = [
+        call
+        for call in mock_cursor.execute.call_args_list
+        if call.args and "delete from users" in call.args[0].lower()
+    ]
+    assert delete_calls, "expected at least one DELETE FROM users execute call"
 
-    sql_string: str = call_args[0][0]
-    params = call_args[0][1]
+    sql_string: str = delete_calls[-1].args[0]
+    params = delete_calls[-1].args[1] if len(delete_calls[-1].args) >= 2 else None
 
     assert test_user_id not in sql_string, (
         "user_id must NOT be interpolated into the SQL string (SQL injection risk)"
     )
+    assert params is not None, "DELETE must be invoked with bind params"
     if isinstance(params, dict):
         assert test_user_id in params.values(), "user_id not found in params dict values"
     else:
@@ -267,50 +318,47 @@ def test_given_per_user_event_when_execute_called_then_user_id_is_passed_as_para
 
 
 # ---------------------------------------------------------------------------
-# Test I: connection rolled back on exception
+# Test I: per-user DELETE runs inside rls_context with the target user_id
 # ---------------------------------------------------------------------------
 
 
-def test_given_db_error_when_handler_called_then_connection_is_rolled_back(mock_conn):
-    """
-    AC-I: connection must be rolled back if execute raises so no open
-    transaction is left on the cached connection object.
-    """
-    import psycopg2
-
-    from hard_purge import handler
-
-    mock_connection, mock_cursor = mock_conn
-    mock_cursor.execute.side_effect = psycopg2.OperationalError("boom")
-
-    with pytest.raises(psycopg2.OperationalError):
-        handler.handler(_make_scheduled_event(), None)
-
-    mock_connection.rollback.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
-# Test: scheduled mode does NOT pass bind params (no user_id to bind)
-# ---------------------------------------------------------------------------
-
-
-def test_given_scheduled_event_when_handler_called_then_no_bind_params_needed(
-    mock_conn,
+def test_given_per_user_event_when_handler_called_then_rls_context_bound_to_target_user(
+    monkeypatch,
 ):
     """
-    Scheduled SQL has no bind variables — user_id is not in play.
-    execute is called with the SQL string only (no second argument), OR
-    with an empty params tuple.  Either is acceptable.
+    AC-I: the DELETE must run inside knotify_db.rls_context(conn, user_id, "")
+    so the migration 0017 DELETE policy
+    (user_id = current_setting('app.requesting_user_id', true)::uuid) matches.
     """
     from hard_purge import handler
 
-    mock_connection, mock_cursor = mock_conn
-    handler.handler(_make_scheduled_event(), None)
+    mock_cursor = MagicMock()
+    mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+    mock_cursor.__exit__ = MagicMock(return_value=False)
+    mock_cursor.rowcount = 1
+    mock_cursor.fetchall.return_value = []
 
-    call_args = mock_cursor.execute.call_args[0]
-    # Either no second arg, or second arg is empty (None / () / []).
-    if len(call_args) >= 2:
-        params = call_args[1]
-        assert not params, (
-            "Scheduled mode must not pass bind params to execute"
-        )
+    mock_connection = MagicMock()
+    mock_connection.closed = False
+    mock_connection.cursor.return_value = mock_cursor
+
+    rls_calls: list[tuple] = []
+
+    @contextlib.contextmanager
+    def _capturing_rls_context(conn, user_id, user_sex):
+        rls_calls.append((user_id, user_sex))
+        yield
+
+    monkeypatch.setattr(
+        "hard_purge.handler.knotify_db.rls_context",
+        _capturing_rls_context,
+    )
+
+    target_user = "11111111-2222-3333-4444-555555555555"
+    with patch("hard_purge.handler._get_conn", return_value=mock_connection):
+        handler.handler(_make_per_user_event(user_id=target_user), None)
+
+    assert (target_user, "") in rls_calls, (
+        f"DELETE must be wrapped in rls_context({target_user!r}, ''). "
+        f"rls_context calls: {rls_calls}"
+    )

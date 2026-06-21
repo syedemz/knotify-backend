@@ -259,17 +259,28 @@ def test_given_handler_when_execute_called_then_user_id_is_passed_as_parameter(
 # ---------------------------------------------------------------------------
 
 
-def test_given_db_error_when_handler_called_then_connection_is_rolled_back(mock_conn):
+def test_given_db_error_during_update_when_handler_called_then_connection_is_rolled_back(mock_conn):
     """
-    The connection must be rolled back if execute raises so that any partial
-    state (BEGIN was called) does not leave an open transaction on the connection.
+    The connection must be rolled back if the UPDATE raises so that the
+    BEGIN/SET-LOCAL transaction state opened by knotify_db.rls_context does
+    not leak across invocations.  The rollback is owned by rls_context, but
+    the contract this test enforces (rollback called) holds either way.
     """
     import psycopg2
 
     from soft_delete_aurora import handler
 
     mock_connection, mock_cursor = mock_conn
-    mock_cursor.execute.side_effect = psycopg2.OperationalError("boom")
+
+    def _side_effect(sql, *args, **kwargs):
+        s = sql.lower()
+        # rls_context's BEGIN and SET LOCAL must succeed so the inner
+        # try/except is reached; only the actual UPDATE fails.
+        if "update users" in s:
+            raise psycopg2.OperationalError("boom")
+        return None
+
+    mock_cursor.execute.side_effect = _side_effect
 
     with pytest.raises(psycopg2.OperationalError):
         handler.handler(_make_event(), None)
