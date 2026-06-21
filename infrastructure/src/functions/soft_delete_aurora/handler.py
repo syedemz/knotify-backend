@@ -102,14 +102,22 @@ def handler(event: dict, context: Any) -> dict:
     conn = _get_conn()
     rows_affected: int
 
+    # Migration 0007 forces RLS on the users table; the `users_opposite_sex_only`
+    # policy requires `app.requesting_user_id` (or `app.requesting_user_sex`)
+    # to be set, otherwise an UPDATE silently matches zero rows. Use the
+    # `user_id = current_setting('app.requesting_user_id')::uuid` branch by
+    # setting the GUC to the user being soft-deleted (i.e., the user is
+    # "requesting their own deletion"). user_sex is unused for this row, but
+    # must be a non-NULL string; pass "" since the row's sex column is the
+    # SAME-sex case and the != comparison is irrelevant once user_id matches.
+    conn.autocommit = False
     try:
-        conn.autocommit = False
-        with conn.cursor() as cur:
-            cur.execute(_SOFT_DELETE_SQL, (user_id,))
-            rows_affected = cur.rowcount
-        conn.commit()
+        with knotify_db.rls_context(conn, user_id, ""):
+            with conn.cursor() as cur:
+                cur.execute(_SOFT_DELETE_SQL, (user_id,))
+                rows_affected = cur.rowcount
     except Exception:
-        conn.rollback()
+        # rls_context already rolled back on exception; nothing extra to do.
         raise
 
     logger.info(

@@ -1,6 +1,6 @@
 phase: 9
 title: Account deletion (Step Functions, soft delete)
-last_updated: 2026-06-21 (post-merge hotfix: anonymize_chat_messages SK + IAM)
+last_updated: 2026-06-21 (post-merge hotfix #2: Aurora RLS + DELETE grant for soft_delete_aurora + hard_purge)
 
 context_summary: |
   Implements the account-deletion workflow per §11 of architecture.md with the §13 #8 resolution applied: soft delete (UPDATE users SET deleted_at, strip PII) with a 30-day retention before a scheduled hard purge via cascade. ChatMessages are anonymized rather than deleted per §13 #21 — sender_id rewritten to '[deleted-user]' while content is preserved. Step Functions Standard workflow orchestrates the steps; each step is an idempotent Python 3.14 Lambda. An audit log table records initiation and completion. A purge_immediately flag supports GDPR right-to-be-forgotten by branching at workflow entry into a hard-delete path that fully removes the requester's Aurora rows, ChatMessages, and ChatRoomMembership rows. This phase ships after chat because the workflow needs to deactivate ChatRooms, anonymize/hard-delete ChatMessages, and clean ChatRoomMembership — all DynamoDB tables created in phase 2 and operated on by phase 8.
@@ -295,3 +295,53 @@ post_merge_hotfixes:
       full 34-field shape; both call sites use it. Also fixed teardown
       helper _delete_all_chat_messages to use created_at_message_id (not
       "sk") as the ChatMessages sort key.
+
+  # -------------------------------------------------------------------------
+  # Second round of post-merge hotfixes (discovered AFTER the first hotfix
+  # merged and the E2E test was re-run on 2026-06-21). The first hotfix made
+  # the Step Functions executions reach SUCCEEDED status, but the Aurora
+  # soft-delete and hard-purge were silently no-ops because of RLS + missing
+  # DELETE grant. Bundled in `hotfix/aurora-deletion-rls-grants`.
+  # -------------------------------------------------------------------------
+
+  - title: Story 9.5 — soft_delete_aurora UPDATE silently filtered to 0 rows by RLS
+    severity: high (every soft-delete returned SUCCEEDED but the row's deleted_at stayed NULL)
+    root_cause: |
+      Migration 0007 declared `users_update_own_row` (USING user_id =
+      current_setting('app.requesting_user_id')::uuid) and forces RLS on
+      the users table. The Lambda never set the GUC, so the predicate
+      evaluated to NULL → fail-closed → rowcount=0 → handler returned
+      success because rows_affected=0 is treated as "already deleted".
+      Unit tests didn't catch it because they mock the cursor; integration
+      tests didn't catch it because they pre-set the GUC via fixtures.
+    fix: |
+      soft_delete_aurora/handler.py now wraps the UPDATE in
+      knotify_db.rls_context(conn, user_id, "") so the requesting_user_id
+      branch of the policy matches the target row. user_sex="" is unused
+      for this UPDATE — the policy ignores it.
+
+  - title: Story 9.11 — hard_purge could not DELETE: no grant + no RLS DELETE policy
+    severity: high (every hard-purge path — scheduled and per-user — failed-closed)
+    root_cause: |
+      Two separate defects compounded:
+        (a) Migration 0007 deliberately withheld DELETE on the users table
+            (Aurora master could DELETE, app_user couldn't). Phase 9 needs
+            app_user to DELETE users rows.
+        (b) Migration 0007 forces RLS on users but declares no DELETE
+            policy. With FORCE ROW LEVEL SECURITY, a missing per-command
+            policy fails-closed for non-owner roles — every DELETE from
+            app_user matched zero rows.
+      Result: per-user mode raised "permission denied for table users",
+      scheduled mode silently no-op'd.
+    fix: |
+      - Migration 0017 (db/migrations/0017_grant_delete_and_rls_policy_on_users.sql)
+        GRANTs DELETE on users to app_user AND creates policy
+        users_delete_own_row with the same GUC-scoped USING predicate as
+        users_update_own_row.
+      - hard_purge/handler.py per-user mode now wraps the DELETE in
+        knotify_db.rls_context(conn, user_id, "").
+      - hard_purge/handler.py scheduled mode now (1) SELECTs eligible
+        user_ids under an RLS context with user_sex="" so the
+        sex != '' branch of users_opposite_sex_only makes all rows
+        visible, then (2) DELETEs each row in its own RLS-scoped
+        transaction. Unit tests rewritten to cover the per-row loop.
