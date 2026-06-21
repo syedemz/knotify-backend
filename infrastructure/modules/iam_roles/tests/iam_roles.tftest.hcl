@@ -1907,3 +1907,83 @@ run "role_arns_output_contains_delete_dynamodb_personal_data" {
     error_message = "role_arns[delete_dynamodb_personal_data] must be wired to aws_iam_role.delete_dynamodb_personal_data.arn"
   }
 }
+
+# ===========================================================================
+# Story 9.2 — validate_deletion_request IAM role tests
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Test: validate_deletion_request role exists with lambda trust policy
+# ---------------------------------------------------------------------------
+run "validate_deletion_request_role_uses_lambda_trust_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = can(aws_iam_role.validate_deletion_request.name)
+    error_message = "validate_deletion_request role must be declared"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test: validate_deletion_request attaches AWSLambdaBasicExecutionRole (no VPC)
+# ---------------------------------------------------------------------------
+run "validate_deletion_request_role_has_basic_execution_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy_attachment.validate_deletion_request_basic_execution.policy_arn == "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+    error_message = "validate_deletion_request must attach AWSLambdaBasicExecutionRole (no VPC access — runs outside VPC)"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test: validate_deletion_request has DynamoDB inline policy declared
+# ---------------------------------------------------------------------------
+run "validate_deletion_request_dynamodb_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = can(aws_iam_role_policy.validate_deletion_request_dynamodb.name)
+    error_message = "validate_deletion_request dynamodb inline policy must be declared"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test: role_arns output contains validate_deletion_request
+# ---------------------------------------------------------------------------
+run "role_arns_output_contains_validate_deletion_request" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  override_resource {
+    target = aws_iam_role.validate_deletion_request
+    values = {
+      arn = "arn:aws:iam::123456789012:role/knotify-test-validate-deletion-request"
+    }
+    override_during = plan
+  }
+
+  assert {
+    condition     = output.role_arns["validate_deletion_request"] == "arn:aws:iam::123456789012:role/knotify-test-validate-deletion-request"
+    error_message = "role_arns[validate_deletion_request] must be wired to aws_iam_role.validate_deletion_request.arn"
+  }
+}

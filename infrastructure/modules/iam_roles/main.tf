@@ -1551,3 +1551,59 @@ resource "aws_iam_role_policy" "delete_dynamodb_personal_data_dynamodb" {
   role   = aws_iam_role.delete_dynamodb_personal_data.name
   policy = data.aws_iam_policy_document.delete_dynamodb_personal_data_dynamodb.json
 }
+
+# ===========================================================================
+# Role: validate_deletion_request
+#
+# For the knotify-validate-deletion-request Lambda (story 9.2).
+# First task in the account-deletion Step Functions state machine.
+# Validates the deletion request: checks user_id == jwt_sub, queries the
+# audit table for an in-progress deletion, and writes a "deletion_initiated"
+# audit record.
+#
+# OUTSIDE the VPC: only touches DynamoDB (account_deletion_audit) via the
+# regional public endpoint — no Aurora, no AppSync.
+# AWSLambdaBasicExecutionRole is sufficient — no ENI attachment needed.
+# Consistent with write_audit_log, deactivate_chat_rooms, anonymize_chat_messages,
+# and delete_dynamodb_personal_data (hotfix #106 lesson).
+#
+# Least-privilege DynamoDB permissions:
+#   dynamodb:Query   — idempotency check (fetch all audit rows for user_id)
+#   dynamodb:PutItem — write the "deletion_initiated" audit record
+# Both actions scoped to account_deletion_audit only — no other tables.
+# ===========================================================================
+
+resource "aws_iam_role" "validate_deletion_request" {
+  name               = "knotify-${var.environment}-validate-deletion-request"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+# Basic Lambda execution — CloudWatch Logs only.
+# No VPC access policy: this Lambda runs OUTSIDE the VPC.
+resource "aws_iam_role_policy_attachment" "validate_deletion_request_basic_execution" {
+  role       = aws_iam_role.validate_deletion_request.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# DynamoDB Query + PutItem on account_deletion_audit.
+# Default wildcard fallback is used only in isolated IAM unit tests where
+# the dynamodb module is not wired.
+data "aws_iam_policy_document" "validate_deletion_request_dynamodb" {
+  statement {
+    sid    = "AuditTableQueryAndPutItem"
+    effect = "Allow"
+    actions = [
+      "dynamodb:Query",
+      "dynamodb:PutItem",
+    ]
+    resources = [
+      var.account_deletion_audit_table_arn != "" ? var.account_deletion_audit_table_arn : "arn:aws:dynamodb:*:*:table/account_deletion_audit",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "validate_deletion_request_dynamodb" {
+  name   = "validate-deletion-request-dynamodb"
+  role   = aws_iam_role.validate_deletion_request.name
+  policy = data.aws_iam_policy_document.validate_deletion_request_dynamodb.json
+}
