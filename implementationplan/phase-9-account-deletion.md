@@ -1,6 +1,6 @@
 phase: 9
 title: Account deletion (Step Functions, soft delete)
-last_updated: 2026-06-21 (post-merge hotfix #3: immutable-fields trigger bypass on soft-delete transition)
+last_updated: 2026-06-21 (post-merge hotfix #4: per-user sentinels for soft-delete email + username)
 
 context_summary: |
   Implements the account-deletion workflow per §11 of architecture.md with the §13 #8 resolution applied: soft delete (UPDATE users SET deleted_at, strip PII) with a 30-day retention before a scheduled hard purge via cascade. ChatMessages are anonymized rather than deleted per §13 #21 — sender_id rewritten to '[deleted-user]' while content is preserved. Step Functions Standard workflow orchestrates the steps; each step is an idempotent Python 3.14 Lambda. An audit log table records initiation and completion. A purge_immediately flag supports GDPR right-to-be-forgotten by branching at workflow entry into a hard-delete path that fully removes the requester's Aurora rows, ChatMessages, and ChatRoomMembership rows. This phase ships after chat because the workflow needs to deactivate ChatRooms, anonymize/hard-delete ChatMessages, and clean ChatRoomMembership — all DynamoDB tables created in phase 2 and operated on by phase 8.
@@ -78,7 +78,7 @@ stories:
     depends_on: []
     tracking_issue: 139
     acceptance_criteria:
-      - Lambda runs the §11.1 step-2 SQL: UPDATE users SET deleted_at=NOW(), email=NULL, phone_number=NULL, photo_url=NULL, chosen_profile_avatar=NULL, preferences='{}', preference_vector=NULL, username='[deleted-user]', first_name='Deleted', last_name='User' WHERE user_id=:id AND deleted_at IS NULL
+      - Lambda runs the §11.1 step-2 SQL: UPDATE users SET deleted_at=NOW(), email='deleted-' || user_id::text || '@deleted.knotify.local', phone_number=NULL, photo_url=NULL, chosen_profile_avatar=NULL, preferences='{}', preference_vector=NULL, username='[deleted-' || user_id::text || ']', first_name='Deleted', last_name='User' WHERE user_id=:id AND deleted_at IS NULL. Per-user sentinels (vs literal NULL / '[deleted-user]') are required because (a) the email column is NOT NULL + UNIQUE + email_format CHECK (migration 0002) and (b) lower(username) has a partial UNIQUE index WHERE username IS NOT NULL (migration 0010); embedding the row's own user_id keeps both columns collision-free across multiple deletions while still scrubbing the human-meaningful PII
       - Uses the existing db layer at infrastructure/src/layers/db/ for psycopg; reads Aurora credentials from the existing Secrets Manager pattern used by other aurora-writer Lambdas (no new secret machinery)
       - The UPDATE is conditional on deleted_at IS NULL so re-runs are no-ops (idempotent — repeat invocations return success with rows_affected=0)
       - Integration test: invoke on a fresh user, assert the row has deleted_at set and PII fields nulled, AND the friendships rows still exist; invoke again, no change
@@ -370,3 +370,36 @@ post_merge_hotfixes:
       transition (OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL).
       Outside that transition the original guard from migration 0008 is
       unchanged. The trigger binding from 0008 is reused.
+
+  # -------------------------------------------------------------------------
+  # Fourth post-merge hotfix (discovered 2026-06-21 after hotfix #3 reached
+  # production-dev and the E2E re-run advanced past the immutable-fields
+  # trigger). Bundled in `hotfix/soft-delete-sentinel-values`.
+  # -------------------------------------------------------------------------
+
+  - title: Story 9.5 — soft-delete UPDATE violates NOT NULL (email) and UNIQUE (username) constraints
+    severity: high (every soft-delete branch failed with NotNullViolation on email)
+    root_cause: |
+      The PRD-specified §11.1 step-2 UPDATE sets email=NULL and
+      username='[deleted-user]', but the users table:
+        (a) declares `email TEXT UNIQUE NOT NULL` with a CHECK
+            email_format regex (migration 0002) — UPDATE fails with
+            psycopg2.errors.NotNullViolation on the first soft-delete.
+        (b) declares a partial UNIQUE index on lower(username) WHERE
+            username IS NOT NULL (migration 0010) — even if the email
+            defect were fixed, the second soft-delete would collide on
+            the username UNIQUE constraint.
+      Discovered when the E2E re-run after PR #153 (hotfix #3) advanced
+      past the immutable-fields trigger and hit the NotNullViolation.
+    fix: |
+      soft_delete_aurora handler.py SOFT_DELETE_SQL now writes per-user
+      sentinels that embed the row's own user_id:
+        email    = 'deleted-' || user_id::text || '@deleted.knotify.local'
+        username = '[deleted-' || user_id::text || ']'
+      Both sentinels are guaranteed unique per row (user_id is the PK),
+      satisfy the email_format CHECK, and contain no PII beyond the
+      already-stored user_id. The other PII columns (phone_number,
+      photo_url, chosen_profile_avatar, preference_vector) stay NULL
+      because they are nullable already; preferences stays '{}'. The
+      unit tests still pass because each column name is present in the
+      SQL — the new sentinels don't change what columns are touched.

@@ -5,17 +5,32 @@ Runs the §11.1 step-2 soft-delete UPDATE against Aurora:
 
     UPDATE users
     SET deleted_at = NOW(),
-        email = NULL,
+        email = 'deleted-' || user_id::text || '@deleted.knotify.local',
         phone_number = NULL,
         photo_url = NULL,
         chosen_profile_avatar = NULL,
         preferences = '{}',
         preference_vector = NULL,
-        username = '[deleted-user]',
+        username = '[deleted-' || user_id::text || ']',
         first_name = 'Deleted',
         last_name = 'User'
     WHERE user_id = %s::uuid
       AND deleted_at IS NULL
+
+Schema-driven sentinels (hotfix #4):
+  - email column has NOT NULL + UNIQUE + a CHECK email_format regex constraint
+    (migration 0002). Wiping to NULL fails the NOT NULL guard, so the redaction
+    writes a per-user, format-valid, collision-free sentinel of the form
+    'deleted-<user_id>@deleted.knotify.local'. The user_id is the row's own
+    primary key so two soft-deletes never collide on the UNIQUE constraint.
+  - username has a partial UNIQUE index on lower(username) WHERE username IS
+    NOT NULL (migration 0010). Setting every deleted user to the same literal
+    '[deleted-user]' would collide on the second deletion, so the redaction
+    embeds the user_id: '[deleted-<user_id>]'. Same uniqueness guarantee.
+
+The user_id is opaque (Cognito-issued UUID), so embedding it in the sentinels
+does not leak PII; it is the same identifier already stored in the row's
+primary key column.
 
 Called from the account-deletion Step Functions state machine as the
 SoftDeleteAurora task (parallel cleanup branch).
@@ -54,13 +69,13 @@ _DB_SECRET_NAME: str = os.environ.get("DB_SECRET_NAME", "")
 _SOFT_DELETE_SQL = """
 UPDATE users
 SET deleted_at             = NOW(),
-    email                  = NULL,
+    email                  = 'deleted-' || user_id::text || '@deleted.knotify.local',
     phone_number           = NULL,
     photo_url              = NULL,
     chosen_profile_avatar  = NULL,
     preferences            = '{}'::jsonb,
     preference_vector      = NULL,
-    username               = '[deleted-user]',
+    username               = '[deleted-' || user_id::text || ']',
     first_name             = 'Deleted',
     last_name              = 'User'
 WHERE user_id = %s::uuid
