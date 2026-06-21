@@ -72,9 +72,9 @@ run "lambda_arn_output_wired_to_alias_arn" {
   override_module {
     target = module.lambda
     outputs = {
-      alias_arn    = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-cognito-user-state-test:live"
+      alias_arn     = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-cognito-user-state-test:live"
       function_name = "knotify-cognito-user-state-test"
-      invoke_arn   = "arn:aws:apigateway:eu-central-1:lambda:path/2015-03-31/functions/arn:aws:lambda:eu-central-1:123456789012:function:knotify-cognito-user-state-test:live/invocations"
+      invoke_arn    = "arn:aws:apigateway:eu-central-1:lambda:path/2015-03-31/functions/arn:aws:lambda:eu-central-1:123456789012:function:knotify-cognito-user-state-test:live/invocations"
     }
   }
 

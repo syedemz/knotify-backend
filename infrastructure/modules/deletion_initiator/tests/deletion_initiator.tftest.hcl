@@ -41,11 +41,11 @@ run "function_name_passed_to_lambda_submodule" {
   command = plan
 
   variables {
-    function_name      = "knotify-deletion-initiator-test"
-    filename           = "./tests/dummy.zip"
-    role_arn           = "arn:aws:iam::123456789012:role/knotify-test-deletion-initiator"
-    state_machine_arn  = "arn:aws:states:eu-central-1:123456789012:stateMachine:knotify-dev-account-deletion"
-    edge_secret        = "test-secret"
+    function_name     = "knotify-deletion-initiator-test"
+    filename          = "./tests/dummy.zip"
+    role_arn          = "arn:aws:iam::123456789012:role/knotify-test-deletion-initiator"
+    state_machine_arn = "arn:aws:states:eu-central-1:123456789012:stateMachine:knotify-dev-account-deletion"
+    edge_secret       = "test-secret"
   }
 
   assert {
@@ -64,11 +64,11 @@ run "invoke_arn_output_wired_to_alias_invoke_arn" {
   command = plan
 
   variables {
-    function_name      = "knotify-deletion-initiator-test"
-    filename           = "./tests/dummy.zip"
-    role_arn           = "arn:aws:iam::123456789012:role/knotify-test-deletion-initiator"
-    state_machine_arn  = "arn:aws:states:eu-central-1:123456789012:stateMachine:knotify-dev-account-deletion"
-    edge_secret        = "test-secret"
+    function_name     = "knotify-deletion-initiator-test"
+    filename          = "./tests/dummy.zip"
+    role_arn          = "arn:aws:iam::123456789012:role/knotify-test-deletion-initiator"
+    state_machine_arn = "arn:aws:states:eu-central-1:123456789012:stateMachine:knotify-dev-account-deletion"
+    edge_secret       = "test-secret"
   }
 
   override_module {
@@ -96,11 +96,11 @@ run "state_machine_arn_env_var_present_and_module_plans_without_error" {
   command = plan
 
   variables {
-    function_name      = "knotify-deletion-initiator-test"
-    filename           = "./tests/dummy.zip"
-    role_arn           = "arn:aws:iam::123456789012:role/knotify-test-deletion-initiator"
-    state_machine_arn  = "arn:aws:states:eu-central-1:123456789012:stateMachine:knotify-dev-account-deletion"
-    edge_secret        = "test-secret"
+    function_name     = "knotify-deletion-initiator-test"
+    filename          = "./tests/dummy.zip"
+    role_arn          = "arn:aws:iam::123456789012:role/knotify-test-deletion-initiator"
+    state_machine_arn = "arn:aws:states:eu-central-1:123456789012:stateMachine:knotify-dev-account-deletion"
+    edge_secret       = "test-secret"
   }
 
   assert {

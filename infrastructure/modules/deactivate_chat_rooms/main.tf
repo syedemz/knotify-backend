@@ -48,7 +48,7 @@ module "lambda" {
   environment_variables = {
     # DynamoDB table names — injected at deploy time.
     # Defaults ("ChatRooms" / "ChatRoomMembership") are safe for local tests.
-    TABLE_CHAT_ROOMS            = var.chat_rooms_table_name
-    TABLE_CHAT_ROOM_MEMBERSHIP  = var.chat_room_membership_table_name
+    TABLE_CHAT_ROOMS           = var.chat_rooms_table_name
+    TABLE_CHAT_ROOM_MEMBERSHIP = var.chat_room_membership_table_name
   }
 }

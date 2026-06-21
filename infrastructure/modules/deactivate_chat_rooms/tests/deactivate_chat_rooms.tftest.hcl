@@ -41,10 +41,10 @@ run "function_name_passed_to_lambda_submodule" {
   command = plan
 
   variables {
-    function_name                 = "knotify-deactivate-chat-rooms-test"
-    filename                      = "./tests/dummy.zip"
-    role_arn                      = "arn:aws:iam::123456789012:role/knotify-test-deactivate-chat-rooms"
-    chat_rooms_table_name         = "ChatRooms"
+    function_name                   = "knotify-deactivate-chat-rooms-test"
+    filename                        = "./tests/dummy.zip"
+    role_arn                        = "arn:aws:iam::123456789012:role/knotify-test-deactivate-chat-rooms"
+    chat_rooms_table_name           = "ChatRooms"
     chat_room_membership_table_name = "ChatRoomMembership"
   }
 
@@ -64,10 +64,10 @@ run "lambda_arn_output_wired_to_alias_arn" {
   command = plan
 
   variables {
-    function_name                 = "knotify-deactivate-chat-rooms-test"
-    filename                      = "./tests/dummy.zip"
-    role_arn                      = "arn:aws:iam::123456789012:role/knotify-test-deactivate-chat-rooms"
-    chat_rooms_table_name         = "ChatRooms"
+    function_name                   = "knotify-deactivate-chat-rooms-test"
+    filename                        = "./tests/dummy.zip"
+    role_arn                        = "arn:aws:iam::123456789012:role/knotify-test-deactivate-chat-rooms"
+    chat_rooms_table_name           = "ChatRooms"
     chat_room_membership_table_name = "ChatRoomMembership"
   }
 
