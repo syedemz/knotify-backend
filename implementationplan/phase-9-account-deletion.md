@@ -1,6 +1,6 @@
 phase: 9
 title: Account deletion (Step Functions, soft delete)
-last_updated: 2026-06-21 (post-merge hotfix #4: per-user sentinels for soft-delete email + username)
+last_updated: 2026-06-21 (post-merge hotfix #5: hard_delete SK + E2E sentinel assertions)
 
 context_summary: |
   Implements the account-deletion workflow per §11 of architecture.md with the §13 #8 resolution applied: soft delete (UPDATE users SET deleted_at, strip PII) with a 30-day retention before a scheduled hard purge via cascade. ChatMessages are anonymized rather than deleted per §13 #21 — sender_id rewritten to '[deleted-user]' while content is preserved. Step Functions Standard workflow orchestrates the steps; each step is an idempotent Python 3.14 Lambda. An audit log table records initiation and completion. A purge_immediately flag supports GDPR right-to-be-forgotten by branching at workflow entry into a hard-delete path that fully removes the requester's Aurora rows, ChatMessages, and ChatRoomMembership rows. This phase ships after chat because the workflow needs to deactivate ChatRooms, anonymize/hard-delete ChatMessages, and clean ChatRoomMembership — all DynamoDB tables created in phase 2 and operated on by phase 8.
@@ -403,3 +403,48 @@ post_merge_hotfixes:
       because they are nullable already; preferences stays '{}'. The
       unit tests still pass because each column name is present in the
       SQL — the new sentinels don't change what columns are touched.
+
+  # -------------------------------------------------------------------------
+  # Fifth post-merge hotfix (discovered 2026-06-21 after hotfix #4 reached
+  # production-dev and the E2E re-run reached the hard_delete path on the
+  # purge_immediately branch). Bundled in
+  # `hotfix/hard-delete-sk-and-test-sentinel-assertions`.
+  # -------------------------------------------------------------------------
+
+  - title: Story 9.12 — hard_delete_user_chat_messages used the wrong ChatMessages SK attribute
+    severity: high (every purge_immediately execution failed with KeyError)
+    root_cause: |
+      Lambda read item["message_id"] and built the DeleteItem Key with
+      "message_id" as the SK attribute, but the ChatMessages table sort
+      key is `created_at_message_id` (HASH=room_id, RANGE=created_at_message_id).
+      Same class of defect as hotfix #1's anonymize_chat_messages bug —
+      the twin Lambda in the purge_immediately branch was missed because
+      no E2E test exercised that branch until phase 9 closeout, and the
+      unit tests in tests/test_hard_delete_user_chat_messages.py used the
+      same wrong attribute name so they passed despite the defect.
+    fix: |
+      Handler at infrastructure\\src\\functions\\hard_delete_user_chat_messages\\handler.py:_delete_message
+      now reads item["created_at_message_id"] and builds the DeleteItem
+      Key with "created_at_message_id". 19 unit tests + 1 skip-gated
+      integration test updated to match the real schema (LEK builders,
+      DeleteItem Key assertions, seed items, teardown).
+
+  - title: Story 9.13 — soft-delete E2E assertions still expected NULL email and literal '[deleted-user]'
+    severity: medium (test scaffolding bug; production code path is correct)
+    root_cause: |
+      Before hotfix #4 the soft-delete UPDATE wrote email=NULL and
+      username='[deleted-user]', and the E2E test was written against
+      that contract. After hotfix #4 the soft-delete UPDATE writes
+      per-user sentinels ('deleted-<user_id>@deleted.knotify.local' and
+      '[deleted-<user_id>]') to satisfy the schema constraints. The E2E
+      test was not updated in the same hotfix and now fails at the
+      post-deletion assertion block even though the workflow succeeds.
+    fix: |
+      infrastructure\\src\\tests\\integration\\deletion_e2e_test.py's
+      test_e2e_soft_delete_full_workflow assertion block now:
+        - removes "email" from the must-be-NULL pii_field loop
+        - asserts aurora_row["email"] == f"deleted-{a_id}@deleted.knotify.local"
+        - asserts aurora_row["username"] == f"[deleted-{a_id}]"
+      The other two sub-tests (block_filter_regression and purge_immediately)
+      did not need updates because they assert aurora_row is None
+      post-hard-purge.
