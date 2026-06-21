@@ -74,7 +74,7 @@ stories:
   - id: 9.5
     title: SoftDeleteAurora Lambda
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: []
     tracking_issue: 139
     acceptance_criteria:
