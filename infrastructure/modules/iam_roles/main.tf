@@ -1164,18 +1164,39 @@ resource "aws_iam_role_policy" "stepfn_deletion_exec_cloudwatch" {
   policy = data.aws_iam_policy_document.stepfn_deletion_exec_cloudwatch.json
 }
 
-# logs:* scoped to the Step Functions log group ARN.
-# Step Functions requires logs:CreateLogDelivery, logs:GetLogDelivery,
-# logs:UpdateLogDelivery, logs:DeleteLogDelivery, logs:ListLogDeliveries,
-# logs:PutResourcePolicy, logs:DescribeResourcePolicies, and
-# logs:DescribeLogGroups on the log group — using logs:* captures all of
-# these without separately listing each. Scoped to the log group ARN.
+# Step Functions logging needs two distinct permission scopes.
+#
+# (1) Vended-logs delivery + account-level policy management. These IAM
+#     actions do not support resource-level scoping in AWS — they must
+#     use Resource: "*". Scoping them to the log-group ARN causes
+#     CreateStateMachine to fail with "The state machine IAM Role is
+#     not authorized to access the Log Destination".
+#
+# (2) Per-log-group writes (CreateLogStream, PutLogEvents) DO support
+#     resource-level scoping, so we keep those narrow.
 data "aws_iam_policy_document" "stepfn_deletion_exec_logs" {
   statement {
-    sid    = "StepFunctionsLogging"
+    sid    = "StepFunctionsLogDelivery"
     effect = "Allow"
     actions = [
-      "logs:*",
+      "logs:CreateLogDelivery",
+      "logs:GetLogDelivery",
+      "logs:UpdateLogDelivery",
+      "logs:DeleteLogDelivery",
+      "logs:ListLogDeliveries",
+      "logs:PutResourcePolicy",
+      "logs:DescribeResourcePolicies",
+      "logs:DescribeLogGroups",
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "StepFunctionsLogGroupWrites"
+    effect = "Allow"
+    actions = [
+      "logs:CreateLogStream",
+      "logs:PutLogEvents",
     ]
     resources = [
       var.deletion_sfn_log_group_arn != "" ? var.deletion_sfn_log_group_arn : "arn:aws:logs:*:*:log-group:/aws/states/knotify-*-account-deletion:*",

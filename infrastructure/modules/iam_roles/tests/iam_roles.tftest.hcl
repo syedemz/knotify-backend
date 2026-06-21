@@ -1272,7 +1272,7 @@ run "role_arns_output_contains_stale_token_cleanup" {
 # Inline policies:
 #   1. lambda:InvokeFunction on all nine deletion task Lambda ARNs
 #   2. cloudwatch:PutMetricData (DeletionFailed metric, no resource restriction needed)
-#   3. logs:* on the Step Functions CloudWatch log group ARN
+#   3. logs:CreateLogDelivery + vended-logs perms (Resource: *) + per-log-group writes
 # ===========================================================================
 
 # ---------------------------------------------------------------------------
