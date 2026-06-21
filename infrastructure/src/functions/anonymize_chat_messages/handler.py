@@ -208,13 +208,15 @@ def _update_sender_id(item: dict) -> None:
     client = _get_dynamo()
 
     room_id: str = item["room_id"]["S"]
-    message_id: str = item["message_id"]["S"]
+    # ChatMessages sort key is `created_at_message_id` (HASH=room_id, RANGE=created_at_message_id).
+    # See migration that creates the table and chat_resolver/handler.py which writes this attribute.
+    sort_key: str = item["created_at_message_id"]["S"]
 
     client.update_item(
         TableName=TABLE_CHAT_MESSAGES,
         Key={
             "room_id": {"S": room_id},
-            "message_id": {"S": message_id},
+            "created_at_message_id": {"S": sort_key},
         },
         UpdateExpression="SET sender_id = :anon_id",
         ExpressionAttributeValues={
@@ -224,5 +226,5 @@ def _update_sender_id(item: dict) -> None:
 
     logger.debug(
         "anonymize_chat_messages_message_anonymized",
-        extra={"room_id": room_id, "message_id": message_id},
+        extra={"room_id": room_id, "created_at_message_id": sort_key},
     )
