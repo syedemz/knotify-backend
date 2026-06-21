@@ -1510,14 +1510,35 @@ module "write_audit_log" {
 }
 
 # ---------------------------------------------------------------------------
+# hard_delete_user_chat_messages Lambda — story 9.12 (prod mirror)
+#
+# PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
+#
+# Hard-deletes all ChatMessages rows sent by the deleted user across their
+# rooms. Called from the purge_immediately branch of the account-deletion
+# Step Functions state machine inside PurgeImmediately_ParallelCleanup
+# (after DeactivateChatRooms has already deleted the user's ChatRoomMembership).
+# Replaces AnonymizeChatMessages in the purge_immediately branch.
+#
+# Continuation-token contract for Step Functions Choice->Task->Choice loop
+# on has_more flag.
+# Placement: OUTSIDE the VPC — DynamoDB access only.
+# ---------------------------------------------------------------------------
+
+module "hard_delete_user_chat_messages" {
+  source = "../../modules/hard_delete_user_chat_messages"
+
+  function_name            = "knotify-hard-delete-user-chat-messages-${var.environment}"
+  filename                 = "${path.module}/../../../build/hard_delete_user_chat_messages.zip"
+  role_arn                 = module.iam_roles.role_arns["hard_delete_user_chat_messages"]
+  chat_messages_table_name = module.dynamodb.chat_messages_table_name
+}
+
+# ---------------------------------------------------------------------------
 # step_functions — account-deletion state machine — story 9.1 (prod mirror)
 #
 # PROD NOTE: authored for `terraform plan`; apply gated per PROD_CUTOVER.md.
 # STANDARD state machine orchestrating the full account-deletion workflow.
-#
-# NOTE: hard_delete_user_chat_msgs_arn is a placeholder pointing at hard_purge
-# until story 9.12 ships the dedicated HardDeleteUserChatMessages Lambda.
-# Story 9.12 will update this to module.hard_delete_user_chat_messages.lambda_arn.
 # ---------------------------------------------------------------------------
 
 module "step_functions" {
@@ -1527,15 +1548,14 @@ module "step_functions" {
   execution_role_arn = module.iam_roles.role_arns["stepfn_deletion_exec"]
 
   lambda_arns = {
-    validate_deletion_request = module.validate_deletion_request.lambda_arn
-    cognito_user_state        = module.cognito_user_state.lambda_arn
-    deactivate_chat_rooms     = module.deactivate_chat_rooms.lambda_arn
-    soft_delete_aurora        = module.soft_delete_aurora.lambda_arn
-    delete_dynamodb_personal  = module.delete_dynamodb_personal_data.lambda_arn
-    anonymize_chat_messages   = module.anonymize_chat_messages.lambda_arn
-    hard_purge_now            = module.hard_purge.lambda_arn
-    # Placeholder: replaced by module.hard_delete_user_chat_messages.lambda_arn in story 9.12
-    hard_delete_user_chat_msgs = module.hard_purge.lambda_arn
+    validate_deletion_request  = module.validate_deletion_request.lambda_arn
+    cognito_user_state         = module.cognito_user_state.lambda_arn
+    deactivate_chat_rooms      = module.deactivate_chat_rooms.lambda_arn
+    soft_delete_aurora         = module.soft_delete_aurora.lambda_arn
+    delete_dynamodb_personal   = module.delete_dynamodb_personal_data.lambda_arn
+    anonymize_chat_messages    = module.anonymize_chat_messages.lambda_arn
+    hard_purge_now             = module.hard_purge.lambda_arn
+    hard_delete_user_chat_msgs = module.hard_delete_user_chat_messages.lambda_arn
     write_audit_log            = module.write_audit_log.lambda_arn
   }
 }

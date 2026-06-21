@@ -42,5 +42,7 @@ output "role_arns" {
     validate_deletion_request = aws_iam_role.validate_deletion_request.arn
     # Story 9.9 — deletion_initiator IAM role (states:StartExecution + states:DescribeExecution)
     deletion_initiator = aws_iam_role.deletion_initiator.arn
+    # Story 9.12 — hard_delete_user_chat_messages IAM role (DynamoDB Query/DeleteItem on ChatMessages)
+    hard_delete_user_chat_messages = aws_iam_role.hard_delete_user_chat_messages.arn
   }
 }

@@ -2055,3 +2055,71 @@ run "role_arns_output_contains_deletion_initiator" {
     error_message = "role_arns[deletion_initiator] must be wired to aws_iam_role.deletion_initiator.arn"
   }
 }
+
+# ===========================================================================
+# Story 9.12 — hard_delete_user_chat_messages role tests
+# ===========================================================================
+
+run "hard_delete_user_chat_messages_role_uses_lambda_trust_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = can(aws_iam_role.hard_delete_user_chat_messages.name)
+    error_message = "hard_delete_user_chat_messages role must be declared"
+  }
+}
+
+run "hard_delete_user_chat_messages_role_has_basic_execution_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy_attachment.hard_delete_user_chat_messages_basic_execution.policy_arn == "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+    error_message = "hard_delete_user_chat_messages must attach AWSLambdaBasicExecutionRole (no VPC access — runs outside VPC)"
+  }
+}
+
+run "hard_delete_user_chat_messages_dynamodb_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = can(aws_iam_role_policy.hard_delete_user_chat_messages_dynamodb.name)
+    error_message = "hard_delete_user_chat_messages dynamodb inline policy must be declared"
+  }
+}
+
+run "role_arns_output_contains_hard_delete_user_chat_messages" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  override_resource {
+    target = aws_iam_role.hard_delete_user_chat_messages
+    values = {
+      arn = "arn:aws:iam::123456789012:role/knotify-test-hard-delete-user-chat-messages"
+    }
+    override_during = plan
+  }
+
+  assert {
+    condition     = output.role_arns["hard_delete_user_chat_messages"] == "arn:aws:iam::123456789012:role/knotify-test-hard-delete-user-chat-messages"
+    error_message = "role_arns[hard_delete_user_chat_messages] must be wired to aws_iam_role.hard_delete_user_chat_messages.arn"
+  }
+}
