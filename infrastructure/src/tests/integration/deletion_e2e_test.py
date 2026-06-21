@@ -86,6 +86,8 @@ from typing import Any
 
 import pytest
 
+from .conftest import build_profile_completion_payload
+
 # ---------------------------------------------------------------------------
 # Pytest marker
 # ---------------------------------------------------------------------------
@@ -316,7 +318,10 @@ def _delete_all_chat_messages(ddb, room_id: str) -> None:
         _delete_ddb_item(
             ddb,
             "ChatMessages",
-            {"room_id": {"S": room_id}, "sk": item["sk"]},
+            {
+                "room_id": {"S": room_id},
+                "created_at_message_id": item["created_at_message_id"],
+            },
         )
 
 
@@ -533,17 +538,17 @@ def _mint_completed_user(
     )
     initial_access = auth_resp["AuthenticationResult"]["AccessToken"]
 
-    # Complete profile so PreTokenGeneration flips profile_complete="true"
+    # Complete profile so PreTokenGeneration flips profile_complete="true".
+    # The conftest helper assembles the full 34-field payload required by the
+    # post-story-7.0b CHECK constraint (migration 0012). A 6-field payload
+    # would leave profile_complete_verified=false, the AdminUpdateUserAttributes
+    # call in profile/handler.py would never fire, and the assertion below
+    # would fail.
+    completion_payload = build_profile_completion_payload(sex=sex, username=username)
+    completion_payload["first_name"] = "DelTest"
     patch_resp = http_requests.patch(
         _api_url(api_base, "/v1/profile/me"),
-        json={
-            "first_name": "DelTest",
-            "last_name": "User",
-            "sex": sex,
-            "birthday": "2000-01-01",
-            "username": username,
-            "religion": "Other",
-        },
+        json=completion_payload,
         headers={
             "Authorization": f"Bearer {initial_access}",
             "x-knotify-edge-secret": edge_secret,

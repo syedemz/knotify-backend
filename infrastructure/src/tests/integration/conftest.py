@@ -108,6 +108,71 @@ def _aurora_master_conn(
 
 
 # ---------------------------------------------------------------------------
+# Profile-completion payload helper (shared across integration tests)
+#
+# Story 7.0b widened the profile_complete_verified CHECK constraint from 5 to
+# 34 required fields (migration 0012). Any PATCH /v1/profile/me that aims to
+# flip profile_complete_verified=true (and thereby trigger the Cognito
+# custom:profile_complete attribute write) must populate all 34 fields.
+# This helper is the single source of truth for the 34-field payload used by
+# every test that needs a completed-profile user.
+# ---------------------------------------------------------------------------
+
+def build_profile_completion_payload(*, sex: str, username: str) -> dict:
+    """
+    Return a 34-field PATCH body sufficient to flip profile_complete_verified
+    to true under the post-7.0b CHECK constraint.
+
+    Field values are intentionally trivial — these tests don't assert on
+    field semantics, only on completion gating. Booleans match the column
+    type (BOOLEAN in Aurora); the *_retired columns are TEXT.
+    """
+    return {
+        # Identity (immutable-after-set)
+        "first_name": "Test",
+        "last_name": "User",
+        "sex": sex,
+        "birthday": "2000-01-01",
+        "username": username,
+        # Religion
+        "religion": "Other",
+        "subsect": "Other",
+        "religious_level": "Practicing",
+        # Residence
+        "current_residence_city": "Berlin",
+        "current_residence_country": "Germany",
+        "resident_country_code": "DE",
+        "district": "Mitte",
+        # Education
+        "education_level": "Graduate",
+        "highest_degree": "MSc",
+        "high_school": "Test High School",
+        "higher_secondary": "Test Higher Secondary",
+        "college_name": "Test College",
+        # Profession
+        "job_title": "Engineer",
+        "employer_name": "TestCo",
+        "employment_type": "Full-time",
+        "office_address": "123 Test St",
+        "professional_category": "Technology",
+        "salary_range": "100-150k",
+        # Family
+        "fathers_name": "Father Test",
+        "fathers_job": "Retired",
+        "father_retired": "Yes",
+        "mothers_name": "Mother Test",
+        "mothers_job": "Retired",
+        "mother_retired": "Yes",
+        "family_residence_address": "456 Family Rd",
+        # Personal status
+        "marital_status": "Single",
+        "has_children": False,
+        "move_abroad": False,
+        "relation": "Self",
+    }
+
+
+# ---------------------------------------------------------------------------
 # signed_in_user fixture — story 5.7 (extracted from test_cognito_signup.py)
 #
 # Performs the full sign-up + confirm + sign-in dance against the live dev
@@ -442,14 +507,7 @@ def completed_profile_user(request, signed_in_user):
     # Step 2: PATCH /v1/profile/me with the completion payload
     # ------------------------------------------------------------------
     patch_url = f"https://{distribution_domain}/v1/profile/me"
-    completion_payload = {
-        "first_name": "Test",
-        "last_name": "User",
-        "sex": sex,
-        "birthday": "2000-01-01",
-        "username": username,
-        "religion": "Other",
-    }
+    completion_payload = build_profile_completion_payload(sex=sex, username=username)
     headers = {
         "Authorization": f"Bearer {initial_access_token}",
         "x-knotify-edge-secret": edge_secret,

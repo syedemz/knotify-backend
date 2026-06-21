@@ -80,10 +80,15 @@ def _make_event(
 
 
 def _make_message_item(room_id: str, message_id: str, sender_id: str, content: str = "hello") -> dict:
-    """Build a DynamoDB-style ChatMessages item."""
+    """Build a DynamoDB-style ChatMessages item.
+
+    The DDB sort key attribute is `created_at_message_id` (see chat_resolver
+    writer and table KeySchema). The `message_id` parameter here is just the
+    local id portion used as the SK value.
+    """
     return {
         "room_id": {"S": room_id},
-        "message_id": {"S": message_id},
+        "created_at_message_id": {"S": message_id},
         "sender_id": {"S": sender_id},
         "content": {"S": content},
     }
@@ -267,8 +272,8 @@ def test_given_matching_message_when_update_item_called_then_key_includes_room_i
     key = update_kwargs["Key"]
     assert "room_id" in key, "UpdateItem Key must include room_id"
     assert key["room_id"]["S"] == _ROOM_1
-    assert "message_id" in key, "UpdateItem Key must include message_id (SK)"
-    assert key["message_id"]["S"] == "msg-xyz"
+    assert "created_at_message_id" in key, "UpdateItem Key must include created_at_message_id (SK)"
+    assert key["created_at_message_id"]["S"] == "msg-xyz"
 
 
 # ---------------------------------------------------------------------------
@@ -346,7 +351,7 @@ def test_given_room_query_returns_multiple_pages_when_handler_called_then_all_pa
     """
     from anonymize_chat_messages import handler
 
-    page1_lek = {"room_id": {"S": _ROOM_1}, "message_id": {"S": "msg-001"}}
+    page1_lek = {"room_id": {"S": _ROOM_1}, "created_at_message_id": {"S": "msg-001"}}
     mock_dynamo.query.side_effect = [
         _make_query_response(
             [_make_message_item(_ROOM_1, "msg-001", _USER_ID)],
@@ -373,7 +378,7 @@ def test_given_room_query_page2_uses_exclusive_start_key_from_page1(
     """
     from anonymize_chat_messages import handler
 
-    page1_lek = {"room_id": {"S": _ROOM_1}, "message_id": {"S": "msg-001"}}
+    page1_lek = {"room_id": {"S": _ROOM_1}, "created_at_message_id": {"S": "msg-001"}}
     mock_dynamo.query.side_effect = [
         _make_query_response(
             [_make_message_item(_ROOM_1, "msg-001", _USER_ID)],
@@ -539,7 +544,7 @@ def test_given_re_invocation_with_last_evaluated_key_when_handler_called_then_fi
     """
     from anonymize_chat_messages import handler
 
-    prior_lek = {"room_id": {"S": _ROOM_2}, "message_id": {"S": "msg-050"}}
+    prior_lek = {"room_id": {"S": _ROOM_2}, "created_at_message_id": {"S": "msg-050"}}
 
     mock_dynamo.query.return_value = _make_query_response([])
 
@@ -580,4 +585,4 @@ def test_given_message_item_with_known_ids_when_update_item_called_then_key_matc
 
     update_kwargs = mock_dynamo.update_item.call_args.kwargs
     assert update_kwargs["Key"]["room_id"]["S"] == "room-specific-001"
-    assert update_kwargs["Key"]["message_id"]["S"] == "msg-specific-999"
+    assert update_kwargs["Key"]["created_at_message_id"]["S"] == "msg-specific-999"

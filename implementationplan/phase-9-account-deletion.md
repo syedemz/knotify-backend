@@ -1,6 +1,6 @@
 phase: 9
 title: Account deletion (Step Functions, soft delete)
-last_updated: 2026-06-20 (story 9.12)
+last_updated: 2026-06-21 (post-merge hotfix: anonymize_chat_messages SK + IAM)
 
 context_summary: |
   Implements the account-deletion workflow per §11 of architecture.md with the §13 #8 resolution applied: soft delete (UPDATE users SET deleted_at, strip PII) with a 30-day retention before a scheduled hard purge via cascade. ChatMessages are anonymized rather than deleted per §13 #21 — sender_id rewritten to '[deleted-user]' while content is preserved. Step Functions Standard workflow orchestrates the steps; each step is an idempotent Python 3.14 Lambda. An audit log table records initiation and completion. A purge_immediately flag supports GDPR right-to-be-forgotten by branching at workflow entry into a hard-delete path that fully removes the requester's Aurora rows, ChatMessages, and ChatRoomMembership rows. This phase ships after chat because the workflow needs to deactivate ChatRooms, anonymize/hard-delete ChatMessages, and clean ChatRoomMembership — all DynamoDB tables created in phase 2 and operated on by phase 8.
@@ -242,3 +242,56 @@ resolved_questions:
       surviving participant's room history is preserved with the deleter's
       messages simply gone. The state machine forks on purge_immediately at
       the top level (story 9.1).
+
+# ---------------------------------------------------------------------------
+# Post-merge hotfixes (discovered by the story-9.13 E2E test running against
+# the live dev environment after phase 9 merged to development on 2026-06-21).
+# All three fixed in a single hotfix branch
+# `hotfix/integration-test-profile-payload`.
+# ---------------------------------------------------------------------------
+
+post_merge_hotfixes:
+  - title: Story 9.5 — anonymize_chat_messages used wrong ChatMessages sort-key name
+    severity: high (every soft-delete execution failed end-to-end)
+    root_cause: |
+      Lambda read item["message_id"] but the ChatMessages table sort key
+      attribute is `created_at_message_id` (HASH=room_id, RANGE=created_at_message_id).
+      The unit tests in tests/test_anonymize_chat_messages.py were authored
+      against the same wrong attribute name, so they passed despite the
+      defect. Never caught by CI because pytest integration tests don't run
+      there.
+    fix: |
+      Handler at infrastructure/src/functions/anonymize_chat_messages/handler.py:_update_sender_id
+      now reads item["created_at_message_id"] and constructs the UpdateItem
+      Key with the correct attribute name. Unit tests updated to match real
+      schema. All 18 unit tests pass.
+
+  - title: Story 9.1 / story 9.12 wiring — stepfn_deletion_exec missing InvokeFunction on hard_delete_user_chat_messages
+    severity: high (every purge_immediately execution failed)
+    root_cause: |
+      environments/dev/main.tf and environments/prod/main.tf passed only 8
+      lambda ARNs into module.iam_roles.deletion_task_lambda_arns. The 9th —
+      module.hard_delete_user_chat_messages.lambda_arn — was omitted when
+      story 9.12 added that Lambda. The IAM policy_document is scoped to the
+      ARN list, so SFN got AccessDenied on InvokeFunction.
+    fix: |
+      Added module.hard_delete_user_chat_messages.lambda_arn to the
+      deletion_task_lambda_arns list in both environments/dev/main.tf and
+      environments/prod/main.tf.
+
+  - title: Story 9.13 (test scaffolding) — 6-field PATCH did not satisfy post-7.0b 34-field completion requirement
+    severity: medium (test scaffolding bug, not a production defect)
+    root_cause: |
+      _mint_completed_user in deletion_e2e_test.py and the
+      completed_profile_user fixture in conftest.py both PATCHed only 6
+      profile fields, but story 7.0b widened the
+      profile_complete_verified CHECK constraint to 34 fields (migration
+      0012). The PATCH returned 200, profile_complete_verified stayed
+      false, the Cognito AdminUpdateUserAttributes call never fired, and
+      every test failed at the IdToken claim assertion. The same defect
+      blocked every other integration test fixture in the shared conftest.
+    fix: |
+      Added build_profile_completion_payload helper in conftest.py with the
+      full 34-field shape; both call sites use it. Also fixed teardown
+      helper _delete_all_chat_messages to use created_at_message_id (not
+      "sk") as the ChatMessages sort key.

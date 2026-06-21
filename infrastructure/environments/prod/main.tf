@@ -177,6 +177,7 @@ module "iam_roles" {
     module.soft_delete_aurora.lambda_arn,
     module.delete_dynamodb_personal_data.lambda_arn,
     module.anonymize_chat_messages.lambda_arn,
+    module.hard_delete_user_chat_messages.lambda_arn,
     module.hard_purge.lambda_arn,
     module.write_audit_log.lambda_arn,
   ]
