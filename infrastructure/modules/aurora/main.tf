@@ -90,6 +90,10 @@ resource "aws_rds_cluster" "this" {
   # Encryption at rest is always on
   storage_encrypted = true
 
+  # Data API (HTTP endpoint) — dev-only; lets the E2E integration test reach
+  # Aurora without a VPC tunnel by routing SQL through the rds-data service.
+  enable_http_endpoint = var.enable_data_api
+
   # Parameter group authored above
   db_cluster_parameter_group_name = aws_rds_cluster_parameter_group.this.name
 

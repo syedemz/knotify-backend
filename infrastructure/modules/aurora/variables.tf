@@ -89,3 +89,18 @@ variable "postgresql_log_retention_days" {
   type        = number
   default     = 1
 }
+
+# ---------------------------------------------------------------------------
+# Data API (RDS HTTP endpoint)
+#
+# Enables the Data API on the Aurora cluster so callers outside the VPC can
+# execute SQL via boto3 `rds-data` without a tunnel. Used by the dev E2E
+# integration test (story 9.13) which validates Aurora state from a developer
+# laptop. Off by default; enable in dev only.
+# ---------------------------------------------------------------------------
+
+variable "enable_data_api" {
+  description = "Whether to enable the Aurora Data API HTTP endpoint (true in dev for integration tests, false in prod)"
+  type        = bool
+  default     = false
+}
