@@ -3,7 +3,7 @@ knotify-deletion-initiator Lambda handler.
 
 Implements two HTTP API Gateway v2 routes:
   DELETE /v1/profile/me              — initiate account deletion workflow
-  GET    /v1/profile/me/deletion-status  — query execution status (stub, story 9.10)
+  GET    /v1/profile/me/deletion-status  — query execution status (story 9.10)
 
 DELETE /v1/profile/me:
   Extracts user_id from the JWT sub claim, parses an optional purge_immediately
@@ -13,8 +13,16 @@ DELETE /v1/profile/me:
   the JWT sub (defense-in-depth contract for the ValidateDeletionRequest step in
   story 9.2 which re-checks this equality).
 
-GET /v1/profile/me/deletion-status:
-  Returns 501 until story 9.10 fills in the DescribeExecution logic.
+GET /v1/profile/me/deletion-status?executionArn=<arn>:
+  Calls DescribeExecution, validates that the execution's input.user_id matches
+  the JWT sub (returns 403 with an empty body on mismatch — no metadata leaked),
+  then calls GetExecutionHistory to collect the names of completed steps, and
+  returns 200 with {status, startDate, stopDate?, names}.
+
+  Error cases:
+    400 — executionArn query parameter is absent.
+    403 — JWT sub does not match execution input.user_id (empty body).
+    404 — AWS raises ExecutionDoesNotExist for the supplied ARN.
 
 Design notes:
   - Both routes require a valid Cognito JWT (enforced by the HTTP API JWT
@@ -24,9 +32,8 @@ Design notes:
     all other REST Lambda handlers in this project).
   - This Lambda runs OUTSIDE the VPC: Step Functions and Cognito JWT validation
     use public HTTPS endpoints; no Aurora or DynamoDB access needed.
-  - The handler is structured as a route dispatcher so story 9.10 can extend
-    the GET /deletion-status path without touching the DELETE path or the
-    module-level singletons.
+  - The handler is structured as a route dispatcher; each route is a single
+    focused function with no shared mutable state.
 
 Dependencies (Lambda layers):
   - knotify_obs: init_logger, with_edge_secret
@@ -44,8 +51,10 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from datetime import datetime, timezone
 
 import boto3
+from botocore.exceptions import ClientError
 from knotify_obs import init_logger, with_edge_secret
 
 # ---------------------------------------------------------------------------
@@ -187,19 +196,144 @@ def _handle_delete_profile_me(event: dict, user_id: str) -> dict:
     return _json_response(202, {"executionArn": execution_arn})
 
 
+def _serialize_dt(dt: datetime | None) -> str | None:
+    """
+    Serialize a datetime to an ISO 8601 string (UTC, with Z suffix).
+
+    Returns None if dt is None (stopDate is absent on RUNNING executions).
+    """
+    if dt is None:
+        return None
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _collect_completed_step_names(sfn: object, execution_arn: str) -> list[str]:
+    """
+    Call GetExecutionHistory (paginated via nextToken) and return the names of
+    states whose tasks completed successfully (TaskSucceeded events).
+
+    GetExecutionHistory does not include a state name directly on the
+    TaskSucceeded event; instead we track the most recent TaskStateEntered
+    name and emit it when the following TaskSucceeded appears.
+
+    This approach is O(events) and correct for Standard Workflows where
+    events are sequential per branch.
+    """
+    names: list[str] = []
+    pending_state_name: str | None = None
+    next_token: str | None = None
+
+    while True:
+        kwargs: dict = {
+            "executionArn": execution_arn,
+            "includeExecutionData": False,
+        }
+        if next_token is not None:
+            kwargs["nextToken"] = next_token
+
+        response: dict = sfn.get_execution_history(**kwargs)  # type: ignore[attr-defined]
+
+        for event in response.get("events", []):
+            event_type: str = event.get("type", "")
+            if event_type == "TaskStateEntered":
+                details = event.get("stateEnteredEventDetails", {})
+                pending_state_name = details.get("name")
+            elif event_type == "TaskSucceeded":
+                if pending_state_name is not None:
+                    names.append(pending_state_name)
+                    pending_state_name = None
+
+        next_token = response.get("nextToken")
+        if next_token is None:
+            break
+
+    return names
+
+
 def _handle_get_deletion_status(event: dict, user_id: str) -> dict:
     """
-    GET /v1/profile/me/deletion-status — query deletion execution status.
+    GET /v1/profile/me/deletion-status?executionArn=<arn>
 
-    Stub: returns 501 until story 9.10 implements DescribeExecution logic.
-    Story 9.10 will replace this body without touching the router or
-    module-level singletons.
+    1. Validate executionArn query parameter is present (400 if absent).
+    2. Call DescribeExecution (404 if ExecutionDoesNotExist).
+    3. Parse execution.input, assert input.user_id == jwt.sub (403, empty body, if not).
+    4. Call GetExecutionHistory, collect completed step names.
+    5. Return 200 with {status, startDate, stopDate?, names}.
     """
+    query_params: dict = event.get("queryStringParameters") or {}
+    execution_arn: str | None = query_params.get("executionArn")
+
+    if not execution_arn:
+        logger.warning(
+            "deletion_status_missing_execution_arn",
+            extra={"user_id": user_id},
+        )
+        return _json_response(400, {"error": "missing_execution_arn"})
+
+    sfn = _get_sfn_client()
+
+    try:
+        describe_result = sfn.describe_execution(executionArn=execution_arn)
+    except ClientError as exc:
+        error_code = exc.response["Error"]["Code"]
+        if error_code == "ExecutionDoesNotExist":
+            logger.warning(
+                "deletion_status_execution_not_found",
+                extra={"user_id": user_id, "execution_arn": execution_arn},
+            )
+            return _json_response(404, {"error": "execution_not_found"})
+        raise
+
+    # Authorization: the execution input must record the same user_id as the JWT sub.
+    # Parse the input JSON and compare; a mismatch returns 403 with NO metadata.
+    try:
+        execution_input: dict = json.loads(describe_result.get("input", "{}"))
+        execution_owner: str = execution_input.get("user_id", "")
+    except (json.JSONDecodeError, TypeError):
+        execution_owner = ""
+
+    if execution_owner != user_id:
+        logger.warning(
+            "deletion_status_authorization_mismatch",
+            extra={
+                "jwt_user_id": user_id,
+                # Do NOT log execution_owner — that would leak the real owner's ID
+                # to an attacker who is probing for valid ARNs via log correlation.
+            },
+        )
+        # Return 403 with an empty body — no metadata of any kind.
+        return {
+            "statusCode": 403,
+            "headers": {"Content-Type": "application/json"},
+            "body": "{}",
+        }
+
+    # Collect completed step names from execution history.
+    completed_names: list[str] = _collect_completed_step_names(sfn, execution_arn)
+
+    status: str = describe_result.get("status", "UNKNOWN")
+    start_date: str | None = _serialize_dt(describe_result.get("startDate"))
+    stop_date: str | None = _serialize_dt(describe_result.get("stopDate"))
+
+    response_body: dict = {
+        "status": status,
+        "startDate": start_date,
+        "names": completed_names,
+    }
+    if stop_date is not None:
+        response_body["stopDate"] = stop_date
+
     logger.info(
-        "deletion_status_stub_called",
-        extra={"user_id": user_id, "note": "not yet implemented — story 9.10"},
+        "deletion_status_fetched",
+        extra={
+            "user_id": user_id,
+            "execution_arn": execution_arn,
+            "status": status,
+            "completed_steps_count": len(completed_names),
+        },
     )
-    return _json_response(501, {"error": "not_implemented"})
+
+    return _json_response(200, response_body)
 
 
 # ---------------------------------------------------------------------------

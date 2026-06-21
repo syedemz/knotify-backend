@@ -1681,6 +1681,7 @@ data "aws_iam_policy_document" "deletion_initiator_stepfunctions" {
     effect = "Allow"
     actions = [
       "states:DescribeExecution",
+      "states:GetExecutionHistory",
     ]
     resources = [
       local.deletion_execution_arn_pattern,

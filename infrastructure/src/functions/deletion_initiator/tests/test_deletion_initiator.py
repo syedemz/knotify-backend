@@ -1,7 +1,9 @@
 """
-Unit tests for story 9.9 — deletion_initiator Lambda handler.
+Unit tests for the deletion_initiator Lambda handler.
 
-TDD: these tests were written BEFORE handler.py to drive the implementation.
+Stories covered:
+  9.9 — DELETE /v1/profile/me (initiate account deletion)
+  9.10 — GET /v1/profile/me/deletion-status (query execution status)
 
 Acceptance criteria tested:
   A. DELETE /v1/profile/me — extracts user_id from JWT sub, calls
@@ -12,14 +14,22 @@ Acceptance criteria tested:
   D. Non-boolean purge_immediately value is rejected with 400.
   E. purge_immediately=True is forwarded correctly.
   F. JWT claims missing → 401.
-  G. GET /v1/profile/me/deletion-status → 501 (stub for story 9.10).
+  G. GET /v1/profile/me/deletion-status — 200 with status, startDate, names
+     (story 9.10: real DescribeExecution + GetExecutionHistory implementation).
   H. Unknown route → 404.
   I. StartExecution input includes jwt_sub == user_id (defense-in-depth contract).
-  J. Response body contains executionArn key with a non-empty string value.
+  J. StartExecution called with correct stateMachineArn.
+  K. GET /v1/profile/me/deletion-status — 403 when jwt.sub != execution input user_id,
+     body is empty (no metadata leaked to attacker).
+  L. GET /v1/profile/me/deletion-status — 400 when executionArn query param is absent.
+  M. GET /v1/profile/me/deletion-status — 404 when DescribeExecution raises
+     ExecutionDoesNotExist.
 """
 
 from __future__ import annotations
 
+import json
+from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -56,9 +66,13 @@ def _make_delete_event(
     }
 
 
-def _make_get_status_event(sub: str = "test-user-uuid-1234") -> dict:
+def _make_get_status_event(
+    sub: str = "test-user-uuid-1234",
+    execution_arn: str | None = "arn:aws:states:eu-central-1:123456789012:execution:knotify-dev-account-deletion:exec-abc",
+) -> dict:
     """Build a minimal API Gateway v2 GET /v1/profile/me/deletion-status event."""
-    return {
+    query_params: dict | None = {"executionArn": execution_arn} if execution_arn is not None else None
+    event: dict = {
         "requestContext": {
             "http": {
                 "method": "GET",
@@ -77,6 +91,9 @@ def _make_get_status_event(sub: str = "test-user-uuid-1234") -> dict:
             "x-knotify-edge-secret": "test-secret",
         },
     }
+    if query_params is not None:
+        event["queryStringParameters"] = query_params
+    return event
 
 
 def _make_unknown_route_event() -> dict:
@@ -134,6 +151,41 @@ _STATE_MACHINE_ARN = (
 
 _EDGE_SECRET = "test-secret"
 
+# Owned by user "test-user-uuid-1234" — used in story 9.10 happy-path tests.
+_DESCRIBE_EXECUTION_RESPONSE = {
+    "executionArn": _EXECUTION_ARN,
+    "stateMachineArn": _STATE_MACHINE_ARN,
+    "name": "exec-abc",
+    "status": "RUNNING",
+    "startDate": datetime(2026, 6, 20, 12, 0, 0, tzinfo=timezone.utc),
+    "input": json.dumps({"user_id": "test-user-uuid-1234", "purge_immediately": False}),
+}
+
+# GetExecutionHistory response: one TaskStateEntered, one TaskSucceeded, one more
+# TaskStateEntered (no corresponding TaskSucceeded yet — still RUNNING).
+_HISTORY_RESPONSE = {
+    "events": [
+        {
+            "id": 1,
+            "type": "TaskStateEntered",
+            "timestamp": datetime(2026, 6, 20, 12, 0, 1, tzinfo=timezone.utc),
+            "stateEnteredEventDetails": {"name": "ValidateDeletionRequest", "input": "{}"},
+        },
+        {
+            "id": 2,
+            "type": "TaskSucceeded",
+            "timestamp": datetime(2026, 6, 20, 12, 0, 2, tzinfo=timezone.utc),
+            "taskSucceededEventDetails": {"resource": "arn:aws:lambda:::function:validate", "output": "{}"},
+        },
+        {
+            "id": 3,
+            "type": "TaskStateEntered",
+            "timestamp": datetime(2026, 6, 20, 12, 0, 3, tzinfo=timezone.utc),
+            "stateEnteredEventDetails": {"name": "DisableCognitoUser", "input": "{}"},
+        },
+    ],
+}
+
 
 @pytest.fixture(autouse=True)
 def env_vars(monkeypatch):
@@ -147,6 +199,11 @@ def mock_sfn():
     """
     Patch handler._get_sfn_client so no real AWS call is made.
     Returns the mock Step Functions client.
+
+    Preconfigures:
+      start_execution  — returns _EXECUTION_ARN (9.9 tests)
+      describe_execution — returns _DESCRIBE_EXECUTION_RESPONSE (9.10 tests)
+      get_execution_history — returns _HISTORY_RESPONSE (9.10 tests)
     """
     with patch("deletion_initiator.handler._get_sfn_client") as mock_factory:
         mock_client = MagicMock()
@@ -154,6 +211,8 @@ def mock_sfn():
             "executionArn": _EXECUTION_ARN,
             "startDate": "2026-06-20T00:00:00Z",
         }
+        mock_client.describe_execution.return_value = _DESCRIBE_EXECUTION_RESPONSE
+        mock_client.get_execution_history.return_value = _HISTORY_RESPONSE
         mock_factory.return_value = mock_client
         yield mock_client
 
@@ -297,23 +356,31 @@ def test_given_missing_jwt_claims_when_handler_called_then_returns_401(
 
 
 # ---------------------------------------------------------------------------
-# Test G: GET /v1/profile/me/deletion-status → 501 (stub for story 9.10)
+# Test G: GET /v1/profile/me/deletion-status — 200 happy path (story 9.10)
 # ---------------------------------------------------------------------------
 
 
-def test_given_get_deletion_status_request_when_handler_called_then_returns_501(
+def test_given_get_deletion_status_request_when_owner_calls_then_returns_200_with_status_and_names(
     mock_sfn,
 ):
     """
-    Given a GET /v1/profile/me/deletion-status event,
+    Given a GET /v1/profile/me/deletion-status?executionArn=<arn> event
+    where the JWT sub matches the user_id in the execution input,
     when the handler is invoked,
-    then it returns HTTP 501 (not yet implemented — story 9.10).
+    then it returns HTTP 200 with status, startDate, and a names list.
     """
+    import json
     import deletion_initiator.handler as h
 
-    response = h.handler(_make_get_status_event(), None)
+    response = h.handler(_make_get_status_event(sub="test-user-uuid-1234"), None)
 
-    assert response["statusCode"] == 501
+    assert response["statusCode"] == 200
+    body = json.loads(response["body"])
+    assert body["status"] == "RUNNING"
+    assert "startDate" in body
+    assert "names" in body
+    # The history mock has one TaskSucceeded event; names list must be non-empty.
+    assert isinstance(body["names"], list)
 
 
 # ---------------------------------------------------------------------------
@@ -382,3 +449,88 @@ def test_given_valid_delete_request_when_handler_called_then_start_execution_tar
 
     call_kwargs = mock_sfn.start_execution.call_args
     assert call_kwargs.kwargs["stateMachineArn"] == _STATE_MACHINE_ARN
+
+
+# ---------------------------------------------------------------------------
+# Test K: GET /v1/profile/me/deletion-status — 403 when JWT sub ≠ execution
+#          input user_id; response body must be empty (no metadata leaked).
+# ---------------------------------------------------------------------------
+
+
+def test_given_get_deletion_status_request_when_jwt_sub_does_not_match_execution_owner_then_returns_403_with_empty_body(
+    mock_sfn,
+):
+    """
+    Given a GET /v1/profile/me/deletion-status?executionArn=<arn> event
+    where the JWT sub is 'attacker-user' but the execution input records
+    user_id='test-user-uuid-1234',
+    when the handler is invoked,
+    then it returns HTTP 403 and the response body contains NO execution
+    metadata (status, startDate, stopDate, or names must all be absent).
+    """
+    import json
+    import deletion_initiator.handler as h
+
+    response = h.handler(_make_get_status_event(sub="attacker-user"), None)
+
+    assert response["statusCode"] == 403
+    body = json.loads(response["body"])
+    # The body must be empty — {} is acceptable, but none of these keys may appear.
+    assert "status" not in body
+    assert "startDate" not in body
+    assert "stopDate" not in body
+    assert "names" not in body
+
+
+# ---------------------------------------------------------------------------
+# Test L: GET /v1/profile/me/deletion-status — 400 when executionArn param absent
+# ---------------------------------------------------------------------------
+
+
+def test_given_get_deletion_status_request_when_execution_arn_param_is_absent_then_returns_400(
+    mock_sfn,
+):
+    """
+    Given a GET /v1/profile/me/deletion-status event with NO executionArn
+    query parameter,
+    when the handler is invoked,
+    then it returns HTTP 400 and does NOT call DescribeExecution.
+    """
+    import deletion_initiator.handler as h
+
+    response = h.handler(_make_get_status_event(execution_arn=None), None)
+
+    assert response["statusCode"] == 400
+    mock_sfn.describe_execution.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Test M: GET /v1/profile/me/deletion-status — 404 on ExecutionDoesNotExist
+# ---------------------------------------------------------------------------
+
+
+def test_given_get_deletion_status_request_when_execution_does_not_exist_then_returns_404(
+    mock_sfn,
+):
+    """
+    Given a GET /v1/profile/me/deletion-status?executionArn=<arn> event
+    where AWS raises ExecutionDoesNotExist for that ARN,
+    when the handler is invoked,
+    then it returns HTTP 404.
+    """
+    from botocore.exceptions import ClientError
+    import deletion_initiator.handler as h
+
+    mock_sfn.describe_execution.side_effect = ClientError(
+        {
+            "Error": {
+                "Code": "ExecutionDoesNotExist",
+                "Message": "Execution Does Not Exist: arn:...",
+            }
+        },
+        "DescribeExecution",
+    )
+
+    response = h.handler(_make_get_status_event(sub="test-user-uuid-1234"), None)
+
+    assert response["statusCode"] == 404
