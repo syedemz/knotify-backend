@@ -1000,15 +1000,24 @@ def test_e2e_soft_delete_full_workflow():  # noqa: C901 (flat sequential by desi
             f"Aurora users.deleted_at is None for user A after soft-delete workflow. "
             f"Row: {aurora_row!r}"
         )
-        # PII fields must be nulled
-        for pii_field in ["email", "phone_number", "photo_url", "chosen_profile_avatar", "preference_vector"]:
+        # PII fields that are nullable in the schema must be nulled outright.
+        # email and username carry per-user sentinels instead of NULL because
+        # email is NOT NULL + UNIQUE and lower(username) is partially UNIQUE
+        # (migrations 0002, 0010). See post_merge_hotfixes #4/#5 in the PRD.
+        for pii_field in ["phone_number", "photo_url", "chosen_profile_avatar", "preference_vector"]:
             assert aurora_row[pii_field] is None, (
                 f"Aurora users.{pii_field} must be NULL after soft-delete PII strip, "
                 f"got {aurora_row[pii_field]!r}"
             )
-        assert aurora_row["username"] == "[deleted-user]", (
-            f"Aurora users.username must be '[deleted-user]' after soft-delete, "
-            f"got {aurora_row['username']!r}"
+        expected_email_sentinel = f"deleted-{a_id}@deleted.knotify.local"
+        assert aurora_row["email"] == expected_email_sentinel, (
+            f"Aurora users.email must be the per-user sentinel {expected_email_sentinel!r} "
+            f"after soft-delete, got {aurora_row['email']!r}"
+        )
+        expected_username_sentinel = f"[deleted-{a_id}]"
+        assert aurora_row["username"] == expected_username_sentinel, (
+            f"Aurora users.username must be the per-user sentinel {expected_username_sentinel!r} "
+            f"after soft-delete, got {aurora_row['username']!r}"
         )
         assert aurora_row["first_name"] == "Deleted", (
             f"Aurora users.first_name must be 'Deleted' after soft-delete, "

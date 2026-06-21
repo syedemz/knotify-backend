@@ -79,10 +79,15 @@ def _make_event(
 
 
 def _make_message_item(room_id: str, message_id: str, sender_id: str) -> dict:
-    """Build a DynamoDB-style ChatMessages item."""
+    """Build a DynamoDB-style ChatMessages item.
+
+    The ChatMessages SK attribute name is `created_at_message_id` per the
+    phase-2 DynamoDB module. The Python identifier `message_id` is kept
+    for readability; only the DDB attribute key is the real schema.
+    """
     return {
         "room_id": {"S": room_id},
-        "message_id": {"S": message_id},
+        "created_at_message_id": {"S": message_id},
         "sender_id": {"S": sender_id},
         "content": {"S": "some content"},
     }
@@ -236,8 +241,8 @@ def test_given_matching_message_when_delete_item_called_then_key_includes_room_i
     key = delete_kwargs["Key"]
     assert "room_id" in key, "DeleteItem Key must include room_id"
     assert key["room_id"]["S"] == _ROOM_1
-    assert "message_id" in key, "DeleteItem Key must include message_id (SK)"
-    assert key["message_id"]["S"] == "msg-xyz"
+    assert "created_at_message_id" in key, "DeleteItem Key must include created_at_message_id (SK)"
+    assert key["created_at_message_id"]["S"] == "msg-xyz"
 
 
 def test_given_matching_message_when_delete_item_called_then_table_name_is_chat_messages(
@@ -355,7 +360,7 @@ def test_given_room_query_returns_multiple_pages_when_handler_called_then_all_pa
     """
     from hard_delete_user_chat_messages import handler
 
-    page1_lek = {"room_id": {"S": _ROOM_1}, "message_id": {"S": "msg-001"}}
+    page1_lek = {"room_id": {"S": _ROOM_1}, "created_at_message_id": {"S": "msg-001"}}
     mock_dynamo.query.side_effect = [
         _make_query_response(
             [_make_message_item(_ROOM_1, "msg-001", _USER_ID)],
@@ -382,7 +387,7 @@ def test_given_room_query_page2_uses_exclusive_start_key_from_page1(
     """
     from hard_delete_user_chat_messages import handler
 
-    page1_lek = {"room_id": {"S": _ROOM_1}, "message_id": {"S": "msg-001"}}
+    page1_lek = {"room_id": {"S": _ROOM_1}, "created_at_message_id": {"S": "msg-001"}}
     mock_dynamo.query.side_effect = [
         _make_query_response(
             [_make_message_item(_ROOM_1, "msg-001", _USER_ID)],
@@ -441,7 +446,7 @@ def test_given_re_invocation_with_last_evaluated_key_when_handler_called_then_fi
     """
     from hard_delete_user_chat_messages import handler
 
-    prior_lek = {"room_id": {"S": _ROOM_2}, "message_id": {"S": "msg-050"}}
+    prior_lek = {"room_id": {"S": _ROOM_2}, "created_at_message_id": {"S": "msg-050"}}
     mock_dynamo.query.return_value = _make_query_response([])
 
     handler.handler(
@@ -574,7 +579,7 @@ def test_given_message_item_with_known_ids_when_delete_item_called_then_key_matc
 
     delete_kwargs = mock_dynamo.delete_item.call_args.kwargs
     assert delete_kwargs["Key"]["room_id"]["S"] == "room-specific-001"
-    assert delete_kwargs["Key"]["message_id"]["S"] == "msg-specific-999"
+    assert delete_kwargs["Key"]["created_at_message_id"]["S"] == "msg-specific-999"
 
 
 # ---------------------------------------------------------------------------
@@ -620,10 +625,10 @@ def test_integration_given_3_messages_across_2_rooms_when_handler_invoked_then_a
 
     # Seed: 2 messages in room_a, 1 in room_b from user_id; 1 in room_b from other_user
     seed_items = [
-        {"room_id": {"S": room_a}, "message_id": {"S": "integ-msg-1"}, "sender_id": {"S": user_id}, "content": {"S": "hi"}},
-        {"room_id": {"S": room_a}, "message_id": {"S": "integ-msg-2"}, "sender_id": {"S": user_id}, "content": {"S": "there"}},
-        {"room_id": {"S": room_b}, "message_id": {"S": "integ-msg-3"}, "sender_id": {"S": user_id}, "content": {"S": "bye"}},
-        {"room_id": {"S": room_b}, "message_id": {"S": "integ-msg-4"}, "sender_id": {"S": other_user}, "content": {"S": "still here"}},
+        {"room_id": {"S": room_a}, "created_at_message_id": {"S": "integ-msg-1"}, "sender_id": {"S": user_id}, "content": {"S": "hi"}},
+        {"room_id": {"S": room_a}, "created_at_message_id": {"S": "integ-msg-2"}, "sender_id": {"S": user_id}, "content": {"S": "there"}},
+        {"room_id": {"S": room_b}, "created_at_message_id": {"S": "integ-msg-3"}, "sender_id": {"S": user_id}, "content": {"S": "bye"}},
+        {"room_id": {"S": room_b}, "created_at_message_id": {"S": "integ-msg-4"}, "sender_id": {"S": other_user}, "content": {"S": "still here"}},
     ]
     for item in seed_items:
         ddb.put_item(TableName=table, Item=item)
@@ -669,5 +674,5 @@ def test_integration_given_3_messages_across_2_rooms_when_handler_invoked_then_a
     for item in seed_items:
         ddb.delete_item(
             TableName=table,
-            Key={"room_id": item["room_id"], "message_id": item["message_id"]},
+            Key={"room_id": item["room_id"], "created_at_message_id": item["created_at_message_id"]},
         )

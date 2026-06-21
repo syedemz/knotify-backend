@@ -198,7 +198,10 @@ def _delete_room_messages(
 def _delete_message(item: dict) -> None:
     """
     DeleteItem on a single ChatMessages row — removes the row entirely.
-    Uses room_id (PK) and message_id (SK) from the Query result item.
+    Uses room_id (PK) and created_at_message_id (SK) from the Query result
+    item. The SK attribute name is `created_at_message_id` per the
+    ChatMessages table definition (phase-2 DynamoDB module); the historical
+    name `message_id` only survives as a Python identifier here.
 
     Idempotent: a DeleteItem on a key that no longer exists is a no-op
     (DynamoDB returns success with no error for missing keys).
@@ -206,17 +209,17 @@ def _delete_message(item: dict) -> None:
     client = _get_dynamo()
 
     room_id: str = item["room_id"]["S"]
-    message_id: str = item["message_id"]["S"]
+    message_id: str = item["created_at_message_id"]["S"]
 
     client.delete_item(
         TableName=TABLE_CHAT_MESSAGES,
         Key={
             "room_id": {"S": room_id},
-            "message_id": {"S": message_id},
+            "created_at_message_id": {"S": message_id},
         },
     )
 
     logger.debug(
         "hard_delete_chat_messages_message_deleted",
-        extra={"room_id": room_id, "message_id": message_id},
+        extra={"room_id": room_id, "created_at_message_id": message_id},
     )
