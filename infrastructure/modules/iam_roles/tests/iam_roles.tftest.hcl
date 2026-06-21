@@ -1527,8 +1527,8 @@ run "write_audit_log_dynamodb_policy_uses_scoped_arn_when_provided" {
   command = plan
 
   variables {
-    environment                   = "test"
-    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    environment                      = "test"
+    aurora_master_user_secret_arn    = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
     account_deletion_audit_table_arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/account_deletion_audit"
   }
 
@@ -1837,5 +1837,73 @@ run "role_arns_output_contains_anonymize_chat_messages" {
   assert {
     condition     = output.role_arns["anonymize_chat_messages"] == "arn:aws:iam::123456789012:role/knotify-test-anonymize-chat-messages"
     error_message = "role_arns[anonymize_chat_messages] must be wired to aws_iam_role.anonymize_chat_messages.arn"
+  }
+}
+
+# ===========================================================================
+# Story 9.7 — delete_dynamodb_personal_data role tests
+# ===========================================================================
+
+run "delete_dynamodb_personal_data_role_uses_lambda_trust_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = can(aws_iam_role.delete_dynamodb_personal_data.name)
+    error_message = "delete_dynamodb_personal_data role must be declared"
+  }
+}
+
+run "delete_dynamodb_personal_data_role_has_basic_execution_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy_attachment.delete_dynamodb_personal_data_basic_execution.policy_arn == "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+    error_message = "delete_dynamodb_personal_data must attach AWSLambdaBasicExecutionRole (no VPC access — runs outside VPC)"
+  }
+}
+
+run "delete_dynamodb_personal_data_dynamodb_inline_policy_exists" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  assert {
+    condition     = can(aws_iam_role_policy.delete_dynamodb_personal_data_dynamodb.name)
+    error_message = "delete_dynamodb_personal_data dynamodb inline policy must be declared"
+  }
+}
+
+run "role_arns_output_contains_delete_dynamodb_personal_data" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+  }
+
+  override_resource {
+    target = aws_iam_role.delete_dynamodb_personal_data
+    values = {
+      arn = "arn:aws:iam::123456789012:role/knotify-test-delete-dynamodb-personal-data"
+    }
+    override_during = plan
+  }
+
+  assert {
+    condition     = output.role_arns["delete_dynamodb_personal_data"] == "arn:aws:iam::123456789012:role/knotify-test-delete-dynamodb-personal-data"
+    error_message = "role_arns[delete_dynamodb_personal_data] must be wired to aws_iam_role.delete_dynamodb_personal_data.arn"
   }
 }

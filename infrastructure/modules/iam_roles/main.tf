@@ -1484,3 +1484,70 @@ resource "aws_iam_role_policy" "stale_token_cleanup_dynamodb" {
   role   = aws_iam_role.stale_token_cleanup.name
   policy = data.aws_iam_policy_document.stale_token_cleanup_dynamodb.json
 }
+
+# ===========================================================================
+# Role: delete_dynamodb_personal_data
+#
+# For the knotify-delete-dynamodb-personal-data Lambda (story 9.7).
+# Deletes all Notifications and PushNotificationTokens rows for the deleted
+# user.  Called from the account-deletion Step Functions state machine inside
+# the ParallelCleanup block.
+#
+# OUTSIDE the VPC: only touches DynamoDB (Notifications and
+# PushNotificationTokens tables) — no Aurora, no AppSync.
+# AWSLambdaBasicExecutionRole is sufficient — no ENI attachment needed.
+# Consistent with deactivate_chat_rooms, anonymize_chat_messages,
+# write_audit_log, and push_fanout (hotfix #106 lesson).
+#
+# Least-privilege DynamoDB permissions:
+#   dynamodb:Query          — find all rows for user_id in each table
+#   dynamodb:BatchWriteItem — delete found rows in chunks of ≤25
+# Both actions are scoped to the exact table ARNs only — no wildcard resources.
+# ===========================================================================
+
+resource "aws_iam_role" "delete_dynamodb_personal_data" {
+  name               = "knotify-${var.environment}-delete-dynamodb-personal-data"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+# Basic Lambda execution — CloudWatch Logs only.
+# No VPC access policy: this Lambda runs OUTSIDE the VPC.
+resource "aws_iam_role_policy_attachment" "delete_dynamodb_personal_data_basic_execution" {
+  role       = aws_iam_role.delete_dynamodb_personal_data.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# DynamoDB Query + BatchWriteItem on Notifications and PushNotificationTokens.
+# Both tables are scoped to their exact ARNs.  Default wildcard fallbacks are
+# used only in isolated IAM unit tests where the dynamodb module is not wired.
+data "aws_iam_policy_document" "delete_dynamodb_personal_data_dynamodb" {
+  statement {
+    sid    = "NotificationsQueryAndDelete"
+    effect = "Allow"
+    actions = [
+      "dynamodb:Query",
+      "dynamodb:BatchWriteItem",
+    ]
+    resources = [
+      var.notifications_table_arn != "" ? var.notifications_table_arn : "arn:aws:dynamodb:*:*:table/Notifications",
+    ]
+  }
+
+  statement {
+    sid    = "PushNotificationTokensQueryAndDelete"
+    effect = "Allow"
+    actions = [
+      "dynamodb:Query",
+      "dynamodb:BatchWriteItem",
+    ]
+    resources = [
+      var.push_notification_tokens_table_arn != "" ? var.push_notification_tokens_table_arn : "arn:aws:dynamodb:*:*:table/PushNotificationTokens",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "delete_dynamodb_personal_data_dynamodb" {
+  name   = "delete-dynamodb-personal-data-dynamodb"
+  role   = aws_iam_role.delete_dynamodb_personal_data.name
+  policy = data.aws_iam_policy_document.delete_dynamodb_personal_data_dynamodb.json
+}

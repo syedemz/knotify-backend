@@ -36,5 +36,7 @@ output "role_arns" {
     deactivate_chat_rooms = aws_iam_role.deactivate_chat_rooms.arn
     # Story 9.6 — anonymize_chat_messages IAM role (DynamoDB Query/UpdateItem on ChatMessages)
     anonymize_chat_messages = aws_iam_role.anonymize_chat_messages.arn
+    # Story 9.7 — delete_dynamodb_personal_data IAM role (DynamoDB Query/BatchWriteItem on Notifications + PushNotificationTokens)
+    delete_dynamodb_personal_data = aws_iam_role.delete_dynamodb_personal_data.arn
   }
 }
