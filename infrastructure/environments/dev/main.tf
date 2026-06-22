@@ -1509,6 +1509,9 @@ module "hard_purge" {
     subnet_ids         = module.networking.private_subnet_ids
     security_group_ids = [module.networking.lambda_security_group_id]
   }
+  # hotfix #6: async-refresh deck_view after DELETE to evict the stale row
+  # immediately instead of waiting for the 15-minute scheduled refresh.
+  refresh_lambda_arn = module.refresh_deck_view.function_arn
 }
 
 # ---------------------------------------------------------------------------
@@ -1586,6 +1589,10 @@ module "soft_delete_aurora" {
     subnet_ids         = module.networking.private_subnet_ids
     security_group_ids = [module.networking.lambda_security_group_id]
   }
+  # hotfix #6: async-refresh deck_view after UPDATE to evict the soft-deleted
+  # user from the materialised view immediately rather than waiting up to 15
+  # minutes for the scheduled refresh.
+  refresh_lambda_arn = module.refresh_deck_view.function_arn
 }
 
 # ---------------------------------------------------------------------------

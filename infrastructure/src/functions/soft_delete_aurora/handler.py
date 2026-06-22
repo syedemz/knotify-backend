@@ -40,13 +40,26 @@ on an already-soft-deleted user matches zero rows and returns rows_affected=0
 without error.  Step Functions treats any non-exception return as success, so
 the task is safe to retry.
 
+Post-commit deck_view refresh (hotfix #6):
+  After a successful soft-delete (rows_affected > 0), this Lambda async-invokes
+  the refresh_deck_view Lambda. deck_view is a materialised view filtered by
+  `deleted_at IS NULL`; without a refresh the soft-deleted user remains visible
+  in /v1/match/deck until the 15-minute scheduled refresh runs. The invoke
+  mirrors the profile handler's _invoke_refresh_lambda pattern (story 7.4):
+  fire-and-forget (InvocationType="Event"), best-effort (any error is logged
+  and swallowed), and skipped when REFRESH_LAMBDA_ARN is unset. IAM is already
+  in place — soft_delete_aurora runs as aurora_writer which holds
+  lambda:InvokeFunction scoped to the refresh Lambda ARN (story 7.4).
+
 Environment variables:
-    DB_SECRET_NAME  — Secrets Manager secret name for the Aurora app-user
-                      credential (knotify-<env>-app-user-credential).
-    AURORA_HOST     — Aurora cluster writer endpoint.
-    AURORA_PORT     — Aurora port (default 5432).
-    AURORA_DBNAME   — Aurora database name.
-    LOG_LEVEL       — logging level (default: INFO).
+    DB_SECRET_NAME     — Secrets Manager secret name for the Aurora app-user
+                         credential (knotify-<env>-app-user-credential).
+    AURORA_HOST        — Aurora cluster writer endpoint.
+    AURORA_PORT        — Aurora port (default 5432).
+    AURORA_DBNAME      — Aurora database name.
+    REFRESH_LAMBDA_ARN — ARN of the refresh_deck_view Lambda (hotfix #6).
+                         Empty string disables the post-commit refresh.
+    LOG_LEVEL          — logging level (default: INFO).
 """
 
 from __future__ import annotations
@@ -55,12 +68,14 @@ import logging
 import os
 from typing import Any
 
+import boto3
 import knotify_db
 
 logger = logging.getLogger(__name__)
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
 _DB_SECRET_NAME: str = os.environ.get("DB_SECRET_NAME", "")
+_REFRESH_LAMBDA_ARN: str = os.environ.get("REFRESH_LAMBDA_ARN", "")
 
 # §11.1 step-2 soft-delete SQL.
 # Sets deleted_at and nulls all PII columns in a single conditional UPDATE.
@@ -140,4 +155,57 @@ def handler(event: dict, context: Any) -> dict:
         extra={"user_id": user_id, "rows_affected": rows_affected},
     )
 
+    # Post-commit deck_view refresh (hotfix #6). Only invoked when the
+    # soft-delete actually changed a row — a no-op re-invocation does not
+    # need a refresh. Best-effort, never raises.
+    if rows_affected > 0:
+        _invoke_refresh_lambda()
+
     return {"user_id": user_id, "rows_affected": rows_affected}
+
+
+def _invoke_refresh_lambda() -> None:
+    """
+    Best-effort async invocation of the refresh_deck_view Lambda.
+
+    deck_view is a materialised view filtered by `deleted_at IS NULL`. After
+    a soft-delete commits the row carries a non-null deleted_at, but the MV
+    still has the pre-delete snapshot until a refresh runs. Without this
+    invoke the deleted user remains visible in /v1/match/deck for up to 15
+    minutes (the scheduled refresh cadence) — long enough to fail E2E and to
+    surface a stale candidate in prod.
+
+    Mirrors the profile handler's pattern: fire-and-forget (InvocationType=
+    "Event"), best-effort. Any failure (missing ARN, transient AWS error) is
+    logged as a warning and swallowed — the EventBridge 15-minute refresh
+    covers any missed invoke. IAM is already in place: this Lambda's role
+    (aurora_writer) carries lambda:InvokeFunction scoped to the refresh
+    Lambda ARN (story 7.4).
+    """
+    if not _REFRESH_LAMBDA_ARN:
+        logger.warning(
+            "refresh_lambda_invoke_skipped",
+            extra={"reason": "REFRESH_LAMBDA_ARN not configured"},
+        )
+        return
+
+    try:
+        client = boto3.client("lambda")
+        client.invoke(
+            FunctionName=_REFRESH_LAMBDA_ARN,
+            InvocationType="Event",
+            Payload=b"{}",
+        )
+        logger.info(
+            "refresh_lambda_invoked",
+            extra={"refresh_lambda_arn": _REFRESH_LAMBDA_ARN},
+        )
+    except Exception as exc:
+        logger.warning(
+            "refresh_lambda_invoke_failed",
+            extra={
+                "refresh_lambda_arn": _REFRESH_LAMBDA_ARN,
+                "error": str(exc),
+                "note": "Aurora commit succeeded; deck_view will refresh on next scheduled run",
+            },
+        )

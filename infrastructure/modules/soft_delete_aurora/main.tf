@@ -64,5 +64,12 @@ module "lambda" {
     AURORA_HOST   = var.aurora_host
     AURORA_PORT   = var.aurora_port
     AURORA_DBNAME = var.aurora_dbname
+
+    # ARN of the refresh_deck_view Lambda (hotfix #6) — async-invoked by the
+    # handler after a successful soft-delete to evict the stale row from the
+    # deck_view materialised view immediately rather than waiting for the
+    # 15-minute scheduled refresh. Empty default keeps the env var absent
+    # when the caller does not supply it (the handler skips the invoke).
+    REFRESH_LAMBDA_ARN = var.refresh_lambda_arn
   }
 }

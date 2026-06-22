@@ -259,6 +259,91 @@ def test_given_handler_when_execute_called_then_user_id_is_passed_as_parameter(
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Hotfix #6: post-commit refresh_deck_view async invoke
+# ---------------------------------------------------------------------------
+
+
+def test_given_rows_affected_when_handler_completes_then_refresh_lambda_is_invoked(mock_conn):
+    """
+    Hotfix #6: when the soft-delete actually changes a row, the handler must
+    async-invoke the refresh_deck_view Lambda so deck_view stops carrying the
+    soft-deleted user immediately (instead of waiting up to 15 minutes for the
+    scheduled refresh).
+    """
+    from soft_delete_aurora import handler
+
+    mock_connection, mock_cursor = mock_conn
+    mock_cursor.rowcount = 1
+
+    fake_client = MagicMock()
+    with patch.object(handler, "_REFRESH_LAMBDA_ARN", "arn:aws:lambda:eu-central-1:1:function:refresh"), \
+         patch("soft_delete_aurora.handler.boto3.client", return_value=fake_client) as mock_boto:
+        handler.handler(_make_event(), None)
+
+    mock_boto.assert_called_once_with("lambda")
+    fake_client.invoke.assert_called_once()
+    kwargs = fake_client.invoke.call_args.kwargs
+    assert kwargs["FunctionName"] == "arn:aws:lambda:eu-central-1:1:function:refresh"
+    assert kwargs["InvocationType"] == "Event"
+
+
+def test_given_zero_rows_affected_when_handler_completes_then_refresh_lambda_is_not_invoked(mock_conn):
+    """
+    Hotfix #6: a re-invocation on an already-soft-deleted user (rowcount=0) must
+    NOT trigger the refresh — there is no MV staleness to clear.
+    """
+    from soft_delete_aurora import handler
+
+    mock_connection, mock_cursor = mock_conn
+    mock_cursor.rowcount = 0
+
+    fake_client = MagicMock()
+    with patch.object(handler, "_REFRESH_LAMBDA_ARN", "arn:aws:lambda:eu-central-1:1:function:refresh"), \
+         patch("soft_delete_aurora.handler.boto3.client", return_value=fake_client):
+        handler.handler(_make_event(), None)
+
+    fake_client.invoke.assert_not_called()
+
+
+def test_given_refresh_arn_unset_when_rows_affected_then_invoke_is_skipped(mock_conn):
+    """
+    Hotfix #6: when REFRESH_LAMBDA_ARN is the empty string the handler skips
+    the invoke and logs a warning. Mirrors the profile handler's contract.
+    """
+    from soft_delete_aurora import handler
+
+    mock_connection, mock_cursor = mock_conn
+    mock_cursor.rowcount = 1
+
+    with patch.object(handler, "_REFRESH_LAMBDA_ARN", ""), \
+         patch("soft_delete_aurora.handler.boto3.client") as mock_boto:
+        handler.handler(_make_event(), None)
+
+    mock_boto.assert_not_called()
+
+
+def test_given_refresh_invoke_fails_when_handler_completes_then_aurora_result_still_returned(mock_conn):
+    """
+    Hotfix #6: a failure in the async invoke (transient AWS error, IAM blip)
+    is best-effort — it must be swallowed so the Aurora commit's success is
+    still returned to Step Functions.
+    """
+    from soft_delete_aurora import handler
+
+    mock_connection, mock_cursor = mock_conn
+    mock_cursor.rowcount = 1
+
+    fake_client = MagicMock()
+    fake_client.invoke.side_effect = RuntimeError("AWS hiccup")
+
+    with patch.object(handler, "_REFRESH_LAMBDA_ARN", "arn:aws:lambda:eu-central-1:1:function:refresh"), \
+         patch("soft_delete_aurora.handler.boto3.client", return_value=fake_client):
+        result = handler.handler(_make_event(), None)
+
+    assert result["rows_affected"] == 1
+
+
 def test_given_db_error_during_update_when_handler_called_then_connection_is_rolled_back(mock_conn):
     """
     The connection must be rolled back if the UPDATE raises so that the
