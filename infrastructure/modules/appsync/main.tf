@@ -511,9 +511,16 @@ resource "aws_appsync_function" "check_identity_match" {
 # [check_room_membership.function_id]. The check runs during the subscribe
 # phase; on rejection AppSync closes the WebSocket before delivering events.
 #
-# request_template / response_template are set to the AppSync passthrough
-# templates required for PIPELINE resolvers (non-JS runtime fallback path;
-# the actual logic is in the function's `code` above).
+# request_template is "{}" (passthrough).
+# response_template returns `null` at subscribe time. This is required because
+# the pipeline function returns the ChatRoomMembership item (snake_case keys
+# user_id / room_id), and AppSync type-checks the response_template output
+# against the subscription field's return type (Message, ChatRoom, ...). Since
+# the membership item shape doesn't match the field type, AppSync would reject
+# the subscription with "Cannot return null for non-nullable field". At
+# publish time, AppSync delivers the publishing mutation's payload directly
+# without re-running the resolver, so returning null here only affects the
+# subscribe-time ack (which clients ignore).
 # ---------------------------------------------------------------------------
 
 resource "aws_appsync_resolver" "on_message_in_room" {
@@ -526,9 +533,8 @@ resource "aws_appsync_resolver" "on_message_in_room" {
     functions = [aws_appsync_function.check_room_membership.function_id]
   }
 
-  # Passthrough request/response for PIPELINE resolvers.
   request_template  = "{}"
-  response_template = "$util.toJson($ctx.result)"
+  response_template = "null"
 }
 
 resource "aws_appsync_resolver" "on_typing_in_room" {
@@ -542,7 +548,7 @@ resource "aws_appsync_resolver" "on_typing_in_room" {
   }
 
   request_template  = "{}"
-  response_template = "$util.toJson($ctx.result)"
+  response_template = "null"
 }
 
 resource "aws_appsync_resolver" "on_room_deactivated" {
@@ -556,7 +562,7 @@ resource "aws_appsync_resolver" "on_room_deactivated" {
   }
 
   request_template  = "{}"
-  response_template = "$util.toJson($ctx.result)"
+  response_template = "null"
 }
 
 resource "aws_appsync_resolver" "on_room_reactivated" {
@@ -570,7 +576,7 @@ resource "aws_appsync_resolver" "on_room_reactivated" {
   }
 
   request_template  = "{}"
-  response_template = "$util.toJson($ctx.result)"
+  response_template = "null"
 }
 
 resource "aws_appsync_resolver" "on_read_receipt" {
@@ -584,7 +590,7 @@ resource "aws_appsync_resolver" "on_read_receipt" {
   }
 
   request_template  = "{}"
-  response_template = "$util.toJson($ctx.result)"
+  response_template = "null"
 }
 
 # ---------------------------------------------------------------------------
@@ -606,8 +612,10 @@ resource "aws_appsync_resolver" "on_notification_for_me" {
     functions = [aws_appsync_function.check_identity_match.function_id]
   }
 
+  # response_template returns null at subscribe time; see comment on
+  # on_message_in_room above for the rationale.
   request_template  = "{}"
-  response_template = "$util.toJson($ctx.result)"
+  response_template = "null"
 }
 
 resource "aws_appsync_resolver" "on_friend_request_updated" {
@@ -621,7 +629,7 @@ resource "aws_appsync_resolver" "on_friend_request_updated" {
   }
 
   request_template  = "{}"
-  response_template = "$util.toJson($ctx.result)"
+  response_template = "null"
 }
 
 # ---------------------------------------------------------------------------
