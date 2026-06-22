@@ -1,6 +1,6 @@
 phase: 9
 title: Account deletion (Step Functions, soft delete)
-last_updated: 2026-06-21 (post-merge hotfix #5: hard_delete SK + E2E sentinel assertions)
+last_updated: 2026-06-22 (post-merge hotfix #6: deck_view refresh on delete + E2E admin_create_user)
 
 context_summary: |
   Implements the account-deletion workflow per §11 of architecture.md with the §13 #8 resolution applied: soft delete (UPDATE users SET deleted_at, strip PII) with a 30-day retention before a scheduled hard purge via cascade. ChatMessages are anonymized rather than deleted per §13 #21 — sender_id rewritten to '[deleted-user]' while content is preserved. Step Functions Standard workflow orchestrates the steps; each step is an idempotent Python 3.14 Lambda. An audit log table records initiation and completion. A purge_immediately flag supports GDPR right-to-be-forgotten by branching at workflow entry into a hard-delete path that fully removes the requester's Aurora rows, ChatMessages, and ChatRoomMembership rows. This phase ships after chat because the workflow needs to deactivate ChatRooms, anonymize/hard-delete ChatMessages, and clean ChatRoomMembership — all DynamoDB tables created in phase 2 and operated on by phase 8.
@@ -448,3 +448,58 @@ post_merge_hotfixes:
       The other two sub-tests (block_filter_regression and purge_immediately)
       did not need updates because they assert aurora_row is None
       post-hard-purge.
+
+  # -------------------------------------------------------------------------
+  # Sixth post-merge hotfix (discovered 2026-06-22 after hotfix #5 reached
+  # production-dev and the E2E re-run reached block_filter_regression).
+  # Bundled in `hotfix/deckview-refresh-on-delete-and-admin-create-user`.
+  # -------------------------------------------------------------------------
+
+  - title: Story 9.5 / 9.11 — soft_delete_aurora and hard_purge left deck_view materialised view stale
+    severity: high (deleted users remained visible on /v1/match/deck for up to 15 minutes)
+    root_cause: |
+      deck_view is a MATERIALIZED VIEW filtered by `WHERE deleted_at IS NULL`
+      (migration 0011). Soft-delete and hard-purge mutate the source `users`
+      table but the MV snapshot is unchanged until `REFRESH MATERIALIZED VIEW
+      CONCURRENTLY public.deck_view` runs. That refresh is privileged
+      (SECURITY DEFINER, owned by aurora_refresh; app_user has no EXECUTE)
+      and is otherwise driven by an EventBridge schedule every 15 minutes.
+      Neither deletion Lambda invoked it, so the block_filter_regression
+      E2E sub-test failed: user A (deleted) still appeared in B's deck.
+      The profile PATCH handler (story 7.4) already solves the same problem
+      by async-invoking the refresh_deck_view Lambda after a write — the
+      deletion handlers were the missing peers.
+    fix: |
+      Both soft_delete_aurora and hard_purge handlers now mirror the profile
+      handler's `_invoke_refresh_lambda()` pattern: fire-and-forget
+      lambda.invoke(InvocationType="Event"), gated on rows_affected > 0, with
+      best-effort exception handling so the Aurora commit's success is still
+      returned to Step Functions if the invoke errors. A new
+      `refresh_lambda_arn` module variable (default "") plumbs the ARN
+      through; environments/dev/main.tf and environments/prod/main.tf wire
+      it to module.refresh_deck_view.function_arn. The aurora_writer IAM
+      role already carries lambda:InvokeFunction scoped to that ARN
+      (story 7.4). Nine new unit tests cover invoke-on-success,
+      no-invoke-on-noop, no-invoke-on-empty-ARN, single-invoke-on-scheduled-
+      batch (hard_purge only), and best-effort swallow on invoke failure.
+
+  - title: Story 9.13 — E2E test exhausted Cognito's account-wide 50-emails-per-day quota
+    severity: medium (test scaffolding bug; blocks E2E re-runs until daily reset)
+    root_cause: |
+      _mint_completed_user used cognito.sign_up + admin_confirm_sign_up. The
+      user-flow sign_up triggers a COGNITO_DEFAULT verification email even
+      when an admin confirm runs immediately after — the message is queued
+      by Cognito itself, not gated on confirmation state. With three E2E
+      sub-tests each minting two users, plus retries across the hotfix
+      stack, the user pool's account-wide cap was hit on 2026-06-22 and
+      test_e2e_purge_immediately skipped with LimitExceededException.
+    fix: |
+      _mint_completed_user now uses admin_create_user(MessageAction=
+      "SUPPRESS") with email_verified="true" in UserAttributes, followed
+      by admin_set_user_password(Permanent=True) to bypass the
+      FORCE_CHANGE_PASSWORD state that AdminCreateUser would otherwise
+      leave the account in. No emails are queued; the net effect on the
+      test is identical to the old path (confirmed user, known password,
+      verified email). probe_phase8.py is left on sign_up + confirm
+      deliberately — it is dev-only tooling and migrating it was not
+      requested for this hotfix.

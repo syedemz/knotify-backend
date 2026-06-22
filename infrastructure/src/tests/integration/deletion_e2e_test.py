@@ -521,13 +521,38 @@ def _mint_completed_user(
     password = f"Kn0tify!Del#{run_id[:8]}"
     username = f"del_{uuid.uuid4().hex[:12]}"
 
-    signup_resp = cognito_client.sign_up(
-        ClientId=client_id,
+    # Hotfix #6: use AdminCreateUser with MessageAction=SUPPRESS instead of
+    # sign_up + admin_confirm_sign_up. The user-flow sign_up triggers a
+    # COGNITO_DEFAULT verification email regardless of the immediate admin
+    # confirm — and the user pool has a 50-emails-per-day account-wide cap
+    # under Cognito's default email channel. The deletion E2E mints two
+    # users per test (×3 tests + retries) which exhausts that quota quickly.
+    # AdminCreateUser+MessageAction=SUPPRESS skips the email path entirely;
+    # AdminSetUserPassword with Permanent=True bypasses the
+    # FORCE_CHANGE_PASSWORD state that AdminCreateUser would otherwise leave
+    # the account in. The net effect on the test is identical: a confirmed
+    # user with a known password and a verified email attribute.
+    create_resp = cognito_client.admin_create_user(
+        UserPoolId=user_pool_id,
+        Username=email,
+        MessageAction="SUPPRESS",
+        TemporaryPassword=password,
+        UserAttributes=[
+            {"Name": "email", "Value": email},
+            {"Name": "email_verified", "Value": "true"},
+        ],
+    )
+    sub = next(
+        attr["Value"]
+        for attr in create_resp["User"]["Attributes"]
+        if attr["Name"] == "sub"
+    )
+    cognito_client.admin_set_user_password(
+        UserPoolId=user_pool_id,
         Username=email,
         Password=password,
+        Permanent=True,
     )
-    sub = signup_resp["UserSub"]
-    cognito_client.admin_confirm_sign_up(UserPoolId=user_pool_id, Username=email)
 
     # Initial auth
     auth_resp = cognito_client.admin_initiate_auth(

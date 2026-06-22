@@ -362,3 +362,117 @@ def test_given_per_user_event_when_handler_called_then_rls_context_bound_to_targ
         f"DELETE must be wrapped in rls_context({target_user!r}, ''). "
         f"rls_context calls: {rls_calls}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Hotfix #6: post-DELETE refresh_deck_view async invoke
+# ---------------------------------------------------------------------------
+
+
+def test_given_per_user_purge_succeeds_when_handler_returns_then_refresh_lambda_is_invoked(
+    mock_conn,
+):
+    """
+    Hotfix #6: a per-user hard-delete that removes a row must async-invoke the
+    refresh_deck_view Lambda so the materialised view stops carrying the
+    purged user immediately instead of waiting up to 15 minutes.
+    """
+    from hard_purge import handler
+
+    _mock_connection, mock_cursor = mock_conn
+    mock_cursor.rowcount = 1
+
+    fake_client = MagicMock()
+    with patch.object(handler, "_REFRESH_LAMBDA_ARN", "arn:aws:lambda:eu-central-1:1:function:refresh"), \
+         patch("hard_purge.handler.boto3.client", return_value=fake_client) as mock_boto:
+        handler.handler(_make_per_user_event(), None)
+
+    mock_boto.assert_called_once_with("lambda")
+    fake_client.invoke.assert_called_once()
+    kwargs = fake_client.invoke.call_args.kwargs
+    assert kwargs["FunctionName"] == "arn:aws:lambda:eu-central-1:1:function:refresh"
+    assert kwargs["InvocationType"] == "Event"
+
+
+def test_given_scheduled_purge_deletes_rows_when_handler_returns_then_refresh_lambda_is_invoked_once(
+    mock_conn,
+):
+    """
+    Hotfix #6: one scheduled invocation may delete N rows but it must async-
+    invoke the refresh exactly once — the MV is global, not per-row.
+    """
+    from hard_purge import handler
+
+    _mock_connection, mock_cursor = mock_conn
+    mock_cursor.fetchall.return_value = [
+        ("aaaaaaaa-0000-0000-0000-000000000001",),
+        ("aaaaaaaa-0000-0000-0000-000000000002",),
+    ]
+    mock_cursor.rowcount = 1
+
+    fake_client = MagicMock()
+    with patch.object(handler, "_REFRESH_LAMBDA_ARN", "arn:aws:lambda:eu-central-1:1:function:refresh"), \
+         patch("hard_purge.handler.boto3.client", return_value=fake_client):
+        handler.handler(_make_scheduled_event(), None)
+
+    fake_client.invoke.assert_called_once()
+
+
+def test_given_zero_rows_deleted_when_handler_returns_then_refresh_lambda_is_not_invoked(
+    mock_conn,
+):
+    """
+    Hotfix #6: a per-user invocation on a non-soft-deleted user matches no
+    rows. There is no MV staleness to clear, so no refresh.
+    """
+    from hard_purge import handler
+
+    _mock_connection, mock_cursor = mock_conn
+    mock_cursor.rowcount = 0
+
+    fake_client = MagicMock()
+    with patch.object(handler, "_REFRESH_LAMBDA_ARN", "arn:aws:lambda:eu-central-1:1:function:refresh"), \
+         patch("hard_purge.handler.boto3.client", return_value=fake_client):
+        handler.handler(_make_per_user_event(), None)
+
+    fake_client.invoke.assert_not_called()
+
+
+def test_given_refresh_arn_unset_when_rows_deleted_then_invoke_is_skipped(mock_conn):
+    """
+    Hotfix #6: empty REFRESH_LAMBDA_ARN disables the invoke — mirrors the
+    profile handler's contract; no boto3 client is constructed.
+    """
+    from hard_purge import handler
+
+    _mock_connection, mock_cursor = mock_conn
+    mock_cursor.rowcount = 1
+
+    with patch.object(handler, "_REFRESH_LAMBDA_ARN", ""), \
+         patch("hard_purge.handler.boto3.client") as mock_boto:
+        handler.handler(_make_per_user_event(), None)
+
+    mock_boto.assert_not_called()
+
+
+def test_given_refresh_invoke_fails_when_handler_completes_then_aurora_result_still_returned(
+    mock_conn,
+):
+    """
+    Hotfix #6: a failure in the async invoke is best-effort — it must be
+    swallowed so Step Functions still sees the DELETE as successful.
+    """
+    from hard_purge import handler
+
+    _mock_connection, mock_cursor = mock_conn
+    mock_cursor.rowcount = 1
+
+    fake_client = MagicMock()
+    fake_client.invoke.side_effect = RuntimeError("AWS hiccup")
+
+    with patch.object(handler, "_REFRESH_LAMBDA_ARN", "arn:aws:lambda:eu-central-1:1:function:refresh"), \
+         patch("hard_purge.handler.boto3.client", return_value=fake_client):
+        result = handler.handler(_make_per_user_event(), None)
+
+    assert result["rows_affected"] == 1
+    assert result["mode"] == "per_user"

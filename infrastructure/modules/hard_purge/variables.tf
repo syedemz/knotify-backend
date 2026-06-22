@@ -46,3 +46,9 @@ variable "aurora_dbname" {
   description = "Aurora database name. Passed as AURORA_DBNAME env var."
   type        = string
 }
+
+variable "refresh_lambda_arn" {
+  description = "ARN of the refresh_deck_view Lambda (hotfix #6). Hard-purge DELETE removes the users row but the deck_view materialised view still carries the pre-DELETE snapshot until refreshed. The Lambda async-invokes the refresh after a successful purge (per_user and scheduled modes) to clear the staleness. Passed as REFRESH_LAMBDA_ARN env var; empty string disables the invoke."
+  type        = string
+  default     = ""
+}

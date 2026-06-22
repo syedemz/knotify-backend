@@ -35,13 +35,25 @@ empty string, which makes `sex != ''` true for all rows in the
 users_opposite_sex_only SELECT policy, so the scan returns every eligible
 soft-deleted user.
 
+Post-DELETE deck_view refresh (hotfix #6):
+  After a successful purge (rows_affected > 0 in either mode), this Lambda
+  async-invokes the refresh_deck_view Lambda. deck_view is a materialised
+  view of `users WHERE deleted_at IS NULL`; a hard-deleted user is gone from
+  the source table but the MV snapshot still holds the row until a refresh
+  runs. Mirrors the profile handler's _invoke_refresh_lambda pattern (story
+  7.4): fire-and-forget, best-effort, skipped when REFRESH_LAMBDA_ARN is
+  unset. IAM is already in place — hard_purge runs as aurora_writer which
+  holds lambda:InvokeFunction scoped to the refresh Lambda ARN (story 7.4).
+
 Environment variables:
-    DB_SECRET_NAME  — Secrets Manager secret name for the Aurora app-user
-                      credential (knotify-<env>-app-user-credential).
-    AURORA_HOST     — Aurora cluster writer endpoint.
-    AURORA_PORT     — Aurora port (default 5432).
-    AURORA_DBNAME   — Aurora database name.
-    LOG_LEVEL       — logging level (default: INFO).
+    DB_SECRET_NAME     — Secrets Manager secret name for the Aurora app-user
+                         credential (knotify-<env>-app-user-credential).
+    AURORA_HOST        — Aurora cluster writer endpoint.
+    AURORA_PORT        — Aurora port (default 5432).
+    AURORA_DBNAME      — Aurora database name.
+    REFRESH_LAMBDA_ARN — ARN of the refresh_deck_view Lambda (hotfix #6).
+                         Empty string disables the post-DELETE refresh.
+    LOG_LEVEL          — logging level (default: INFO).
 """
 
 from __future__ import annotations
@@ -50,12 +62,14 @@ import logging
 import os
 from typing import Any
 
+import boto3
 import knotify_db
 
 logger = logging.getLogger(__name__)
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
 _DB_SECRET_NAME: str = os.environ.get("DB_SECRET_NAME", "")
+_REFRESH_LAMBDA_ARN: str = os.environ.get("REFRESH_LAMBDA_ARN", "")
 
 # ---------------------------------------------------------------------------
 # SQL constants
@@ -139,7 +153,51 @@ def handler(event: dict, context: Any) -> dict:
         extra={"mode": mode, "rows_affected": rows_affected, "user_id": user_id},
     )
 
+    # Post-DELETE deck_view refresh (hotfix #6). One refresh covers any
+    # number of rows deleted in this invocation. Skipped when no rows
+    # were deleted — no MV staleness to clear.
+    if rows_affected > 0:
+        _invoke_refresh_lambda()
+
     return {"rows_affected": rows_affected, "mode": mode}
+
+
+def _invoke_refresh_lambda() -> None:
+    """
+    Best-effort async invocation of the refresh_deck_view Lambda.
+
+    See module docstring for rationale. Mirrors profile handler's pattern:
+    fire-and-forget (InvocationType="Event"); any failure (missing ARN,
+    transient AWS error) is logged as a warning and swallowed — the
+    EventBridge 15-minute refresh covers any missed invoke.
+    """
+    if not _REFRESH_LAMBDA_ARN:
+        logger.warning(
+            "refresh_lambda_invoke_skipped",
+            extra={"reason": "REFRESH_LAMBDA_ARN not configured"},
+        )
+        return
+
+    try:
+        client = boto3.client("lambda")
+        client.invoke(
+            FunctionName=_REFRESH_LAMBDA_ARN,
+            InvocationType="Event",
+            Payload=b"{}",
+        )
+        logger.info(
+            "refresh_lambda_invoked",
+            extra={"refresh_lambda_arn": _REFRESH_LAMBDA_ARN},
+        )
+    except Exception as exc:
+        logger.warning(
+            "refresh_lambda_invoke_failed",
+            extra={
+                "refresh_lambda_arn": _REFRESH_LAMBDA_ARN,
+                "error": str(exc),
+                "note": "Aurora DELETE succeeded; deck_view will refresh on next scheduled run",
+            },
+        )
 
 
 def _delete_one(conn, user_id: str) -> int:
