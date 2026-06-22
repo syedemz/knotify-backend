@@ -508,6 +508,7 @@ def _mint_completed_user(
     client_id: str,
     api_base: str,
     edge_secret: str,
+    aurora: "_AuroraDataApi",
     sex: str,
 ) -> dict:
     """
@@ -530,8 +531,7 @@ def _mint_completed_user(
     # AdminCreateUser+MessageAction=SUPPRESS skips the email path entirely;
     # AdminSetUserPassword with Permanent=True bypasses the
     # FORCE_CHANGE_PASSWORD state that AdminCreateUser would otherwise leave
-    # the account in. The net effect on the test is identical: a confirmed
-    # user with a known password and a verified email attribute.
+    # the account in.
     create_resp = cognito_client.admin_create_user(
         UserPoolId=user_pool_id,
         Username=email,
@@ -552,6 +552,24 @@ def _mint_completed_user(
         Username=email,
         Password=password,
         Permanent=True,
+    )
+
+    # AdminCreateUser does NOT fire the PostConfirmation trigger (only
+    # ConfirmSignUp / AdminConfirmSignUp do), so the cognito_post_confirmation
+    # Lambda — which is what normally inserts the `users` row in Aurora — never
+    # runs for these test users. Without that row the subsequent
+    # PATCH /v1/profile/me returns 404 not_found. We mirror the trigger's INSERT
+    # here (same columns, same nullability contract: only user_id + email
+    # required; first_name/last_name/sex/birthday filled by the profile PATCH
+    # below) using the master secret which bypasses RLS. Production traffic is
+    # unaffected — real sign-ups still go through Cognito's sign_up flow and
+    # fire PostConfirmation as designed.
+    aurora.execute(
+        """
+        INSERT INTO users (user_id, email)
+        VALUES (cast(:user_id as uuid), :email)
+        """,
+        {"user_id": sub, "email": email},
     )
 
     # Initial auth
@@ -903,12 +921,14 @@ def test_e2e_soft_delete_full_workflow():  # noqa: C901 (flat sequential by desi
             cognito, http_requests,
             user_pool_id=user_pool_id, client_id=client_id,
             api_base=api_base, edge_secret=edge_secret,
+            aurora=aurora,
             sex="Male",
         )
         user_b = _mint_completed_user(
             cognito, http_requests,
             user_pool_id=user_pool_id, client_id=client_id,
             api_base=api_base, edge_secret=edge_secret,
+            aurora=aurora,
             sex="Female",
         )
         a_id = user_a["sub"]
@@ -1235,12 +1255,14 @@ def test_e2e_block_filter_regression():  # noqa: C901 (flat sequential by design
             cognito, http_requests,
             user_pool_id=user_pool_id, client_id=client_id,
             api_base=api_base, edge_secret=edge_secret,
+            aurora=aurora,
             sex="Male",
         )
         user_b = _mint_completed_user(
             cognito, http_requests,
             user_pool_id=user_pool_id, client_id=client_id,
             api_base=api_base, edge_secret=edge_secret,
+            aurora=aurora,
             sex="Female",
         )
         a_id = user_a["sub"]
@@ -1477,12 +1499,14 @@ def test_e2e_purge_immediately():  # noqa: C901 (flat sequential by design)
             cognito, http_requests,
             user_pool_id=user_pool_id, client_id=client_id,
             api_base=api_base, edge_secret=edge_secret,
+            aurora=aurora,
             sex="Male",
         )
         user_d = _mint_completed_user(
             cognito, http_requests,
             user_pool_id=user_pool_id, client_id=client_id,
             api_base=api_base, edge_secret=edge_secret,
+            aurora=aurora,
             sex="Female",
         )
         c_id = user_c["sub"]
