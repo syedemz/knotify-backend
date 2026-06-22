@@ -585,11 +585,34 @@ resource "aws_iam_role_policy" "db_migrator_aurora_refresh_credential" {
 #   Query          — messages-by-room, membership-by-user pagination
 #   BatchGetItem   — bulk room fetch (listMyRooms)
 #   TransactWriteItems — atomic multi-table writes (createOrGetRoom, sendMessage)
+#
+# Trust principals: lambda.amazonaws.com (Lambda execution) AND
+# appsync.amazonaws.com (AppSync DynamoDB datasource service role). The dev
+# environment passes this role as `dynamodb_role_arn` into the appsync module,
+# which assigns it as `service_role_arn` on the chat-domain DDB datasources
+# (ChatRoomsDS, ChatRoomMembershipDS, ChatMessagesDS, MessageReadsDS,
+# NotificationsDS). Without the appsync trust, every pipeline resolver that
+# touches a DDB datasource — including the membership check on
+# Subscription.onMessageInRoom — returns Unauthorized at subscribe time,
+# silently breaking real-time chat delivery (discovered 2026-06-22 by
+# scripts/probe_phase9.py).
 # ===========================================================================
+
+data "aws_iam_policy_document" "chat_resolver_assume_role" {
+  statement {
+    sid     = "LambdaAndAppSyncAssumeRole"
+    effect  = "Allow"
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["lambda.amazonaws.com", "appsync.amazonaws.com"]
+    }
+  }
+}
 
 resource "aws_iam_role" "chat_resolver" {
   name               = "knotify-${var.environment}-chat-resolver"
-  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+  assume_role_policy = data.aws_iam_policy_document.chat_resolver_assume_role.json
 }
 
 resource "aws_iam_role_policy_attachment" "chat_resolver_vpc_access" {
