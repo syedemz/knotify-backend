@@ -1,5 +1,6 @@
 """
-Phase 8 live probe — end-to-end chat (AppSync + DynamoDB Streams + push fan-out).
+Phase 8 + 9 live probe — end-to-end chat (AppSync + DynamoDB Streams + push
+fan-out) followed by the Step Functions account-deletion workflows.
 
 Scenario:
   - Sign up 3 users: Kate Doe (Female), John Doe (Male), Jack Ryan (Male)
@@ -10,13 +11,23 @@ Scenario:
   - Jack createOrGetRoom with Kate -> room B
   - John sendMessage(roomA): "Hello Babe , Send some pictures"
   - Kate sendMessage(roomA): "no we dont know each other yet"
-  - Verify both messages present in roomA via messagesByChatRoom
+  - Jack sendMessage(roomB): "hey"
+  - Verify both roomA messages present via messagesByChatRoom
   - Verify ZERO of those two messages leak into roomB (room isolation)
   - Kate blocks John  -> roomA status=deactivated, friendshipActive=false (story 8.9a),
                         friendship deleted (story 8.9 blocks Lambda extension)
   - Kate unfriends Jack -> roomB friendshipActive=false; room NOT deleted
                           (DELETE /v1/friends/{userId} only flips the flag per
                           friends handler line 398-401).
+  - Kate hard-deletes (purge_immediately=true):
+      audit row dynamodb_retention='hard_deleted', Kate's ChatMessages rows
+      gone, all her rooms deactivated, both males refused on sendMessage.
+  - Jack soft-deletes (purge_immediately=false):
+      audit row dynamodb_retention='permanent_anonymized', Jack's "hey" row
+      survives with sender_id='[deleted-user]'.
+  - John hard-deletes (purge_immediately=true):
+      audit row dynamodb_retention='hard_deleted', John's roomA message gone
+      (roomA ends with zero messages).
 
 Run from project root:
     python scripts/probe_phase8.py
@@ -35,12 +46,16 @@ import requests
 
 
 REGION = "eu-central-1"
-USER_POOL_ID = "eu-central-1_An4jEkG7t"
-CLIENT_ID = "ugvgg3o1ldqt01df7j0artse1"  # knotify-dev-integration-test
-DOMAIN = "d19o999v109625.cloudfront.net"
-EDGE_SECRET = "v4td8wA2j1IlUy9RfAgi0W46aC5ZrIJYCltHWGTGDUSQXeERbhYoKPETGeFF5d8W"
+USER_POOL_ID = "eu-central-1_MO0oZRQ1b"
+CLIENT_ID = "353v3brvscce7bnkh7dphsnd4p"  # knotify-dev-integration-test
+DOMAIN = "d3ocejjf37kge5.cloudfront.net"
+EDGE_SECRET = "35hX4kxDlB4vcatyhqtKYapRIs3PeULfCAUmvTg1dHu9MJeS0ThMF5y51m371vXt"
 REFRESH_LAMBDA = "knotify-refresh-deck-view-dev"
 APPSYNC_API_NAME = "knotify-dev-chat-api"
+CHAT_MESSAGES_TABLE = "ChatMessages"
+AUDIT_TABLE = "account_deletion_audit"
+DELETION_POLL_MAX_ATTEMPTS = 30
+DELETION_POLL_SLEEP_SECS = 10
 
 
 def _http_with_retry(method: str, url: str, *, headers, json_body=None, attempts=4):
@@ -158,16 +173,25 @@ def _patch_profile(token: str, body: dict) -> requests.Response:
 
 
 def _warm_aurora(lam) -> None:
+    # Aurora Serverless v2 cold-starts can exceed the refresh_deck_view 10s
+    # Lambda timeout on the first hit. Retry — the first invoke wakes the
+    # cluster, the second/third typically lands well inside the budget.
     print("[0] warm Aurora via refresh_deck_view invoke (sync)")
-    t0 = time.time()
-    resp = lam.invoke(FunctionName=REFRESH_LAMBDA, InvocationType="RequestResponse")
-    dt = time.time() - t0
-    err = resp.get("FunctionError")
-    print(f"    StatusCode={resp['StatusCode']} FunctionError={err} elapsed={dt:.1f}s")
-    if err:
+    attempts = 5
+    for i in range(1, attempts + 1):
+        t0 = time.time()
+        resp = lam.invoke(FunctionName=REFRESH_LAMBDA, InvocationType="RequestResponse")
+        dt = time.time() - t0
+        err = resp.get("FunctionError")
+        print(f"    attempt {i}/{attempts} StatusCode={resp['StatusCode']} FunctionError={err} elapsed={dt:.1f}s")
+        if not err:
+            return
         payload = resp["Payload"].read().decode()
         print(f"    payload: {payload[:300]}")
-        raise RuntimeError(f"Aurora warm-up failed: {err}")
+        if i == attempts:
+            raise RuntimeError(f"Aurora warm-up failed after {attempts} attempts: {err}")
+        # Sleep gives the cluster time to finish waking before the next hit.
+        time.sleep(15)
 
 
 def _discover_appsync_url(appsync) -> str:
@@ -299,6 +323,88 @@ def _delete_friend(token: str, target_sub: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# REST helpers — account deletion (phase 9)
+# ---------------------------------------------------------------------------
+
+def _initiate_deletion(token: str, *, purge_immediately: bool) -> str:
+    r = _http_with_retry(
+        "DELETE",
+        f"https://{DOMAIN}/v1/profile/me",
+        headers=_rest_headers(token),
+        json_body={"purge_immediately": purge_immediately},
+    )
+    if r.status_code != 202:
+        raise RuntimeError(
+            f"DELETE /v1/profile/me (purge={purge_immediately}) -> "
+            f"HTTP {r.status_code} body={r.text[:300]}"
+        )
+    body = r.json()
+    execution_arn = body.get("executionArn")
+    if not execution_arn:
+        raise RuntimeError(
+            f"DELETE /v1/profile/me 202 body missing executionArn: {body!r}"
+        )
+    return execution_arn
+
+
+def _poll_deletion_status(token: str, execution_arn: str) -> str:
+    """Poll /v1/profile/me/deletion-status until terminal. Returns final status."""
+    terminal = {"SUCCEEDED", "FAILED", "TIMED_OUT", "ABORTED"}
+    last = "UNKNOWN"
+    for attempt in range(1, DELETION_POLL_MAX_ATTEMPTS + 1):
+        r = _http_with_retry(
+            "GET",
+            f"https://{DOMAIN}/v1/profile/me/deletion-status?executionArn={execution_arn}",
+            headers=_rest_headers(token),
+        )
+        if r.status_code != 200:
+            raise RuntimeError(
+                f"GET deletion-status -> HTTP {r.status_code} body={r.text[:300]}"
+            )
+        last = r.json().get("status", "UNKNOWN")
+        if last in terminal:
+            return last
+        print(f"    poll {attempt}/{DELETION_POLL_MAX_ATTEMPTS}: status={last} — sleep {DELETION_POLL_SLEEP_SECS}s")
+        time.sleep(DELETION_POLL_SLEEP_SECS)
+    raise RuntimeError(
+        f"deletion did not reach terminal state within budget; last={last} arn={execution_arn}"
+    )
+
+
+def _query_audit_completed(ddb, user_id: str) -> dict | None:
+    """Return the deletion_completed audit row for user_id (or None)."""
+    resp = ddb.query(
+        TableName=AUDIT_TABLE,
+        KeyConditionExpression="user_id = :u",
+        ExpressionAttributeValues={":u": {"S": user_id}},
+    )
+    for item in resp.get("Items", []):
+        if item.get("event_type", {}).get("S") == "deletion_completed":
+            return item
+    return None
+
+
+def _query_chat_messages_for_room(ddb, room_id: str) -> list[dict]:
+    """Return all ChatMessages rows for a room (raw DDB AttributeValue dicts)."""
+    items: list[dict] = []
+    last_key = None
+    while True:
+        kwargs = {
+            "TableName": CHAT_MESSAGES_TABLE,
+            "KeyConditionExpression": "room_id = :r",
+            "ExpressionAttributeValues": {":r": {"S": room_id}},
+        }
+        if last_key:
+            kwargs["ExclusiveStartKey"] = last_key
+        resp = ddb.query(**kwargs)
+        items.extend(resp.get("Items", []))
+        last_key = resp.get("LastEvaluatedKey")
+        if not last_key:
+            break
+    return items
+
+
+# ---------------------------------------------------------------------------
 # GraphQL operations
 # ---------------------------------------------------------------------------
 
@@ -368,6 +474,7 @@ def main() -> int:
     cognito = boto3.client("cognito-idp", region_name=REGION)
     lam = boto3.client("lambda", region_name=REGION)
     appsync = boto3.client("appsync", region_name=REGION)
+    ddb = boto3.client("dynamodb", region_name=REGION)
 
     run_id = uuid.uuid4().hex[:8]
     kate_email = f"knotify-probe+kate{run_id}@example.com"
@@ -523,6 +630,18 @@ def main() -> int:
             else:
                 print(f"    OK — no leakage")
 
+        print("\n[13b] Jack sends 'hey' to Kate (room B) — gives soft-delete a row to anonymize later")
+        jack_msg_text = "hey"
+        resp = _gql(graphql_url, jack_tok, SEND_MESSAGE, {"roomId": room_b_id, "content": jack_msg_text})
+        if resp.get("errors"):
+            failures.append(f"sendMessage (jack room B): {resp['errors']}")
+            print(f"    !! errors={resp['errors']}")
+        else:
+            m3 = resp["data"]["sendMessage"]
+            print(f"    messageId={m3['messageId']} senderId={m3['senderId']}")
+            if m3["senderId"] != jack_sub:
+                failures.append(f"jack sendMessage senderId mismatch: got {m3['senderId']} expected {jack_sub}")
+
         print("\n[14] Kate listMyRooms — expect rooms A and B both active, friendshipActive=true,")
         print("     and room A first (sorted by lastMessageAt desc; only A has messages)")
         resp = _gql(graphql_url, kate_tok, LIST_MY_ROOMS)
@@ -674,6 +793,134 @@ def main() -> int:
             failures.append(f"@aws_iam directive: ambiguous response (no errors, no data): {json.dumps(resp)[:200]}")
 
         # ----------------------------------------------------------
+        # Phase 9 — Step Functions account deletion (soft + hard)
+        # ----------------------------------------------------------
+
+        print("\n[20] Kate hard-deletes (purge_immediately=true)")
+        print("    pre-check: ChatMessages(roomA) sender ids before purge")
+        pre_a = _query_chat_messages_for_room(ddb, room_a_id)
+        pre_a_senders = [it.get("sender_id", {}).get("S") for it in pre_a]
+        print(f"      roomA items={len(pre_a)} senders={pre_a_senders}")
+
+        kate_arn = _initiate_deletion(kate_tok, purge_immediately=True)
+        print(f"    executionArn={kate_arn}")
+        kate_status = _poll_deletion_status(kate_tok, kate_arn)
+        print(f"    final status={kate_status}")
+        if kate_status != "SUCCEEDED":
+            failures.append(f"kate deletion not SUCCEEDED: {kate_status}")
+
+        # Brief wait for DDB stream + ChatRooms deactivation propagation.
+        time.sleep(5)
+
+        print("    post-check: audit row dynamodb_retention='hard_deleted'")
+        kate_audit = _query_audit_completed(ddb, kate_sub)
+        if not kate_audit:
+            failures.append("kate: no deletion_completed audit row found")
+        else:
+            retention = kate_audit.get("dynamodb_retention", {}).get("S")
+            print(f"      retention={retention!r}")
+            if retention != "hard_deleted":
+                failures.append(f"kate audit retention={retention!r} expected 'hard_deleted'")
+
+        print("    post-check: ChatMessages(roomA) — Kate's row gone, John's survives")
+        post_a = _query_chat_messages_for_room(ddb, room_a_id)
+        post_a_senders = [it.get("sender_id", {}).get("S") for it in post_a]
+        print(f"      roomA items={len(post_a)} senders={post_a_senders}")
+        if kate_sub in post_a_senders:
+            failures.append(f"post-kate-hard-delete: Kate's roomA message still present")
+        if john_sub not in post_a_senders:
+            failures.append(f"post-kate-hard-delete: John's roomA message missing (only Kate should be purged)")
+
+        print("    post-check: Jack tries sendMessage(roomB) — should be refused (room deactivated)")
+        resp = _gql(graphql_url, jack_tok, SEND_MESSAGE, {
+            "roomId": room_b_id,
+            "content": "should fail — kate deleted",
+        })
+        if resp.get("errors"):
+            print(f"      OK — refused: {json.dumps(resp['errors'])[:200]}")
+        elif resp.get("data", {}).get("sendMessage"):
+            failures.append("post-kate-hard-delete: Jack still able to send to roomB")
+        else:
+            print(f"      OK — no message returned")
+
+        print("    post-check: John tries sendMessage(roomA) — should be refused")
+        resp = _gql(graphql_url, john_tok, SEND_MESSAGE, {
+            "roomId": room_a_id,
+            "content": "should fail — kate deleted",
+        })
+        if resp.get("errors"):
+            print(f"      OK — refused: {json.dumps(resp['errors'])[:200]}")
+        elif resp.get("data", {}).get("sendMessage"):
+            failures.append("post-kate-hard-delete: John still able to send to roomA")
+        else:
+            print(f"      OK — no message returned")
+
+        print("\n[21] Jack soft-deletes (purge_immediately=false)")
+        print("    pre-check: ChatMessages(roomB) before soft-delete")
+        pre_b = _query_chat_messages_for_room(ddb, room_b_id)
+        pre_b_senders = [it.get("sender_id", {}).get("S") for it in pre_b]
+        print(f"      roomB items={len(pre_b)} senders={pre_b_senders}")
+
+        jack_arn = _initiate_deletion(jack_tok, purge_immediately=False)
+        print(f"    executionArn={jack_arn}")
+        jack_status = _poll_deletion_status(jack_tok, jack_arn)
+        print(f"    final status={jack_status}")
+        if jack_status != "SUCCEEDED":
+            failures.append(f"jack deletion not SUCCEEDED: {jack_status}")
+
+        time.sleep(5)
+
+        print("    post-check: audit row dynamodb_retention='permanent_anonymized'")
+        jack_audit = _query_audit_completed(ddb, jack_sub)
+        if not jack_audit:
+            failures.append("jack: no deletion_completed audit row found")
+        else:
+            retention = jack_audit.get("dynamodb_retention", {}).get("S")
+            print(f"      retention={retention!r}")
+            if retention != "permanent_anonymized":
+                failures.append(f"jack audit retention={retention!r} expected 'permanent_anonymized'")
+
+        print("    post-check: Jack's 'hey' row in roomB anonymized to sender_id='[deleted-user]'")
+        post_b = _query_chat_messages_for_room(ddb, room_b_id)
+        post_b_senders = [it.get("sender_id", {}).get("S") for it in post_b]
+        print(f"      roomB items={len(post_b)} senders={post_b_senders}")
+        if jack_sub in post_b_senders:
+            failures.append(f"post-jack-soft-delete: Jack's sub still present as sender_id (not anonymized)")
+        if "[deleted-user]" not in post_b_senders:
+            failures.append(f"post-jack-soft-delete: expected sender_id='[deleted-user]' marker, senders={post_b_senders}")
+
+        print("\n[22] John hard-deletes (purge_immediately=true)")
+        pre_a2 = _query_chat_messages_for_room(ddb, room_a_id)
+        pre_a2_senders = [it.get("sender_id", {}).get("S") for it in pre_a2]
+        print(f"    pre-check: roomA items={len(pre_a2)} senders={pre_a2_senders}")
+
+        john_arn = _initiate_deletion(john_tok, purge_immediately=True)
+        print(f"    executionArn={john_arn}")
+        john_status = _poll_deletion_status(john_tok, john_arn)
+        print(f"    final status={john_status}")
+        if john_status != "SUCCEEDED":
+            failures.append(f"john deletion not SUCCEEDED: {john_status}")
+
+        time.sleep(5)
+
+        print("    post-check: audit row dynamodb_retention='hard_deleted'")
+        john_audit = _query_audit_completed(ddb, john_sub)
+        if not john_audit:
+            failures.append("john: no deletion_completed audit row found")
+        else:
+            retention = john_audit.get("dynamodb_retention", {}).get("S")
+            print(f"      retention={retention!r}")
+            if retention != "hard_deleted":
+                failures.append(f"john audit retention={retention!r} expected 'hard_deleted'")
+
+        print("    post-check: ChatMessages(roomA) — John's row gone (roomA now empty of remaining users)")
+        post_a2 = _query_chat_messages_for_room(ddb, room_a_id)
+        post_a2_senders = [it.get("sender_id", {}).get("S") for it in post_a2]
+        print(f"      roomA items={len(post_a2)} senders={post_a2_senders}")
+        if john_sub in post_a2_senders:
+            failures.append(f"post-john-hard-delete: John's roomA message still present")
+
+        # ----------------------------------------------------------
         print("\n== summary ==")
         if failures:
             print(f"  FAILURES ({len(failures)}):")
@@ -684,7 +931,13 @@ def main() -> int:
         return 0
 
     finally:
-        print("\n[teardown] deleting Cognito users (DDB rows + Aurora rows remain — VPC-private)")
+        # Successful runs leave Cognito empty (the deletion SFN calls
+        # AdminDeleteUser on all three subjects via the cognito_user_state
+        # Lambda).  We still loop so that partial-failure runs (e.g. one of
+        # the deletion executions did not SUCCEEDED) get cleaned up.
+        # _delete_cognito swallows UserNotFoundException → no-op on already
+        # gone users.
+        print("\n[teardown] sweep Cognito for any survivors (no-op if SFN deletions succeeded)")
         for ident in (kate_email, kate_sub, john_email, john_sub, jack_email, jack_sub):
             if ident:
                 _delete_cognito(cognito, ident)

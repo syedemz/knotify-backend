@@ -1,6 +1,6 @@
 phase: 10
 title: Observability consolidation
-last_updated: 2026-05-21
+last_updated: 2026-06-22 # added story 10.10 — chat listMyRooms ordering carry-over surfaced by probe_phase8.py during phase-9 closeout
 
 context_summary: |
   Per §13 #18 resolution in architecture.md v1.6 (hybrid Option C, owner picked dedicated phase Option A): individual Lambda functions already ship with Powertools structured logging, correlation IDs, and metric emission from phase 3 onward. This phase consolidates the alarms, dashboards, and routing on top. All CloudWatch log groups must already use 7-day retention per the owner's cost-control directive (audited here). One CloudWatch dashboard per environment surfaces the operational signals. SNS topic per environment delivers alarms to the owner email. No third-party tools (Sentry, Datadog) are added — CloudWatch only.
@@ -99,3 +99,15 @@ stories:
       - A file docs/runbook.md documents each alarm name, the metric and threshold, the most likely root cause, and the first three diagnostic steps (log query, dashboard panel, AWS console link)
       - At least one runbook entry exists for every alarm created in stories 10.2–10.6
     notes: ""
+
+  - id: 10.10
+    title: Fix listMyRooms ordering — rooms with messages must precede empty rooms
+    agent: backenddeveloper
+    done: false
+    depends_on: []
+    acceptance_criteria:
+      - listMyRooms returns rooms sorted by lastMessageAt desc (rooms with messages first, then rooms without; within each group, most-recent activity first)
+      - A new probe_phase8.py-style integration assertion (or an extension of the existing one at scripts/probe_phase8.py step [14]) confirms that when user U has roomA (with messages) and roomB (no messages), listMyRooms returns roomA before roomB
+      - Unit test in the listMyRooms resolver/handler asserts the same ordering on a synthetic dataset (rooms with mixed lastMessageAt timestamps including null)
+      - probe_phase8.py runs to all-green; the previously-recorded failure "listMyRooms ordering: roomA@1 should precede roomB@0" no longer fires
+    notes: "Carry-over from phase 8. Surfaced 2026-06-22 by probe_phase8.py during phase-9 closeout: when Kate had roomA (John+Kate messages) and roomB (no messages yet), listMyRooms returned roomB at index 0 and roomA at index 1. Filed against phase 10 per owner direction; investigate the AppSync resolver / underlying DynamoDB query in modules/appsync (likely the listMyRooms GSI sort key or its mapping template). The bug is silent for users (UI fallback orders by lastMessagePreview presence) but the API contract should be deterministic."
