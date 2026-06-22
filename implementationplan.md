@@ -1,5 +1,5 @@
 project: knotify-backend
-last_updated: 2026-06-19 # phase 8 closeout — E2E probe all-green after hotfix sweep (PRs #130–#134), phase-8-complete tag applied
+last_updated: 2026-06-22 # phase 9 closeout — account-deletion E2E all-green after hotfix sweep (PRs #152–#157), phase-9-complete tag pending
 
 phases:
 
@@ -61,7 +61,7 @@ phases:
   title: Account deletion (Step Functions, soft delete)
   file: implementationplan/phase-9-account-deletion.md
   ready: true
-  done: false
+  done: true
 
 - phase: 10
   title: Observability consolidation

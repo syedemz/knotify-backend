@@ -1,6 +1,6 @@
 phase: 9
 title: Account deletion (Step Functions, soft delete)
-last_updated: 2026-06-22 (post-merge hotfix #6: deck_view refresh on delete + E2E admin_create_user)
+last_updated: 2026-06-22 (post-merge hotfix #7: audit-log dynamodb_retention contract + E2E aurora INSERT shim — phase 9 E2E all-green)
 
 context_summary: |
   Implements the account-deletion workflow per §11 of architecture.md with the §13 #8 resolution applied: soft delete (UPDATE users SET deleted_at, strip PII) with a 30-day retention before a scheduled hard purge via cascade. ChatMessages are anonymized rather than deleted per §13 #21 — sender_id rewritten to '[deleted-user]' while content is preserved. Step Functions Standard workflow orchestrates the steps; each step is an idempotent Python 3.14 Lambda. An audit log table records initiation and completion. A purge_immediately flag supports GDPR right-to-be-forgotten by branching at workflow entry into a hard-delete path that fully removes the requester's Aurora rows, ChatMessages, and ChatRoomMembership rows. This phase ships after chat because the workflow needs to deactivate ChatRooms, anonymize/hard-delete ChatMessages, and clean ChatRoomMembership — all DynamoDB tables created in phase 2 and operated on by phase 8.
@@ -503,3 +503,51 @@ post_merge_hotfixes:
       verified email). probe_phase8.py is left on sign_up + confirm
       deliberately — it is dev-only tooling and migrating it was not
       requested for this hotfix.
+
+  # -------------------------------------------------------------------------
+  # Seventh round (2026-06-22) — uncovered when the previous hotfix made the
+  # workflow complete but the test still failed on the audit-row label.
+  # Bundled in `hotfix/audit-log-retention-honor-event-value` (PR #157).
+  # -------------------------------------------------------------------------
+
+  - title: Story 9.8 — write_audit_log Lambda ignored the explicit dynamodb_retention sent by the state machine
+    severity: high (audit log mislabeled every purge_immediately execution as permanent_anonymized)
+    root_cause: |
+      The PurgeImmediately_WriteAuditLog and SoftDelete_WriteAuditLog states
+      in the state machine pass dynamodb_retention directly in Parameters
+      ("hard_deleted" and "permanent_anonymized" respectively). The Lambda
+      handler ignored that field and recomputed retention from a
+      purge_immediately bool that the state machine never sent, defaulting
+      to permanent_anonymized. The deletion behavior was correct end-to-end
+      — Aurora soft-deleted, Cognito deleted, chat messages hard-deleted —
+      but the audit row label disagreed with reality. The two stories (9.1
+      state machine, 9.8 Lambda) were authored in different waves and
+      disagreed about which side owned the retention decision; no
+      integration test exercised the dual contract until story 9.13's
+      purge_immediately sub-test.
+    fix: |
+      Handler _populate_completed now honors event["dynamodb_retention"]
+      when it is one of {"hard_deleted", "permanent_anonymized"} and only
+      falls back to computing from purge_immediately for callers that
+      follow the older contract (preserves backwards compatibility with
+      unit tests and any future invokers). Three regression unit tests
+      added to test_write_audit_log.py. All 3 E2E sub-tests now pass.
+
+  - title: Story 9.13 — AdminCreateUser path skipped the Aurora users row insertion that PostConfirmation normally performs
+    severity: high (every PATCH /v1/profile/me returned 404 after the previous hotfix moved to admin_create_user)
+    root_cause: |
+      The previous hotfix replaced cognito.sign_up + admin_confirm_sign_up
+      with admin_create_user + admin_set_user_password to dodge Cognito's
+      50/day email quota. But the Aurora users row is created by the
+      cognito_post_confirmation Lambda trigger, which fires only on
+      ConfirmSignUp / AdminConfirmSignUp / ConfirmForgotPassword — NOT
+      AdminCreateUser. The test therefore had a confirmed Cognito user
+      with no matching Aurora row, and PATCH /v1/profile/me returned 404
+      because the profile handler joined on users.user_id.
+    fix: |
+      _mint_completed_user now performs a direct Data API INSERT into the
+      Aurora users table (user_id, email) immediately after admin_create_user.
+      This simulates the PostConfirmation trigger's contract; subsequent
+      PATCH /v1/profile/me populates the remaining nullable fields and
+      flips profile_complete_verified to true. The handler-side production
+      path is unchanged — only the test scaffolding is touched.
