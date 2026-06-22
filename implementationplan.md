@@ -1,5 +1,5 @@
 project: knotify-backend
-last_updated: 2026-06-22 # phase 9 closeout — account-deletion E2E all-green after hotfix sweep (PRs #152–#157), phase-9-complete tag pending
+last_updated: 2026-06-22 # phase 9 CLOSED — 10 post-merge hotfixes shipped (PRs #150–#160); deletion E2E + probe_phase9.py both ALL GREEN; phase-9-complete tag applied
 
 phases:
 

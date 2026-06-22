@@ -1,6 +1,6 @@
 phase: 9
 title: Account deletion (Step Functions, soft delete)
-last_updated: 2026-06-22 (post-merge hotfix #7: audit-log dynamodb_retention contract + E2E aurora INSERT shim — phase 9 E2E all-green)
+last_updated: 2026-06-22 (phase 9 CLOSED — 10 post-merge hotfixes shipped (#150–#160); deletion E2E and probe_phase9.py both ALL GREEN against live dev)
 
 context_summary: |
   Implements the account-deletion workflow per §11 of architecture.md with the §13 #8 resolution applied: soft delete (UPDATE users SET deleted_at, strip PII) with a 30-day retention before a scheduled hard purge via cascade. ChatMessages are anonymized rather than deleted per §13 #21 — sender_id rewritten to '[deleted-user]' while content is preserved. Step Functions Standard workflow orchestrates the steps; each step is an idempotent Python 3.14 Lambda. An audit log table records initiation and completion. A purge_immediately flag supports GDPR right-to-be-forgotten by branching at workflow entry into a hard-delete path that fully removes the requester's Aurora rows, ChatMessages, and ChatRoomMembership rows. This phase ships after chat because the workflow needs to deactivate ChatRooms, anonymize/hard-delete ChatMessages, and clean ChatRoomMembership — all DynamoDB tables created in phase 2 and operated on by phase 8.
@@ -551,3 +551,109 @@ post_merge_hotfixes:
       PATCH /v1/profile/me populates the remaining nullable fields and
       flips profile_complete_verified to true. The handler-side production
       path is unchanged — only the test scaffolding is touched.
+
+  # -------------------------------------------------------------------------
+  # Eighth round (2026-06-22) — surfaced by scripts/probe_phase9.py during the
+  # final phase-9 closeout E2E sweep. The probe exercises the full real-time
+  # chat path (subscribe → publish → receive) end-to-end, which the deletion
+  # E2E sub-tests did not touch; three latent AppSync defects (one IAM, two
+  # resolver-code) were uncovered in sequence as each fix unblocked the next.
+  # Bundled in PRs #158, #159, #160.
+  # -------------------------------------------------------------------------
+
+  - title: Phase 8 carry-over — chat_resolver IAM role trust policy did not include the AppSync service principal
+    severity: high (every room-scoped AppSync subscription returned Unauthorized at subscribe time; real-time chat over WSS silently broken in dev since phase 8)
+    discovered_by: scripts/probe_phase9.py during phase-9 closeout, 2026-06-22
+    pr: "#158 (commit 6e46b23)"
+    root_cause: |
+      The chat_resolver IAM role is passed into the appsync module as
+      `dynamodb_role_arn` and assigned as `service_role_arn` on every chat-
+      domain DynamoDB datasource (ChatRoomsDS, ChatRoomMembershipDS,
+      ChatMessagesDS, MessageReadsDS, NotificationsDS). Its trust policy
+      listed only `lambda.amazonaws.com`, so AppSync could not assume it at
+      subscribe time and every pipeline resolver that touched a DDB
+      datasource — including the membership check on Subscription.
+      onMessageInRoom — returned Unauthorized. HTTP mutations/queries kept
+      working because the chat_resolver Lambda datasource is invoked via a
+      separate role (appsync_chat_resolver_invoke) that already trusts
+      AppSync; only the direct-DDB subscription path was broken.
+    fix: |
+      Introduced a dedicated `chat_resolver_assume_role` policy document with
+      both `lambda.amazonaws.com` and `appsync.amazonaws.com` service
+      principals; `aws_iam_role.chat_resolver.assume_role_policy` now points
+      at it. A tftest regression guard (Test 20b) asserts the role is wired
+      to the new data source so a future revert to `lambda_assume_role`
+      fails CI. The principal-content check itself cannot be a tftest
+      assertion because mock_provider stubs every aws_iam_policy_document
+      read to `{json="{}"}`; the content guarantee lives in the typed
+      principals.identifiers block (terraform validate) plus the probe at
+      integration time.
+
+  - title: Phase 8 carry-over — check_room_membership AppSync function double-marshalled the DDB key
+    severity: high (every room-scoped subscription failed inside the auth function with "provided key element does not match the schema"; masked by the IAM trust bug above until #158 landed)
+    discovered_by: scripts/probe_phase9.py, 2026-06-22, after #158 reached dev
+    pr: "#159 (commit a2bd57f)"
+    root_cause: |
+      The `get` helper imported from @aws-appsync/utils/dynamodb marshals
+      key values itself — it expects plain JS primitives. Wrapping userId/
+      roomId with `util.dynamodb.toDynamoDB(...)` before passing them in
+      produced `{S: "<sub>"}` objects which the helper then wrapped again,
+      yielding `{S: {S: "..."}}`. DynamoDB rejected this with
+      DynamoDbException — The provided key element does not match the
+      schema. The bug had silently broken every room-scoped subscription
+      (onMessageInRoom, onTypingInRoom, onRoomDeactivated, onRoomReactivated,
+      onReadReceipt) since phase 8 (story 8.6) shipped; it was masked
+      until now because the IAM trust failure short-circuited every attempt
+      before the DDB call ran.
+    fix: |
+      Pass `userId` / `roomId` as plain strings to the `get` helper and let
+      it do the marshalling. Regression guard: tftest assertion in
+      check_room_membership_function_declared that aws_appsync_function.
+      check_room_membership.code does not contain `util.dynamodb.toDynamoDB(`
+      — the open-paren form catches the call site without matching the
+      explanatory comment that also mentions the helper name.
+
+  - title: Phase 8 carry-over — all 7 subscription pipeline resolvers used $util.toJson($ctx.result) at subscribe time, leaking the membership item into GraphQL type-check
+    severity: high (every subscription subscribe-time ack failed GraphQL type-check with "Cannot return null for non-nullable type 'ID' within parent 'Message'"; clients never received a successful subscription confirmation)
+    discovered_by: scripts/probe_phase9.py, 2026-06-22, after #159 reached dev
+    pr: "#160 (commit 151c6f7)"
+    root_cause: |
+      The 7 subscription pipeline resolvers (onMessageInRoom, onTypingInRoom,
+      onRoomDeactivated, onRoomReactivated, onReadReceipt, onNotificationForMe,
+      onFriendRequestUpdated) used `response_template = "$util.toJson($ctx.result)"`.
+      At subscribe time $ctx.result is the ChatRoomMembership item returned by
+      the auth pipeline function (snake_case user_id / room_id). AppSync then
+      type-checks that payload against the subscription field's declared
+      return type (Message, ChatRoom, ReadReceipt, …). Shapes don't match,
+      every field comes out null, and GraphQL rejects the subscription with
+      "Cannot return null for non-nullable type 'ID' within parent
+      'Message'".
+    fix: |
+      Set `response_template = "null"` on all 7 subscription resolvers.
+      AppSync delivers the publishing mutation's payload directly at publish
+      time without re-running the subscription resolver, so the subscribe-
+      time ack does not need to carry the membership item. Regression
+      guard: a tftest run block pins response_template == "null" on every
+      one of the seven resolvers so any future revert to $util.toJson($ctx.
+      result) fails CI.
+
+closeout:
+  date: 2026-06-22
+  probe: scripts/probe_phase9.py — ALL ASSERTIONS PASSED end-to-end against live dev.
+  e2e_sub_tests:
+    - test_e2e_soft_delete_full_workflow — pass
+    - test_e2e_block_filter_regression — pass
+    - test_e2e_purge_immediately — pass
+  probe_path_verified:
+    - friend request decline (inbox 1→0)
+    - friend request accept + chat-room creation
+    - WSS subscription delivers sender's sendMessage to recipient
+    - Step Functions soft-delete completes (Aurora row redacted, Cognito disabled, chat messages anonymized, deck_view refreshed)
+  hotfix_total: 10  # seven during deletion-E2E (#150–#157), three during probe-phase9 (#158, #159, #160)
+  notes: |
+    The eighth-round hotfixes were phase-8 carry-overs (AppSync chat
+    subscriptions) but were captured in this PRD because they were
+    discovered and resolved during phase-9 closeout. Phase 9 itself
+    shipped as 13 stories via PR #148; the post-merge hotfix stack of
+    10 PRs (#150–#160) closed every defect surfaced by the live-dev
+    E2E and probe sweeps.
