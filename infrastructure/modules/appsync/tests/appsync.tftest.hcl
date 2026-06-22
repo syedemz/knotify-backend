@@ -719,6 +719,67 @@ run "identity_scoped_resolvers_pipeline_config_references_identity_function" {
 }
 
 # ---------------------------------------------------------------------------
+# Regression guard (hotfix): all 7 subscription pipeline resolvers must use
+# response_template = "null" so AppSync does not type-check the pipeline
+# function's auth-check result (ChatRoomMembership item with snake_case keys)
+# against the subscription field's return type at subscribe time. Returning
+# $util.toJson($ctx.result) here caused "Cannot return null for non-nullable
+# field" errors on subscribe and broke onMessageInRoom end-to-end.
+# ---------------------------------------------------------------------------
+run "subscription_resolvers_return_null_at_subscribe_time" {
+  command = plan
+
+  variables {
+    environment                     = "test"
+    user_pool_id                    = "eu-central-1_TESTPOOL"
+    appsync_logs_role_arn           = "arn:aws:iam::123456789012:role/knotify-test-appsync-logs"
+    appsync_invoke_role_arn         = "arn:aws:iam::123456789012:role/knotify-test-appsync-invoke"
+    chat_resolver_lambda_arn        = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
+    chat_room_membership_table_name = "ChatRoomMembership"
+    chat_messages_table_name        = "ChatMessages"
+    message_reads_table_name        = "MessageReads"
+    notifications_table_name        = "Notifications"
+    chat_rooms_table_name           = "ChatRooms"
+    dynamodb_role_arn               = "arn:aws:iam::123456789012:role/knotify-test-ddb-role"
+  }
+
+  assert {
+    condition     = aws_appsync_resolver.on_message_in_room.response_template == "null"
+    error_message = "onMessageInRoom response_template must be \"null\" — $util.toJson($ctx.result) leaks the membership item and fails GraphQL type-check"
+  }
+
+  assert {
+    condition     = aws_appsync_resolver.on_typing_in_room.response_template == "null"
+    error_message = "onTypingInRoom response_template must be \"null\""
+  }
+
+  assert {
+    condition     = aws_appsync_resolver.on_room_deactivated.response_template == "null"
+    error_message = "onRoomDeactivated response_template must be \"null\""
+  }
+
+  assert {
+    condition     = aws_appsync_resolver.on_room_reactivated.response_template == "null"
+    error_message = "onRoomReactivated response_template must be \"null\""
+  }
+
+  assert {
+    condition     = aws_appsync_resolver.on_read_receipt.response_template == "null"
+    error_message = "onReadReceipt response_template must be \"null\""
+  }
+
+  assert {
+    condition     = aws_appsync_resolver.on_notification_for_me.response_template == "null"
+    error_message = "onNotificationForMe response_template must be \"null\""
+  }
+
+  assert {
+    condition     = aws_appsync_resolver.on_friend_request_updated.response_template == "null"
+    error_message = "onFriendRequestUpdated response_template must be \"null\""
+  }
+}
+
+# ---------------------------------------------------------------------------
 # Story 8.8 tests — setTyping PIPELINE resolver (no storage)
 #
 # Implementation choice: APPSYNC_JS PIPELINE resolver on NoneDS.
