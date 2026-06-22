@@ -691,6 +691,45 @@ run "appsync_logs_role_attaches_appsync_cloudwatch_managed_policy" {
 }
 
 # ---------------------------------------------------------------------------
+# Test 20b: chat_resolver — must be wired to the dedicated chat_resolver_assume_role
+#                           data source (NOT the lambda-only lambda_assume_role).
+#
+# The dev environment passes module.iam_roles.role_arns["chat_resolver"] into
+# the appsync module as `dynamodb_role_arn`, which is then assigned as
+# `service_role_arn` on the chat-domain DynamoDB datasources. Without the
+# appsync trust principal in the chat_resolver role, AppSync cannot assume it
+# at subscribe time and Subscription.onMessageInRoom (and any other DDB-backed
+# pipeline function) returns Unauthorized — breaking real-time chat delivery.
+#
+# Note: tftest mock_provider stubs every aws_iam_policy_document read to
+# `{ json = "{}" }`, so we cannot strcontains-assert the principal identifiers
+# at plan time. The content guarantee is enforced by:
+#   (a) the typed `statement.principals.identifiers` block in main.tf
+#       (terraform validate parses this), and
+#   (b) scripts/probe_phase9.py, which subscribes to onMessageInRoom against
+#       dev AppSync and fails on Unauthorized.
+# This test only asserts the wiring — that the role references the new
+# dedicated data source — to catch accidental reverts to lambda_assume_role.
+#
+# Filed as a hotfix on 2026-06-22 after scripts/probe_phase9.py surfaced the
+# regression in dev.
+# ---------------------------------------------------------------------------
+run "chat_resolver_wired_to_dedicated_trust_policy" {
+  command = plan
+
+  variables {
+    environment                   = "test"
+    aurora_master_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:rds!cluster-EXAMPLE-suffix"
+    chat_resolver_lambda_arn      = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
+  }
+
+  assert {
+    condition     = aws_iam_role.chat_resolver.assume_role_policy == data.aws_iam_policy_document.chat_resolver_assume_role.json
+    error_message = "chat_resolver role must use data.aws_iam_policy_document.chat_resolver_assume_role (lambda + appsync trust), not lambda_assume_role"
+  }
+}
+
+# ---------------------------------------------------------------------------
 # Test 21: appsync_chat_resolver_invoke — trust principal appsync.amazonaws.com,
 #          inline policy granting lambda:InvokeFunction on chat_resolver Lambda ARN
 #
