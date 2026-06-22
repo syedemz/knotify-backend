@@ -333,6 +333,64 @@ def test_given_deletion_completed_purge_immediately_when_handler_called_then_dyn
     assert item["dynamodb_retention"]["S"] == "hard_deleted"
 
 
+def test_given_deletion_completed_with_explicit_retention_hard_deleted_when_handler_called_then_event_value_wins(
+    mock_dynamo,
+):
+    """
+    Regression: state-machine WriteAuditLog states pass `dynamodb_retention`
+    directly (no `purge_immediately` flag). The Lambda must honor that value
+    instead of defaulting to `permanent_anonymized`.
+    """
+    from write_audit_log import handler
+
+    event = _make_event(
+        "deletion_completed",
+        dynamodb_retention="hard_deleted",
+    )
+    handler.handler(event, None)
+
+    item = mock_dynamo.put_item.call_args.kwargs["Item"]
+    assert item["dynamodb_retention"]["S"] == "hard_deleted"
+
+
+def test_given_deletion_completed_with_explicit_retention_permanent_anonymized_when_handler_called_then_event_value_wins(
+    mock_dynamo,
+):
+    """
+    Same regression for the soft-delete branch.
+    """
+    from write_audit_log import handler
+
+    event = _make_event(
+        "deletion_completed",
+        dynamodb_retention="permanent_anonymized",
+    )
+    handler.handler(event, None)
+
+    item = mock_dynamo.put_item.call_args.kwargs["Item"]
+    assert item["dynamodb_retention"]["S"] == "permanent_anonymized"
+
+
+def test_given_deletion_completed_with_invalid_retention_when_handler_called_then_falls_back_to_purge_immediately(
+    mock_dynamo,
+):
+    """
+    Defense: a malformed explicit value must not silently land in the table —
+    the handler falls back to computing retention from `purge_immediately`.
+    """
+    from write_audit_log import handler
+
+    event = _make_event(
+        "deletion_completed",
+        dynamodb_retention="bogus",
+        purge_immediately=True,
+    )
+    handler.handler(event, None)
+
+    item = mock_dynamo.put_item.call_args.kwargs["Item"]
+    assert item["dynamodb_retention"]["S"] == "hard_deleted"
+
+
 # ---------------------------------------------------------------------------
 # Test D: deletion_failed row shape
 # ---------------------------------------------------------------------------

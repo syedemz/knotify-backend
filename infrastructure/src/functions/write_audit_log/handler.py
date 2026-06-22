@@ -142,8 +142,16 @@ def _populate_initiated(item: dict, event: dict) -> None:
 
 def _populate_completed(item: dict, event: dict) -> None:
     """Add deletion_completed-specific fields to the item dict."""
-    purge_immediately: bool = bool(event.get("purge_immediately", False))
-    dynamodb_retention: str = "hard_deleted" if purge_immediately else "permanent_anonymized"
+    # The state machine passes `dynamodb_retention` explicitly from each
+    # branch's WriteAuditLog state ("hard_deleted" for purge_immediately,
+    # "permanent_anonymized" for soft-delete). Honor that value when present.
+    # Fall back to computing it from `purge_immediately` for callers that
+    # only send the flag (preserves backwards compatibility with tests and
+    # any future invokers that follow the older contract).
+    dynamodb_retention = event.get("dynamodb_retention")
+    if dynamodb_retention not in ("hard_deleted", "permanent_anonymized"):
+        purge_immediately: bool = bool(event.get("purge_immediately", False))
+        dynamodb_retention = "hard_deleted" if purge_immediately else "permanent_anonymized"
 
     branches_succeeded: list[str] = event.get("branches_succeeded", [])
     completed_at: str = event.get("completed_at", "")
