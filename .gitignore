@@ -32,6 +32,7 @@ build/
 .eggs/
 .scratch/
 questions/
+project-report/
 
 # Lambda layer build output (produced by build.sh — not committed)
 infrastructure/src/layers/*/python/
