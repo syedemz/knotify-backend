@@ -503,6 +503,19 @@ run "check_room_membership_function_declared" {
     condition     = aws_appsync_function.check_room_membership.data_source == aws_appsync_datasource.chat_room_membership.name
     error_message = "check_room_membership must use the ChatRoomMembership DynamoDB datasource (story 8.6)"
   }
+
+  # Regression guard (filed 2026-06-22): the `get` helper from
+  # @aws-appsync/utils/dynamodb marshals values itself. Wrapping userId/roomId
+  # with util.dynamodb.toDynamoDB() inside the key map double-marshals and
+  # DynamoDB rejects the GetItem with "key element does not match the schema",
+  # which silently breaks every room-scoped subscription (onMessageInRoom,
+  # onTypingInRoom, onRoomDeactivated, onRoomReactivated, onReadReceipt).
+  # Surfaced by scripts/probe_phase9.py after the IAM trust hotfix (#158) made
+  # the underlying DDB error visible. Pass plain JS primitives only.
+  assert {
+    condition     = !strcontains(aws_appsync_function.check_room_membership.code, "util.dynamodb.toDynamoDB(")
+    error_message = "check_room_membership must not invoke util.dynamodb.toDynamoDB() inside the get() key — the helper marshals values itself; double-marshalling breaks GetItem"
+  }
 }
 
 # ---------------------------------------------------------------------------

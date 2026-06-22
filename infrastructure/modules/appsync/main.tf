@@ -411,10 +411,14 @@ resource "aws_appsync_function" "check_room_membership" {
       if (!roomId) {
         util.error("roomId argument is required for room-scoped subscriptions", "MissingArgument");
       }
+      // The `get` helper from @aws-appsync/utils/dynamodb marshals values
+      // itself — pass plain JS primitives. Wrapping with util.dynamodb.toDynamoDB
+      // here would double-marshal (producing {S: {S: "..."}}) and DynamoDB
+      // would reject the GetItem with "key element does not match the schema".
       return get({
         key: {
-          user_id: util.dynamodb.toDynamoDB(userId),
-          room_id: util.dynamodb.toDynamoDB(roomId),
+          user_id: userId,
+          room_id: roomId,
         },
       });
     }
