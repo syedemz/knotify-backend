@@ -67,7 +67,7 @@ resource "aws_cloudwatch_log_group" "postgresql" {
 resource "aws_rds_cluster" "this" {
   cluster_identifier = var.cluster_identifier
   engine             = "aurora-postgresql"
-  engine_version     = "16.4"
+  engine_version     = "16.15"
 
   # Serverless v2 scaling configuration — ACU bounds are caller-configurable
   serverlessv2_scaling_configuration {
@@ -134,7 +134,7 @@ resource "aws_rds_cluster_instance" "this" {
   engine_version     = aws_rds_cluster.this.engine_version
 
   # Minor version upgrades are applied automatically by AWS within the
-  # configured maintenance window. Combined with engine_version "16.4" this
+  # configured maintenance window. Combined with engine_version "16.15" this
   # means Terraform controls the major/minor floor but AWS keeps the patch
   # level current. Use lifecycle { ignore_changes = [engine_version] } if
   # state drift from AWS-applied minor upgrades becomes noisy (phase 11).

@@ -5,7 +5,7 @@ mock_provider "aws" {}
 
 # ---------------------------------------------------------------------------
 # Test 1: Cluster engine, version, encryption, and credential management
-# Satisfies AC: engine "aurora-postgresql", engine_version "16.4",
+# Satisfies AC: engine "aurora-postgresql", engine_version "16.15",
 # storage_encrypted true, manage_master_user_password true.
 # Note: auto_minor_version_upgrade is an aws_rds_cluster_instance attribute,
 # not an aws_rds_cluster attribute — it is asserted in test 9 on the instance.
@@ -27,8 +27,8 @@ run "cluster_engine_and_encryption" {
   }
 
   assert {
-    condition     = aws_rds_cluster.this.engine_version == "16.4"
-    error_message = "Cluster engine_version must be 16.4"
+    condition     = aws_rds_cluster.this.engine_version == "16.15"
+    error_message = "Cluster engine_version must be 16.15"
   }
 
   assert {
