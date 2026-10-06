@@ -1,0 +1,132 @@
+name: outputs-dev
+
+# One-shot helper: queries the live dev account for the resource IDs the
+# React Native frontend needs in backend-config.json. Not wired into any
+# push/PR trigger — only runnable manually via `gh workflow run outputs-dev.yml`.
+# Read-only; no terraform init, no state mutation.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dump:
+    name: Dump dev endpoint IDs
+    runs-on: ubuntu-latest
+    environment: dev
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: eu-central-1
+    steps:
+      - name: Resolve resource IDs
+        run: |
+          set -euo pipefail
+
+          REGION=eu-central-1
+
+          # Cognito user pool — filter by Name == knotify-dev-user-pool.
+          USER_POOL_ID=$(aws cognito-idp list-user-pools --max-results 60 \
+            --query "UserPools[?Name=='knotify-dev-user-pool'].Id | [0]" \
+            --output text)
+          echo "USER_POOL_ID=$USER_POOL_ID"
+
+          # Production SRP app client (ClientName == knotify-dev-app).
+          APP_CLIENT_ID=$(aws cognito-idp list-user-pool-clients \
+            --user-pool-id "$USER_POOL_ID" --max-results 60 \
+            --query "UserPoolClients[?ClientName=='knotify-dev-app'].ClientId | [0]" \
+            --output text)
+          echo "APP_CLIENT_ID=$APP_CLIENT_ID"
+
+          # Integration-test client (ClientName == knotify-dev-integration-test).
+          INTEGRATION_TEST_CLIENT_ID=$(aws cognito-idp list-user-pool-clients \
+            --user-pool-id "$USER_POOL_ID" --max-results 60 \
+            --query "UserPoolClients[?ClientName=='knotify-dev-integration-test'].ClientId | [0]" \
+            --output text)
+          echo "INTEGRATION_TEST_CLIENT_ID=$INTEGRATION_TEST_CLIENT_ID"
+
+          # AppSync GraphQL API (name == knotify-dev-chat-api).
+          APPSYNC_API_ID=$(aws appsync list-graphql-apis --max-results 25 \
+            --query "graphqlApis[?name=='knotify-dev-chat-api'].apiId | [0]" \
+            --output text)
+          echo "APPSYNC_API_ID=$APPSYNC_API_ID"
+          APPSYNC_GRAPHQL_URL=$(aws appsync get-graphql-api --api-id "$APPSYNC_API_ID" \
+            --query "graphqlApi.uris.GRAPHQL" --output text)
+          APPSYNC_REALTIME_URL=$(aws appsync get-graphql-api --api-id "$APPSYNC_API_ID" \
+            --query "graphqlApi.uris.REALTIME" --output text)
+
+          # API Gateway v2 HTTP API (name == knotify-dev-api).
+          APIGW_ID=$(aws apigatewayv2 get-apis --max-results 100 \
+            --query "Items[?Name=='knotify-dev-api'].ApiId | [0]" \
+            --output text)
+          APIGW_ENDPOINT=$(aws apigatewayv2 get-apis --max-results 100 \
+            --query "Items[?Name=='knotify-dev-api'].ApiEndpoint | [0]" \
+            --output text)
+          echo "APIGW_ID=$APIGW_ID"
+          echo "APIGW_ENDPOINT=$APIGW_ENDPOINT"
+
+          # CloudFront distribution — the dev distribution's single origin is the
+          # knotify-dev-api API Gateway invoke host. Match on origin DomainName.
+          APIGW_HOST="${APIGW_ID}.execute-api.${REGION}.amazonaws.com"
+          CLOUDFRONT_ID=$(aws cloudfront list-distributions \
+            --query "DistributionList.Items[?Origins.Items[?DomainName=='${APIGW_HOST}']].Id | [0]" \
+            --output text)
+          CLOUDFRONT_DOMAIN=$(aws cloudfront list-distributions \
+            --query "DistributionList.Items[?Origins.Items[?DomainName=='${APIGW_HOST}']].DomainName | [0]" \
+            --output text)
+          CLOUDFRONT_ALIASES=$(aws cloudfront list-distributions \
+            --query "DistributionList.Items[?Origins.Items[?DomainName=='${APIGW_HOST}']].Aliases.Items | [0]" \
+            --output json)
+          echo "CLOUDFRONT_ID=$CLOUDFRONT_ID"
+          echo "CLOUDFRONT_DOMAIN=$CLOUDFRONT_DOMAIN"
+
+          # Account id — pulled from STS, no secrets exposed.
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
+          jq -n \
+            --arg region "$REGION" \
+            --arg account "$ACCOUNT_ID" \
+            --arg userPoolId "$USER_POOL_ID" \
+            --arg appClientId "$APP_CLIENT_ID" \
+            --arg integrationTestClientId "$INTEGRATION_TEST_CLIENT_ID" \
+            --arg appsyncApiId "$APPSYNC_API_ID" \
+            --arg appsyncGraphqlUrl "$APPSYNC_GRAPHQL_URL" \
+            --arg appsyncRealtimeUrl "$APPSYNC_REALTIME_URL" \
+            --arg apigwId "$APIGW_ID" \
+            --arg apigwEndpoint "$APIGW_ENDPOINT" \
+            --arg cloudfrontId "$CLOUDFRONT_ID" \
+            --arg cloudfrontDomain "$CLOUDFRONT_DOMAIN" \
+            --argjson cloudfrontAliases "${CLOUDFRONT_ALIASES:-null}" \
+            '{
+              region: $region,
+              accountId: $account,
+              cognito: {
+                userPoolId: $userPoolId,
+                appClientId: $appClientId,
+                integrationTestClientId: $integrationTestClientId
+              },
+              appsync: {
+                apiId: $appsyncApiId,
+                graphqlUrl: $appsyncGraphqlUrl,
+                realtimeUrl: $appsyncRealtimeUrl
+              },
+              apiGateway: {
+                id: $apigwId,
+                endpoint: $apigwEndpoint
+              },
+              cloudfront: {
+                distributionId: $cloudfrontId,
+                domainName: $cloudfrontDomain,
+                aliases: $cloudfrontAliases
+              }
+            }' > dev-outputs.json
+
+          cat dev-outputs.json
+
+      - name: Upload dev-outputs artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dev-outputs
+          path: dev-outputs.json
