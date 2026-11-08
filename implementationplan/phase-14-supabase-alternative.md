@@ -1,6 +1,6 @@
 phase: 14
 title: Supabase alternative to Aurora RDS and private VPC (dev cost reduction; prod-capable)
-last_updated: 2026-11-08 (phase 14 OPEN — stories 14.1-14.5a done; early plan verification run against dev caught 1 null-arn bug and expanded 14.6 scope; 14.6 is next; plan digest in features/feature-1-terraform-plan-output.md)
+last_updated: 2026-11-08 (phase 14 OPEN — stories 14.1-14.6 done; 14.7 (extract RLS helpers into _rls.py — Python refactor) is next; plan re-verification of the null-arn fix is pending fresh AWS creds OR deferred to 14.11)
 
 context_summary: |
   Introduces a single Terraform flag `use_supabase` that toggles the dev environment between
@@ -154,7 +154,7 @@ stories:
   - id: 14.6
     title: iam_roles conditional secret ARN via compact() + env-root null→"" coercion
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [14.5]
     tracking_issue: null
     acceptance_criteria:
