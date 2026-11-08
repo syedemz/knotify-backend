@@ -1,6 +1,6 @@
 phase: 14
 title: Supabase alternative to Aurora RDS and private VPC (dev cost reduction; prod-capable)
-last_updated: 2026-11-08 (phase 14 OPEN — stories 14.1-14.5a done; 14.6 (iam_roles compact() rewrite) is next)
+last_updated: 2026-11-08 (phase 14 OPEN — stories 14.1-14.5a done; early plan verification run against dev caught 1 null-arn bug and expanded 14.6 scope; 14.6 is next; plan digest in features/feature-1-terraform-plan-output.md)
 
 context_summary: |
   Introduces a single Terraform flag `use_supabase` that toggles the dev environment between
@@ -152,18 +152,20 @@ stories:
       Surfaced during 14.5 as a known follow-up. 14.5 wired the locals pattern into seven standard Lambda modules (modules/lambda-pattern) but left these four specialized modules (each with its own hand-written `aws_lambda_function` resource and typed `aurora_*` inputs) untouched because the rewrite requires changing module-level variable schemas. Without 14.5a, `terraform plan` with `use_supabase=true` would fail at these four call-sites because `one(module.aurora[*].cluster_endpoint)` evaluates to `null` and Terraform rejects null for the modules' non-nullable string inputs. Must be resolved before 14.11's formal plan-verification story.
 
   - id: 14.6
-    title: iam_roles conditional secret ARN via compact()
+    title: iam_roles conditional secret ARN via compact() + env-root null→"" coercion
     agent: backenddeveloper
     done: false
     depends_on: [14.5]
     tracking_issue: null
     acceptance_criteria:
-      - infrastructure/modules/iam_roles/variables.tf declares supabase_master_user_secret_arn (string, default "") with a docstring referencing phase 14
-      - Every statement in infrastructure/modules/iam_roles/main.tf that grants secretsmanager:GetSecretValue on var.aurora_master_user_secret_arn has its Resource list rewritten to compact([var.aurora_master_user_secret_arn, var.supabase_master_user_secret_arn]) — exactly one ARN is non-empty for any given flag state, so compact() yields a single-element list
-      - No statement has its scope widened to Resource="*" — if any pre-existing statement was already wildcarded, it is NOT re-scoped here and the discrepancy is surfaced in a questions/ file for a follow-up
-      - Existing iam_roles Terraform tests pass unchanged; if the module has no tests, dev-env-level validation (terraform plan with flag both ways, grep for the secret ARN in the GetSecretValue policy block) is the acceptance signal
-      - prod plan output is unchanged
-    notes: ""
+      - infrastructure/modules/iam_roles/variables.tf already declares supabase_master_user_secret_arn (string, default "") from the story 14.5 stub — verify the docstring references phase 14 and update if needed (the stub docstring is already phase-14-aware, so this may be a no-op).
+      - infrastructure/environments/dev/main.tf and infrastructure/environments/prod/main.tf iam_roles module invocations rewrite the Aurora pass from `aurora_master_user_secret_arn = one(module.aurora[*].master_user_secret_arn)` to `aurora_master_user_secret_arn = try(one(module.aurora[*].master_user_secret_arn), "")` (and same pattern for supabase: `supabase_master_user_secret_arn = try(one(module.supabase[*].secret_arn), "")`). WHY: `one()` returns `null` when count=0 and Terraform rejects `null` in a `resources = [...]` list even if wrapped in `compact()` (compact filters empty strings, NOT nulls). Confirmed by the 2026-11-08 plan run captured in features/feature-1-terraform-plan-output.md.
+      - Every statement in infrastructure/modules/iam_roles/main.tf that grants secretsmanager:GetSecretValue on var.aurora_master_user_secret_arn has its Resource list rewritten to compact([var.aurora_master_user_secret_arn, var.supabase_master_user_secret_arn]) — exactly one ARN is non-empty for any given flag state, so compact() yields a single-element list.
+      - No statement has its scope widened to Resource="*" — if any pre-existing statement was already wildcarded, it is NOT re-scoped here and the discrepancy is surfaced in a questions/ file for a follow-up.
+      - `terraform plan -var-file=dev.tfvars -var 'use_supabase=true'` on dev produces ZERO errors (the single pre-14.6 error `module.iam_roles.data.aws_iam_policy_document.db_migrator_secrets: Null value found in list` is now gone). Verified via the user's temp credentials or deferred to story 14.11 if credentials are unavailable.
+      - `terraform plan -var-file=dev.tfvars -var 'use_supabase=false'` on dev remains clean (304 resources, 0 errors — no regression on the Aurora path).
+      - prod plan output is structurally unchanged (prod state bucket does not exist per docs/PROD_CUTOVER.md; prod verification is validate-only until prod bootstrap).
+    notes: Scope was expanded on 2026-11-08 after the early plan verification run surfaced the null-value-in-list bug that compact() alone cannot fix. The env-root try() coercion is the upstream fix; the compact() module rewrite is the downstream consumer. Both must land together.
 
   - id: 14.7
     title: Extract RLS GUC helpers from _db.py into shared _rls.py (pure refactor)
