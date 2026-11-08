@@ -1,6 +1,6 @@
 phase: 14
 title: Supabase alternative to Aurora RDS and private VPC (dev cost reduction; prod-capable)
-last_updated: 2026-11-08 (phase 14 OPEN — stories 14.1-14.9 done; 14.10 (rebuild DB Lambda layer zip to include _rls.py + _supabase.py) is next; plan re-verification of the 14.6 null-arn fix still pending fresh AWS creds OR deferred to 14.11)
+last_updated: 2026-11-08 (phase 14 OPEN — stories 14.1-14.10 done; 14.11 (formal terraform plan verification for both flag values) is next and needs AWS creds; 14.5a pre-condition check also wants a plan run)
 
 context_summary: |
   Introduces a single Terraform flag `use_supabase` that toggles the dev environment between
@@ -216,7 +216,7 @@ stories:
   - id: 14.10
     title: Rebuild DB Lambda layer zip to include _rls.py and _supabase.py
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [14.7, 14.8, 14.9]
     tracking_issue: null
     acceptance_criteria:
