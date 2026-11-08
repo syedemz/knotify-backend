@@ -116,3 +116,41 @@ variable "api_gateway_throttling_rate_limit" {
   type        = number
   default     = 1000
 }
+
+# ---------------------------------------------------------------------------
+# Supabase toggle — phase 14 (symmetric declaration with dev; prod pinned false).
+# A dedicated prod-cutover PRD governs any future prod=true transition.
+# supabase_host / port / dbname / username are declared here so prod/main.tf
+# can reference them symmetrically without variable-not-found errors; they are
+# only meaningful when use_supabase=true, which prod.tfvars never sets.
+# ---------------------------------------------------------------------------
+
+variable "use_supabase" {
+  description = "When true, routes database traffic through Supabase hosted Postgres instead of Aurora Serverless v2. Prod is pinned false in prod.tfvars (phase 14 safety). A dedicated prod-cutover PRD is required before flipping this in prod."
+  type        = bool
+  default     = false
+}
+
+variable "supabase_host" {
+  description = "Supabase pooler hostname. Empty string in prod (use_supabase pinned false). Set via prod.tfvars only after a dedicated prod-cutover PRD approves the transition."
+  type        = string
+  default     = ""
+}
+
+variable "supabase_port" {
+  description = "Supabase pooler port. 6543 = transaction mode. Only meaningful when use_supabase=true; prod is pinned false."
+  type        = number
+  default     = 6543
+}
+
+variable "supabase_dbname" {
+  description = "Supabase database name. Only meaningful when use_supabase=true; prod is pinned false."
+  type        = string
+  default     = "postgres"
+}
+
+variable "supabase_username" {
+  description = "Supabase pooler username. Empty string in prod (use_supabase pinned false)."
+  type        = string
+  default     = ""
+}

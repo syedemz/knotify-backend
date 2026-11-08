@@ -14,3 +14,8 @@ aurora_postgresql_log_retention_days = 7
 # DynamoDB — prod values per story 2.14 AC
 dynamodb_point_in_time_recovery = true
 dynamodb_deletion_protection    = true
+
+# Supabase toggle — phase 14 safety pin.
+# Prod stays on Aurora + private VPC until a dedicated prod-cutover PRD is
+# approved and executed.  Do NOT flip this without that PRD in place.
+use_supabase = false
