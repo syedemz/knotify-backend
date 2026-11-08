@@ -78,22 +78,31 @@ resource "aws_iam_role_policy_attachment" "db_migrator_vpc_access" {
   policy_arn = local.vpc_access_policy_arn
 }
 
-# Allow reading the Aurora-managed master secret.
-# Scoped to the exact ARN of the master_user_secret output from the aurora
-# module. The constructed-name approach (rds!cluster-<cluster_resource_id>-*)
-# does NOT work because RDS embeds a different internal UUID in the
-# master-secret name than the cluster_resource_id Terraform exposes; the
-# resulting policy never matches the real secret and GetSecretValue is denied.
+# Allow reading whichever DB master secret is live for the current flag state.
+# When use_supabase=false: aurora_master_user_secret_arn is non-empty,
+#   supabase_master_user_secret_arn is "".
+# When use_supabase=true: supabase_master_user_secret_arn is non-empty,
+#   aurora_master_user_secret_arn is "".
+# compact() filters the empty string so the policy gets exactly one ARN in its
+# Resource list regardless of which flag state is active.
+# WHY compact() rather than a conditional: the env-root passes
+#   try(one(module.aurora[*].attr), "") so null is already coerced to ""; compact()
+#   then eliminates the empty string. A bare [var.aurora_master_user_secret_arn]
+#   would error with "Null value found in list" when count=0 even if compact() is
+#   present, because compact() only filters empty strings, not nulls. The try()
+#   upstream + compact() here together guarantee a valid single-element list for
+#   any flag state. (Bug confirmed in the 2026-11-08 plan run, story 14.6.)
 data "aws_iam_policy_document" "db_migrator_secrets" {
   statement {
-    sid    = "ReadAuroraMasterSecret"
+    sid    = "ReadDbMasterSecret"
     effect = "Allow"
     actions = [
       "secretsmanager:GetSecretValue",
     ]
-    resources = [
+    resources = compact([
       var.aurora_master_user_secret_arn,
-    ]
+      var.supabase_master_user_secret_arn,
+    ])
   }
 }
 

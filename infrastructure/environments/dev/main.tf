@@ -179,8 +179,8 @@ module "iam_roles" {
   source = "../../modules/iam_roles"
 
   environment                     = var.environment
-  aurora_master_user_secret_arn   = one(module.aurora[*].master_user_secret_arn)
-  supabase_master_user_secret_arn = one(module.supabase[*].secret_arn)
+  aurora_master_user_secret_arn   = try(one(module.aurora[*].master_user_secret_arn), "")
+  supabase_master_user_secret_arn = try(one(module.supabase[*].secret_arn), "")
 
   # Scopes aurora_writer's cognito-idp:AdminUpdateUserAttributes to this pool
   # only. Sourced from the cognito module output (story 7.0b).
