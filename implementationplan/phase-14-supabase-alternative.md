@@ -1,6 +1,6 @@
 phase: 14
 title: Supabase alternative to Aurora RDS and private VPC (dev cost reduction; prod-capable)
-last_updated: 2026-11-08 (phase 14 OPEN — stories 14.1-14.7 done; 14.8 (create _supabase.py connection builder) is next; plan re-verification of the 14.6 null-arn fix still pending fresh AWS creds OR deferred to 14.11)
+last_updated: 2026-11-08 (phase 14 OPEN — stories 14.1-14.8 done; 14.9 (conditional backend dispatch in knotify_db/__init__.py) is next; plan re-verification of the 14.6 null-arn fix still pending fresh AWS creds OR deferred to 14.11)
 
 context_summary: |
   Introduces a single Terraform flag `use_supabase` that toggles the dev environment between
@@ -185,7 +185,7 @@ stories:
   - id: 14.8
     title: Create _supabase.py connection builder
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [14.7]
     tracking_issue: null
     acceptance_criteria:
