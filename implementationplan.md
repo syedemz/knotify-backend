@@ -1,5 +1,5 @@
 project: knotify-backend
-last_updated: 2026-06-22 # phase 9 CLOSED — 10 post-merge hotfixes shipped (PRs #150–#160); deletion E2E + probe_phase9.py both ALL GREEN; phase-9-complete tag applied
+last_updated: 2026-11-08 # phase 14 (Supabase alternative to Aurora RDS + private VPC) added; PRD + detailed TDD plan in features/feature-1-*; see implementationplan/phase-14-supabase-alternative.md
 
 phases:
 
@@ -80,3 +80,17 @@ phases:
   file: implementationplan/phase-12-s3-photos.md
   ready: false
   done: false
+
+- phase: 14
+  title: Supabase alternative to Aurora RDS and private VPC (dev cost reduction; prod-capable)
+  file: implementationplan/phase-14-supabase-alternative.md
+  ready: false
+  done: false
+  # Motivation: October 2026 AWS bill was $207, of which Aurora + VPC = ~$167 (81%).
+  # Mutually-exclusive Terraform flag use_supabase. Dev defaults to true (Aurora torn down 2026-11-08);
+  # prod pinned false (safety) but architecturally symmetric so a future prod cutover is a
+  # one-tfvar flip + data-migration PRD.
+  # Full PRD: features/feature-1-supabase-alternative.md
+  # Detailed TDD plan: features/feature-1-supabase-alternative-plan.md
+  # Note: phase 13 (premium subscriptions) PRD file exists at implementationplan/phase-13-premium-subscriptions.md
+  # but is not currently indexed here — pre-existing inconsistency, not introduced by this phase.
