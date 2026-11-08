@@ -1,6 +1,6 @@
 phase: 14
 title: Supabase alternative to Aurora RDS and private VPC (dev cost reduction; prod-capable)
-last_updated: 2026-11-08 (phase 14 OPEN — stories 14.1-14.5 done; 14.6 (iam_roles compact() rewrite) is next; four specialized Lambda modules surfaced as a known follow-up before 14.11 — see context.md)
+last_updated: 2026-11-08 (phase 14 OPEN — stories 14.1-14.5 done; 14.5a (unify four specialized Lambda modules with the db_env_vars + db_vpc_config pattern) added as a follow-up and is next; 14.6 (iam_roles compact() rewrite) follows)
 
 context_summary: |
   Introduces a single Terraform flag `use_supabase` that toggles the dev environment between
@@ -133,6 +133,23 @@ stories:
       - iam_roles module invocation receives aurora_master_user_secret_arn = one(module.aurora[*].master_user_secret_arn) and new input supabase_master_user_secret_arn = one(module.supabase[*].secret_arn)
       - `terraform plan` with use_supabase=true produces a Supabase secret create + SUPABASE_HOST env var on every Aurora-using Lambda; `terraform plan` with use_supabase=false produces zero diff vs. baseline
     notes: The locals pattern is the single-source-of-truth design choice that keeps per-Lambda edits mechanical and auditable. See features/feature-1-supabase-alternative-plan.md story f1.4 for the exact locals block body.
+
+  - id: 14.5a
+    title: Unify specialized Lambda modules (chat_resolver, refresh_deck_view, hard_purge, soft_delete_aurora) with the local.db_env_vars + local.db_vpc_config pattern
+    agent: backenddeveloper
+    done: false
+    depends_on: [14.5]
+    tracking_issue: null
+    acceptance_criteria:
+      - Each of the four modules — `infrastructure/modules/chat_resolver/`, `infrastructure/modules/refresh_deck_view/`, `infrastructure/modules/hard_purge/`, `infrastructure/modules/soft_delete_aurora/` — has its `variables.tf` rewritten to drop the typed `aurora_host` / `aurora_port` / `aurora_dbname` inputs and instead accept a single generic `db_env_vars` map input (same shape as `local.db_env_vars` in the env main.tf). The `vpc_config` input is changed from a non-nullable object to a nullable object so `null` is a legal value when `use_supabase=true`.
+      - Each of the four modules has its `main.tf` rewritten so the inner `aws_lambda_function` (or the inner `module "lambda"` call, depending on the module's pattern) passes `environment_variables = merge(var.db_env_vars, { bespoke non-DB keys })` instead of constructing `AURORA_HOST = var.aurora_host` etc., and `vpc_config = var.vpc_config` (passed through unchanged, now possibly null).
+      - Lambda handler code (`infrastructure/src/functions/<name>/handler.py`) is NOT modified. The `knotify_db` layer (stories 14.7-14.9) will route to Aurora or Supabase based on the `USE_SUPABASE` env var — handlers simply call `knotify_db.get_connection()` as they do today. If a handler reads `AURORA_HOST` directly instead of going through the layer, surface the pre-existing bug in the writeup and do NOT fix it in this story.
+      - `environments/dev/main.tf` and `environments/prod/main.tf` call-sites for the four modules are rewritten to pass `db_env_vars = local.db_env_vars` and `vpc_config = local.db_vpc_config` instead of `aurora_host = one(module.aurora[*].cluster_endpoint)` + inline vpc_config blocks.
+      - Each module's existing `.tftest.hcl` tests (where present) are updated to reflect the new input schema and continue to pass.
+      - `terraform fmt -check` and `terraform validate` pass clean on both dev and prod envs.
+      - `grep -nE 'aurora_host *=|aurora_port *=|aurora_dbname *=' infrastructure/environments/{dev,prod}/main.tf` returns zero hits — these four module call-sites were the last places those inputs were set.
+    notes: |
+      Surfaced during 14.5 as a known follow-up. 14.5 wired the locals pattern into seven standard Lambda modules (modules/lambda-pattern) but left these four specialized modules (each with its own hand-written `aws_lambda_function` resource and typed `aurora_*` inputs) untouched because the rewrite requires changing module-level variable schemas. Without 14.5a, `terraform plan` with `use_supabase=true` would fail at these four call-sites because `one(module.aurora[*].cluster_endpoint)` evaluates to `null` and Terraform rejects null for the modules' non-nullable string inputs. Must be resolved before 14.11's formal plan-verification story.
 
   - id: 14.6
     title: iam_roles conditional secret ARN via compact()
