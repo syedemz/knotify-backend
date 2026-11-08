@@ -37,6 +37,40 @@ provider "aws" {
   }
 }
 
+# ---------------------------------------------------------------------------
+# Database-side Lambda inputs — phase 14 (Supabase alternative).
+#
+# These locals are the single source of truth for every Aurora-using Lambda
+# module's env vars and vpc_config. The use_supabase flag picks which branch
+# resolves; every Lambda module below reads from these locals instead of
+# carrying its own ternary.
+#
+# INVARIANT: when use_supabase = true, db_vpc_config is null (Lambdas run
+# outside the VPC and reach Supabase over the public internet). When false,
+# vpc_config is populated from the networking module's outputs.
+# ---------------------------------------------------------------------------
+
+locals {
+  db_env_vars = var.use_supabase ? {
+    USE_SUPABASE    = "true"
+    SUPABASE_HOST   = var.supabase_host
+    SUPABASE_PORT   = tostring(var.supabase_port)
+    SUPABASE_DBNAME = var.supabase_dbname
+    DB_SECRET_ARN   = one(module.supabase[*].secret_arn)
+    } : {
+    USE_SUPABASE  = "false"
+    AURORA_HOST   = one(module.aurora[*].cluster_endpoint)
+    AURORA_PORT   = tostring(one(module.aurora[*].port))
+    AURORA_DBNAME = one(module.aurora[*].database_name)
+    DB_SECRET_ARN = one(module.aurora[*].master_user_secret_arn)
+  }
+
+  db_vpc_config = var.use_supabase ? null : {
+    subnet_ids         = one(module.networking[*].private_subnet_ids)
+    security_group_ids = [one(module.networking[*].lambda_security_group_id)]
+  }
+}
+
 module "networking" {
   count = var.use_supabase ? 0 : 1
 
@@ -80,6 +114,23 @@ module "aurora" {
   # Data API — enabled in dev so the deletion E2E test (story 9.13) can hit
   # Aurora from outside the VPC. Prod main.tf does NOT set this (stays false).
   enable_data_api = true
+}
+
+# ---------------------------------------------------------------------------
+# Supabase credential secret — phase 14.
+# Deployed only when use_supabase = true. Mutually exclusive with Aurora.
+# The module creates exactly one Secrets Manager secret for the Supabase
+# pooler credential; the real password is injected post-apply via CLI
+# (story 14.12) and never stored in Terraform state (lifecycle.ignore_changes).
+# ---------------------------------------------------------------------------
+
+module "supabase" {
+  count = var.use_supabase ? 1 : 0
+
+  source = "../../modules/supabase"
+
+  environment = var.environment
+  username    = var.supabase_username
 }
 
 # ---------------------------------------------------------------------------
@@ -127,8 +178,9 @@ module "db_layer" {
 module "iam_roles" {
   source = "../../modules/iam_roles"
 
-  environment                   = var.environment
-  aurora_master_user_secret_arn = one(module.aurora[*].master_user_secret_arn)
+  environment                     = var.environment
+  aurora_master_user_secret_arn   = one(module.aurora[*].master_user_secret_arn)
+  supabase_master_user_secret_arn = one(module.supabase[*].secret_arn)
 
   # Scopes aurora_writer's cognito-idp:AdminUpdateUserAttributes to this pool
   # only. Sourced from the cognito module output (story 7.0b).
@@ -230,7 +282,10 @@ module "db_migrator" {
   # The VPC config must include the aurora_security_group_id so the Lambda
   # ENI can reach Aurora on port 5432. The Lambda SG is also included so
   # outbound Secrets Manager calls route through the VPC Interface Endpoint.
-  vpc_config = {
+  # db_migrator needs both SGs (aurora + lambda); local.db_vpc_config only
+  # carries lambda_security_group_id (sufficient for app_user Lambdas). An
+  # inline ternary is used here to preserve the two-SG requirement.
+  vpc_config = var.use_supabase ? null : {
     subnet_ids = one(module.networking[*].private_subnet_ids)
     security_group_ids = [
       one(module.networking[*].lambda_security_group_id),
@@ -238,9 +293,11 @@ module "db_migrator" {
     ]
   }
 
-  environment_variables = {
+  environment_variables = merge(local.db_env_vars, {
     # ARN of the Aurora master credential (Aurora-managed rotation).
     # Fetched via the Interface VPC Endpoint (story 3.0).
+    # Kept as AURORA_MASTER_SECRET_ARN (not DB_SECRET_ARN) so the migrator
+    # handler reads the correct key without code changes (phase 14 option-a).
     AURORA_MASTER_SECRET_ARN = one(module.aurora[*].master_user_secret_arn)
 
     # Friendly name of the app_user credential secret to create/update.
@@ -252,14 +309,7 @@ module "db_migrator" {
     # (story 7.4). Mirrors APP_USER_SECRET_NAME pattern — same create-or-update
     # idempotency; no new abstraction.
     AURORA_REFRESH_SECRET_NAME = "knotify-${var.environment}-aurora-refresh-credential"
-
-    # Connection endpoint params. Aurora's managed master secret only
-    # contains username/password — host/port/database are exposed via
-    # the cluster endpoint outputs, not embedded in the secret.
-    AURORA_HOST   = one(module.aurora[*].cluster_endpoint)
-    AURORA_PORT   = tostring(one(module.aurora[*].port))
-    AURORA_DBNAME = one(module.aurora[*].database_name)
-  }
+  })
 }
 
 # ---------------------------------------------------------------------------
@@ -385,26 +435,15 @@ module "cognito_post_confirmation" {
 
   role_arn = module.iam_roles.role_arns["cognito_trigger"]
 
-  vpc_config = {
-    subnet_ids         = one(module.networking[*].private_subnet_ids)
-    security_group_ids = [one(module.networking[*].lambda_security_group_id)]
-  }
+  vpc_config = local.db_vpc_config
 
-  environment_variables = {
+  environment_variables = merge(local.db_env_vars, {
     # Friendly Secrets Manager secret name for the app_user credential.
     # Created by the db_migrator Lambda in story 3.7.
     # The cognito_trigger IAM role scopes GetSecretValue to
     # arn:...:secret:knotify-<env>-app-user-credential-*
     DB_SECRET_NAME = "knotify-${var.environment}-app-user-credential"
-
-    # Aurora connection endpoint params — the app_user_credential secret
-    # carries only username + password (matching the db_migrator writer
-    # pattern), so the connection host / port / dbname come from these env
-    # vars sourced from the aurora module outputs.
-    AURORA_HOST   = one(module.aurora[*].cluster_endpoint)
-    AURORA_PORT   = tostring(one(module.aurora[*].port))
-    AURORA_DBNAME = one(module.aurora[*].database_name)
-  }
+  })
 }
 
 # ---------------------------------------------------------------------------
@@ -433,24 +472,15 @@ module "cognito_pre_token_generation" {
 
   role_arn = module.iam_roles.role_arns["cognito_trigger"]
 
-  vpc_config = {
-    subnet_ids         = one(module.networking[*].private_subnet_ids)
-    security_group_ids = [one(module.networking[*].lambda_security_group_id)]
-  }
+  vpc_config = local.db_vpc_config
 
-  environment_variables = {
+  environment_variables = merge(local.db_env_vars, {
     # Friendly Secrets Manager secret name for the app_user credential.
     # Created by the db_migrator Lambda in story 3.7.
     # The cognito_trigger IAM role scopes GetSecretValue to
     # arn:...:secret:knotify-<env>-app-user-credential-*
     DB_SECRET_NAME = "knotify-${var.environment}-app-user-credential"
-
-    # Aurora connection endpoint params — see cognito_post_confirmation
-    # above for rationale.
-    AURORA_HOST   = one(module.aurora[*].cluster_endpoint)
-    AURORA_PORT   = tostring(one(module.aurora[*].port))
-    AURORA_DBNAME = one(module.aurora[*].database_name)
-  }
+  })
 }
 
 # ---------------------------------------------------------------------------
@@ -672,21 +702,11 @@ module "profile" {
 
   role_arn = module.iam_roles.role_arns["aurora_writer"]
 
-  vpc_config = {
-    subnet_ids         = one(module.networking[*].private_subnet_ids)
-    security_group_ids = [one(module.networking[*].lambda_security_group_id)]
-  }
+  vpc_config = local.db_vpc_config
 
-  environment_variables = {
+  environment_variables = merge(local.db_env_vars, {
     DB_SECRET_NAME = "knotify-${var.environment}-app-user-credential"
     EDGE_SECRET    = module.cloudfront.edge_secret
-
-    # Aurora connection endpoint params — secret carries only username +
-    # password (db_migrator writer pattern); host/port/dbname come from
-    # aurora module outputs.
-    AURORA_HOST   = one(module.aurora[*].cluster_endpoint)
-    AURORA_PORT   = tostring(one(module.aurora[*].port))
-    AURORA_DBNAME = one(module.aurora[*].database_name)
 
     # Cognito User Pool ID — needed by the profile PATCH handler to call
     # admin_update_user_attributes after a profile-completion flip (story 7.0b).
@@ -695,7 +715,7 @@ module "profile" {
     # ARN of the refresh_deck_view Lambda — async-invoked by the profile PATCH
     # handler when profile_complete_verified flips false→true (story 7.4).
     REFRESH_LAMBDA_ARN = module.refresh_deck_view.function_arn
-  }
+  })
 }
 
 # ---------------------------------------------------------------------------
@@ -789,22 +809,13 @@ module "blocks" {
 
   role_arn = module.iam_roles.role_arns["blocks_writer"]
 
-  vpc_config = {
-    subnet_ids         = one(module.networking[*].private_subnet_ids)
-    security_group_ids = [one(module.networking[*].lambda_security_group_id)]
-  }
+  vpc_config = local.db_vpc_config
 
-  environment_variables = {
+  environment_variables = merge(local.db_env_vars, {
     DB_SECRET_NAME   = "knotify-${var.environment}-app-user-credential"
     EDGE_SECRET      = module.cloudfront.edge_secret
     TABLE_CHAT_ROOMS = module.dynamodb.chat_rooms_table_name
-
-    # Aurora connection endpoint params — see profile Lambda above for
-    # rationale.
-    AURORA_HOST   = one(module.aurora[*].cluster_endpoint)
-    AURORA_PORT   = tostring(one(module.aurora[*].port))
-    AURORA_DBNAME = one(module.aurora[*].database_name)
-  }
+  })
 }
 
 # ---------------------------------------------------------------------------
@@ -888,22 +899,13 @@ module "friends" {
 
   role_arn = module.iam_roles.role_arns["friends_writer"]
 
-  vpc_config = {
-    subnet_ids         = one(module.networking[*].private_subnet_ids)
-    security_group_ids = [one(module.networking[*].lambda_security_group_id)]
-  }
+  vpc_config = local.db_vpc_config
 
-  environment_variables = {
+  environment_variables = merge(local.db_env_vars, {
     DB_SECRET_NAME   = "knotify-${var.environment}-app-user-credential"
     EDGE_SECRET      = module.cloudfront.edge_secret
     TABLE_CHAT_ROOMS = module.dynamodb.chat_rooms_table_name
-
-    # Aurora connection endpoint params — see profile Lambda above for
-    # rationale.
-    AURORA_HOST   = one(module.aurora[*].cluster_endpoint)
-    AURORA_PORT   = tostring(one(module.aurora[*].port))
-    AURORA_DBNAME = one(module.aurora[*].database_name)
-  }
+  })
 }
 
 # ---------------------------------------------------------------------------
@@ -1017,21 +1019,12 @@ module "bookmarks" {
 
   role_arn = module.iam_roles.role_arns["aurora_writer"]
 
-  vpc_config = {
-    subnet_ids         = one(module.networking[*].private_subnet_ids)
-    security_group_ids = [one(module.networking[*].lambda_security_group_id)]
-  }
+  vpc_config = local.db_vpc_config
 
-  environment_variables = {
+  environment_variables = merge(local.db_env_vars, {
     DB_SECRET_NAME = "knotify-${var.environment}-app-user-credential"
     EDGE_SECRET    = module.cloudfront.edge_secret
-
-    # Aurora connection endpoint params — see profile Lambda above for
-    # rationale.
-    AURORA_HOST   = one(module.aurora[*].cluster_endpoint)
-    AURORA_PORT   = tostring(one(module.aurora[*].port))
-    AURORA_DBNAME = one(module.aurora[*].database_name)
-  }
+  })
 }
 
 # ---------------------------------------------------------------------------
@@ -1111,22 +1104,12 @@ module "match" {
 
   role_arn = module.iam_roles.role_arns["aurora_reader_match"]
 
-  vpc_config = {
-    subnet_ids         = one(module.networking[*].private_subnet_ids)
-    security_group_ids = [one(module.networking[*].lambda_security_group_id)]
-  }
+  vpc_config = local.db_vpc_config
 
-  environment_variables = {
+  environment_variables = merge(local.db_env_vars, {
     DB_SECRET_NAME = "knotify-${var.environment}-app-user-credential"
     EDGE_SECRET    = module.cloudfront.edge_secret
-
-    # Aurora connection endpoint params — secret carries only username +
-    # password (db_migrator writer pattern); host/port/dbname come from
-    # aurora module outputs.
-    AURORA_HOST   = one(module.aurora[*].cluster_endpoint)
-    AURORA_PORT   = tostring(one(module.aurora[*].port))
-    AURORA_DBNAME = one(module.aurora[*].database_name)
-  }
+  })
 }
 
 # ---------------------------------------------------------------------------
@@ -1413,10 +1396,10 @@ module "push_tokens" {
     module.observability_layer.layer_arn,
   ]
 
-  vpc_config = {
-    subnet_ids         = one(module.networking[*].private_subnet_ids)
-    security_group_ids = [one(module.networking[*].lambda_security_group_id)]
-  }
+  # In VPC solely to reach the DynamoDB VPC endpoint (no Aurora access).
+  # Shed VPC cost when use_supabase=true; local.db_vpc_config is null in
+  # that case and push_tokens can reach DynamoDB via the public endpoint.
+  vpc_config = local.db_vpc_config
 
   table_push_tokens_name = module.dynamodb.push_tokens_table_name
 }

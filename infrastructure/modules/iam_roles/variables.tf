@@ -147,3 +147,13 @@ variable "deletion_state_machine_arn" {
   type        = string
   default     = ""
 }
+
+# ---------------------------------------------------------------------------
+# Phase 14 — Supabase alternative (story 14.5 stub; story 14.6 adds policy wiring)
+# ---------------------------------------------------------------------------
+
+variable "supabase_master_user_secret_arn" {
+  description = "ARN of the Supabase credential Secrets Manager secret. Empty string when use_supabase = false. Story 14.6 wires this into compact() alongside aurora_master_user_secret_arn so whichever secret is live for the current flag state is granted secretsmanager:GetSecretValue."
+  type        = string
+  default     = ""
+}
