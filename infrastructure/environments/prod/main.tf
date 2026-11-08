@@ -38,6 +38,8 @@ provider "aws" {
 }
 
 module "networking" {
+  count = var.use_supabase ? 0 : 1
+
   source      = "../../modules/networking"
   environment = var.environment
 }
@@ -54,6 +56,8 @@ module "networking" {
 # ---------------------------------------------------------------------------
 
 module "aurora" {
+  count = var.use_supabase ? 0 : 1
+
   source = "../../modules/aurora"
 
   environment        = var.environment
@@ -61,8 +65,8 @@ module "aurora" {
   database_name      = "knotify"
 
   # Networking — supplied by the phase-1 networking module outputs
-  aurora_security_group_id = module.networking.aurora_security_group_id
-  db_subnet_group_name     = module.networking.db_subnet_group_name
+  aurora_security_group_id = one(module.networking[*].aurora_security_group_id)
+  db_subnet_group_name     = one(module.networking[*].db_subnet_group_name)
 
   # ACU bounds — per prod.tfvars (1.0 / 8.0)
   min_acu = var.aurora_min_acu
@@ -127,7 +131,7 @@ module "iam_roles" {
   source = "../../modules/iam_roles"
 
   environment                   = var.environment
-  aurora_master_user_secret_arn = module.aurora.master_user_secret_arn
+  aurora_master_user_secret_arn = one(module.aurora[*].master_user_secret_arn)
 
   # Scopes aurora_writer's cognito-idp:AdminUpdateUserAttributes to this pool
   # only. Sourced from the cognito module output (story 7.0b).
@@ -232,15 +236,15 @@ module "db_migrator" {
   role_arn = module.iam_roles.role_arns["db_migrator"]
 
   vpc_config = {
-    subnet_ids = module.networking.private_subnet_ids
+    subnet_ids = one(module.networking[*].private_subnet_ids)
     security_group_ids = [
-      module.networking.lambda_security_group_id,
-      module.networking.aurora_security_group_id,
+      one(module.networking[*].lambda_security_group_id),
+      one(module.networking[*].aurora_security_group_id),
     ]
   }
 
   environment_variables = {
-    AURORA_MASTER_SECRET_ARN = module.aurora.master_user_secret_arn
+    AURORA_MASTER_SECRET_ARN = one(module.aurora[*].master_user_secret_arn)
     APP_USER_SECRET_NAME     = "knotify-${var.environment}-app-user-credential"
 
     # Friendly name of the aurora_refresh credential secret to create/update
@@ -250,9 +254,9 @@ module "db_migrator" {
     # Connection endpoint params. Aurora's managed master secret only
     # contains username/password — host/port/database are exposed via
     # the cluster endpoint outputs, not embedded in the secret.
-    AURORA_HOST   = module.aurora.cluster_endpoint
-    AURORA_PORT   = tostring(module.aurora.port)
-    AURORA_DBNAME = module.aurora.database_name
+    AURORA_HOST   = one(module.aurora[*].cluster_endpoint)
+    AURORA_PORT   = tostring(one(module.aurora[*].port))
+    AURORA_DBNAME = one(module.aurora[*].database_name)
   }
 }
 
@@ -328,8 +332,8 @@ module "cognito_post_confirmation" {
   role_arn = module.iam_roles.role_arns["cognito_trigger"]
 
   vpc_config = {
-    subnet_ids         = module.networking.private_subnet_ids
-    security_group_ids = [module.networking.lambda_security_group_id]
+    subnet_ids         = one(module.networking[*].private_subnet_ids)
+    security_group_ids = [one(module.networking[*].lambda_security_group_id)]
   }
 
   environment_variables = {
@@ -338,9 +342,9 @@ module "cognito_post_confirmation" {
     # Aurora connection endpoint params — secret carries only username +
     # password (db_migrator writer pattern); host/port/dbname come from
     # aurora module outputs.
-    AURORA_HOST   = module.aurora.cluster_endpoint
-    AURORA_PORT   = tostring(module.aurora.port)
-    AURORA_DBNAME = module.aurora.database_name
+    AURORA_HOST   = one(module.aurora[*].cluster_endpoint)
+    AURORA_PORT   = tostring(one(module.aurora[*].port))
+    AURORA_DBNAME = one(module.aurora[*].database_name)
   }
 }
 
@@ -365,8 +369,8 @@ module "cognito_pre_token_generation" {
   role_arn = module.iam_roles.role_arns["cognito_trigger"]
 
   vpc_config = {
-    subnet_ids         = module.networking.private_subnet_ids
-    security_group_ids = [module.networking.lambda_security_group_id]
+    subnet_ids         = one(module.networking[*].private_subnet_ids)
+    security_group_ids = [one(module.networking[*].lambda_security_group_id)]
   }
 
   environment_variables = {
@@ -374,9 +378,9 @@ module "cognito_pre_token_generation" {
 
     # Aurora connection endpoint params — see cognito_post_confirmation
     # above for rationale.
-    AURORA_HOST   = module.aurora.cluster_endpoint
-    AURORA_PORT   = tostring(module.aurora.port)
-    AURORA_DBNAME = module.aurora.database_name
+    AURORA_HOST   = one(module.aurora[*].cluster_endpoint)
+    AURORA_PORT   = tostring(one(module.aurora[*].port))
+    AURORA_DBNAME = one(module.aurora[*].database_name)
   }
 }
 
@@ -587,8 +591,8 @@ module "profile" {
   role_arn = module.iam_roles.role_arns["aurora_writer"]
 
   vpc_config = {
-    subnet_ids         = module.networking.private_subnet_ids
-    security_group_ids = [module.networking.lambda_security_group_id]
+    subnet_ids         = one(module.networking[*].private_subnet_ids)
+    security_group_ids = [one(module.networking[*].lambda_security_group_id)]
   }
 
   environment_variables = {
@@ -598,9 +602,9 @@ module "profile" {
     # Aurora connection endpoint params — secret carries only username +
     # password (db_migrator writer pattern); host/port/dbname come from
     # aurora module outputs.
-    AURORA_HOST   = module.aurora.cluster_endpoint
-    AURORA_PORT   = tostring(module.aurora.port)
-    AURORA_DBNAME = module.aurora.database_name
+    AURORA_HOST   = one(module.aurora[*].cluster_endpoint)
+    AURORA_PORT   = tostring(one(module.aurora[*].port))
+    AURORA_DBNAME = one(module.aurora[*].database_name)
 
     # Cognito User Pool ID — needed by the profile PATCH handler to call
     # admin_update_user_attributes after a profile-completion flip (story 7.0b).
@@ -683,8 +687,8 @@ module "blocks" {
   role_arn = module.iam_roles.role_arns["blocks_writer"]
 
   vpc_config = {
-    subnet_ids         = module.networking.private_subnet_ids
-    security_group_ids = [module.networking.lambda_security_group_id]
+    subnet_ids         = one(module.networking[*].private_subnet_ids)
+    security_group_ids = [one(module.networking[*].lambda_security_group_id)]
   }
 
   environment_variables = {
@@ -694,9 +698,9 @@ module "blocks" {
 
     # Aurora connection endpoint params — see profile Lambda above for
     # rationale.
-    AURORA_HOST   = module.aurora.cluster_endpoint
-    AURORA_PORT   = tostring(module.aurora.port)
-    AURORA_DBNAME = module.aurora.database_name
+    AURORA_HOST   = one(module.aurora[*].cluster_endpoint)
+    AURORA_PORT   = tostring(one(module.aurora[*].port))
+    AURORA_DBNAME = one(module.aurora[*].database_name)
   }
 }
 
@@ -767,8 +771,8 @@ module "friends" {
   role_arn = module.iam_roles.role_arns["friends_writer"]
 
   vpc_config = {
-    subnet_ids         = module.networking.private_subnet_ids
-    security_group_ids = [module.networking.lambda_security_group_id]
+    subnet_ids         = one(module.networking[*].private_subnet_ids)
+    security_group_ids = [one(module.networking[*].lambda_security_group_id)]
   }
 
   environment_variables = {
@@ -778,9 +782,9 @@ module "friends" {
 
     # Aurora connection endpoint params — see profile Lambda above for
     # rationale.
-    AURORA_HOST   = module.aurora.cluster_endpoint
-    AURORA_PORT   = tostring(module.aurora.port)
-    AURORA_DBNAME = module.aurora.database_name
+    AURORA_HOST   = one(module.aurora[*].cluster_endpoint)
+    AURORA_PORT   = tostring(one(module.aurora[*].port))
+    AURORA_DBNAME = one(module.aurora[*].database_name)
   }
 }
 
@@ -879,8 +883,8 @@ module "bookmarks" {
   role_arn = module.iam_roles.role_arns["aurora_writer"]
 
   vpc_config = {
-    subnet_ids         = module.networking.private_subnet_ids
-    security_group_ids = [module.networking.lambda_security_group_id]
+    subnet_ids         = one(module.networking[*].private_subnet_ids)
+    security_group_ids = [one(module.networking[*].lambda_security_group_id)]
   }
 
   environment_variables = {
@@ -889,9 +893,9 @@ module "bookmarks" {
 
     # Aurora connection endpoint params — see profile Lambda above for
     # rationale.
-    AURORA_HOST   = module.aurora.cluster_endpoint
-    AURORA_PORT   = tostring(module.aurora.port)
-    AURORA_DBNAME = module.aurora.database_name
+    AURORA_HOST   = one(module.aurora[*].cluster_endpoint)
+    AURORA_PORT   = tostring(one(module.aurora[*].port))
+    AURORA_DBNAME = one(module.aurora[*].database_name)
   }
 }
 
@@ -966,8 +970,8 @@ module "match" {
   role_arn = module.iam_roles.role_arns["aurora_reader_match"]
 
   vpc_config = {
-    subnet_ids         = module.networking.private_subnet_ids
-    security_group_ids = [module.networking.lambda_security_group_id]
+    subnet_ids         = one(module.networking[*].private_subnet_ids)
+    security_group_ids = [one(module.networking[*].lambda_security_group_id)]
   }
 
   environment_variables = {
@@ -977,9 +981,9 @@ module "match" {
     # Aurora connection endpoint params — secret carries only username +
     # password (db_migrator writer pattern); host/port/dbname come from
     # aurora module outputs.
-    AURORA_HOST   = module.aurora.cluster_endpoint
-    AURORA_PORT   = tostring(module.aurora.port)
-    AURORA_DBNAME = module.aurora.database_name
+    AURORA_HOST   = one(module.aurora[*].cluster_endpoint)
+    AURORA_PORT   = tostring(one(module.aurora[*].port))
+    AURORA_DBNAME = one(module.aurora[*].database_name)
   }
 }
 
@@ -1058,14 +1062,14 @@ module "chat_resolver" {
   ]
 
   vpc_config = {
-    subnet_ids         = module.networking.private_subnet_ids
-    security_group_ids = [module.networking.lambda_security_group_id]
+    subnet_ids         = one(module.networking[*].private_subnet_ids)
+    security_group_ids = [one(module.networking[*].lambda_security_group_id)]
   }
 
   db_secret_name = "knotify-${var.environment}-app-user-credential"
-  aurora_host    = module.aurora.cluster_endpoint
-  aurora_port    = tostring(module.aurora.port)
-  aurora_dbname  = module.aurora.database_name
+  aurora_host    = one(module.aurora[*].cluster_endpoint)
+  aurora_port    = tostring(one(module.aurora[*].port))
+  aurora_dbname  = one(module.aurora[*].database_name)
 }
 
 # ---------------------------------------------------------------------------
@@ -1131,8 +1135,8 @@ module "refresh_deck_view" {
   ]
 
   vpc_config = {
-    subnet_ids         = module.networking.private_subnet_ids
-    security_group_ids = [module.networking.lambda_security_group_id]
+    subnet_ids         = one(module.networking[*].private_subnet_ids)
+    security_group_ids = [one(module.networking[*].lambda_security_group_id)]
   }
 
   # The aurora_refresh credential — NOT the app_user credential.
@@ -1140,9 +1144,9 @@ module "refresh_deck_view" {
 
   # Aurora connection endpoint params — aurora_refresh credential carries only
   # username + password; host/port/dbname come from aurora module outputs.
-  aurora_host   = module.aurora.cluster_endpoint
-  aurora_port   = tostring(module.aurora.port)
-  aurora_dbname = module.aurora.database_name
+  aurora_host   = one(module.aurora[*].cluster_endpoint)
+  aurora_port   = tostring(one(module.aurora[*].port))
+  aurora_dbname = one(module.aurora[*].database_name)
 
   # EventBridge schedule: every 15 minutes.
   schedule_expression = "rate(15 minutes)"
@@ -1275,8 +1279,8 @@ module "push_tokens" {
   ]
 
   vpc_config = {
-    subnet_ids         = module.networking.private_subnet_ids
-    security_group_ids = [module.networking.lambda_security_group_id]
+    subnet_ids         = one(module.networking[*].private_subnet_ids)
+    security_group_ids = [one(module.networking[*].lambda_security_group_id)]
   }
 
   table_push_tokens_name = module.dynamodb.push_tokens_table_name
@@ -1368,12 +1372,12 @@ module "hard_purge" {
   role_arn       = module.iam_roles.role_arns["aurora_writer"]
   layers         = [module.db_layer.layer_arn, module.observability_layer.layer_arn]
   db_secret_name = "knotify-${var.environment}-app-user-credential"
-  aurora_host    = module.aurora.cluster_endpoint
-  aurora_port    = tostring(module.aurora.port)
-  aurora_dbname  = module.aurora.database_name
+  aurora_host    = one(module.aurora[*].cluster_endpoint)
+  aurora_port    = tostring(one(module.aurora[*].port))
+  aurora_dbname  = one(module.aurora[*].database_name)
   vpc_config = {
-    subnet_ids         = module.networking.private_subnet_ids
-    security_group_ids = [module.networking.lambda_security_group_id]
+    subnet_ids         = one(module.networking[*].private_subnet_ids)
+    security_group_ids = [one(module.networking[*].lambda_security_group_id)]
   }
   # hotfix #6: async-refresh deck_view after DELETE to evict the stale row
   # immediately instead of waiting for the 15-minute scheduled refresh.
@@ -1450,12 +1454,12 @@ module "soft_delete_aurora" {
   role_arn       = module.iam_roles.role_arns["aurora_writer"]
   layers         = [module.db_layer.layer_arn, module.observability_layer.layer_arn]
   db_secret_name = "knotify-${var.environment}-app-user-credential"
-  aurora_host    = module.aurora.cluster_endpoint
-  aurora_port    = tostring(module.aurora.port)
-  aurora_dbname  = module.aurora.database_name
+  aurora_host    = one(module.aurora[*].cluster_endpoint)
+  aurora_port    = tostring(one(module.aurora[*].port))
+  aurora_dbname  = one(module.aurora[*].database_name)
   vpc_config = {
-    subnet_ids         = module.networking.private_subnet_ids
-    security_group_ids = [module.networking.lambda_security_group_id]
+    subnet_ids         = one(module.networking[*].private_subnet_ids)
+    security_group_ids = [one(module.networking[*].lambda_security_group_id)]
   }
   # hotfix #6: async-refresh deck_view after UPDATE to evict the soft-deleted
   # user from the materialised view immediately rather than waiting up to 15
