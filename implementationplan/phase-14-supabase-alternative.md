@@ -1,6 +1,6 @@
 phase: 14
 title: Supabase alternative to Aurora RDS and private VPC (dev cost reduction; prod-capable)
-last_updated: 2026-11-08 (phase 14 OPEN — story 14.1 pooler GUC proof PASSED via Supabase MCP; 14.2 is next)
+last_updated: 2026-11-08 (phase 14 OPEN — stories 14.1 + 14.2 done; 14.3 (new supabase TF module) is next)
 
 context_summary: |
   Introduces a single Terraform flag `use_supabase` that toggles the dev environment between
@@ -80,7 +80,7 @@ stories:
   - id: 14.2
     title: Add use_supabase + supabase_* variables to dev and pin prod false
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [14.1]
     tracking_issue: null
     acceptance_criteria:
