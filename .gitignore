@@ -38,6 +38,8 @@ project-report/
 infrastructure/src/layers/*/python/
 infrastructure/src/layers/*-layer.zip
 infrastructure/src/layers/*.zip
+infrastructure/src/layers/**/*-layer.zip
+infrastructure/src/layers/**/*.zip
 
 # Environment and secrets — never commit
 .env

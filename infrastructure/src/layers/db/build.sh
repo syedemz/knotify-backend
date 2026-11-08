@@ -60,16 +60,52 @@ pip install \
 # ---------------------------------------------------------------------------
 # Copy the knotify_db wrapper module into python/ so it is importable at
 # the same level as the third-party packages.
+#
+# Remove the stale python/knotify_db/ first so that `cp -r src dst` does not
+# nest the source *inside* the existing destination directory (bash `cp -r`
+# behaviour when the destination already exists).
 # ---------------------------------------------------------------------------
 echo "[build] Copying knotify_db wrapper into ${OUTPUT_DIR}/knotify_db/ ..."
+rm -rf "${OUTPUT_DIR}/knotify_db"
 cp -r "${SCRIPT_DIR}/knotify_db" "${OUTPUT_DIR}/knotify_db"
 
 # ---------------------------------------------------------------------------
 # Create the zip
+#
+# Prefer the system `zip` binary (fastest, produces the most compact output).
+# Fall back to Python's zipfile module when `zip` is not in PATH — this is
+# the same approach used by the function-level build_package.py script so
+# the project is consistent across environments (e.g. Windows dev machines
+# where Git Bash / MSYS2 may not ship `zip`).
 # ---------------------------------------------------------------------------
 echo "[build] Creating ${ZIP_NAME} ..."
 cd "${SCRIPT_DIR}"
-zip -r --quiet "${ZIP_NAME}" python/
+export _BUILD_SCRIPT_DIR="${SCRIPT_DIR}"
+if command -v zip &>/dev/null; then
+  zip -r --quiet "${ZIP_NAME}" python/
+else
+  echo "[build] 'zip' not found — falling back to Python zipfile module ..."
+  python3 -c "
+import zipfile, pathlib, sys, os
+
+script_dir = pathlib.Path(os.environ['_BUILD_SCRIPT_DIR'])
+zip_path   = script_dir / 'knotify-db-layer.zip'
+python_dir = script_dir / 'python'
+
+if not python_dir.is_dir():
+    print('ERROR: ' + str(python_dir) + ' does not exist', file=sys.stderr)
+    sys.exit(1)
+
+with zipfile.ZipFile(str(zip_path), 'w', zipfile.ZIP_DEFLATED) as zf:
+    for file_path in sorted(python_dir.rglob('*')):
+        if not file_path.is_file():
+            continue
+        arcname = file_path.relative_to(script_dir)
+        zf.write(str(file_path), str(arcname))
+
+print('[build] zipfile fallback wrote ' + str(zip_path) + ' (' + str(zip_path.stat().st_size) + ' bytes)')
+"
+fi
 
 echo "[build] Done. Artifact: ${ZIP_PATH}"
 echo "[build] Layer contents summary:"
