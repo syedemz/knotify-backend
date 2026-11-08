@@ -1,6 +1,6 @@
 phase: 14
 title: Supabase alternative to Aurora RDS and private VPC (dev cost reduction; prod-capable)
-last_updated: 2026-11-08 (phase 14 OPEN — stories 14.1-14.6 done; 14.7 (extract RLS helpers into _rls.py — Python refactor) is next; plan re-verification of the null-arn fix is pending fresh AWS creds OR deferred to 14.11)
+last_updated: 2026-11-08 (phase 14 OPEN — stories 14.1-14.7 done; 14.8 (create _supabase.py connection builder) is next; plan re-verification of the 14.6 null-arn fix still pending fresh AWS creds OR deferred to 14.11)
 
 context_summary: |
   Introduces a single Terraform flag `use_supabase` that toggles the dev environment between
@@ -170,7 +170,7 @@ stories:
   - id: 14.7
     title: Extract RLS GUC helpers from _db.py into shared _rls.py (pure refactor)
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: []
     tracking_issue: null
     acceptance_criteria:
