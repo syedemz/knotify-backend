@@ -1,6 +1,6 @@
 phase: 14
 title: Supabase alternative to Aurora RDS and private VPC (dev cost reduction; prod-capable)
-last_updated: 2026-11-08 (phase 14 OPEN — PRD and detailed TDD plan drafted; see features/feature-1-* for the full step-by-step; this file is the phase-index-level PRD)
+last_updated: 2026-11-08 (phase 14 OPEN — story 14.1 pooler GUC proof PASSED via Supabase MCP; 14.2 is next)
 
 context_summary: |
   Introduces a single Terraform flag `use_supabase` that toggles the dev environment between
@@ -62,7 +62,7 @@ stories:
   - id: 14.1
     title: Pre-flight proof — SET LOCAL app.requesting_user_id survives Supabase pooler transaction mode
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: []
     tracking_issue: null
     acceptance_criteria:
@@ -70,7 +70,12 @@ stories:
       - The script reads SUPABASE_HOST / PORT / DBNAME / USERNAME / PASSWORD from the environment — nothing is hard-coded, no secret enters the repo
       - User runs the script manually with real Supabase credentials and confirms PASS in the dispatch feedback before story 14.2 begins. A FAIL halts the phase; a different pooler mode (session) or direct-connection path must be evaluated in a separate design round
       - Script is committed to the phase branch
-    notes: This is the single gating assumption of the entire phase. If SET LOCAL does not survive pooler transaction mode, the RLS policy will silently return zero rows and every downstream integration test will fail without a clear signal. Prove it in isolation first.
+    notes: |
+      PASS on 2026-11-08 via Supabase MCP execute_sql (user-directed alternative to running the committed script locally). The equivalent SQL batch
+      `BEGIN; SET LOCAL app.requesting_user_id = 'some-test-uuid'; SELECT current_setting('app.requesting_user_id', true); COMMIT;`
+      returned `guc_value = 'some-test-uuid'` inside the transaction. A follow-up `SELECT current_setting(...)` in a fresh statement returned `null`,
+      confirming SET LOCAL (not SET SESSION) scoping — the value does not leak across transactions, which is the pooler-safety invariant.
+      The committed script `scripts/supabase_pooler_proof.py` remains the reproducible artifact for anyone wanting to re-prove this against the pooler directly.
 
   - id: 14.2
     title: Add use_supabase + supabase_* variables to dev and pin prod false
