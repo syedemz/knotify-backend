@@ -1,5 +1,5 @@
 """
-knotify_db._db — internal Aurora connection and RLS GUC helpers.
+knotify_db._db — Aurora connection builder and RLS context manager.
 
 Public surface (re-exported by knotify_db/__init__.py):
   get_connection(secret_or_env)
@@ -24,19 +24,15 @@ Public surface (re-exported by knotify_db/__init__.py):
       a failover or blue/green swap) and creates two sources of truth.
 
   set_rls_context(conn, user_id, user_sex)
-      Issues two SET LOCAL statements within the current transaction so the
-      RLS policy in migration 0007 can evaluate the GUCs:
-        SET LOCAL app.requesting_user_id = '<uuid>'
-        SET LOCAL app.requesting_user_sex = '<Male|Female>'
-      GUC names match migration 0007 lines 115-116 verbatim — any deviation
-      causes the policy to read NULL and fail-closed (zero rows, no error).
+      Re-exported from knotify_db._rls — that module is the sole source of
+      truth for the GUC name constants and the SET LOCAL implementation.
 
   rls_context(conn, user_id, user_sex)  [context manager]
+      Defined here so it calls set_rls_context through this module's
+      namespace, making `patch("knotify_db._db.set_rls_context")` intercept
+      the call correctly in the existing unit test suite.
       Manages a full transaction lifetime: BEGIN on entry, set_rls_context
-      on entry, COMMIT on normal exit, ROLLBACK on exception exit.  Because
-      SET LOCAL is transaction-scoped, the GUCs expire automatically when
-      the transaction ends — no leakage to subsequent transactions on the
-      same connection.
+      on entry, COMMIT on normal exit, ROLLBACK on exception exit.
 """
 
 from __future__ import annotations
@@ -49,14 +45,14 @@ from typing import Union
 import psycopg2
 import psycopg2.extras
 
+# GUC constants and set_rls_context — sole source of truth is _rls.py.
+# Imported into this namespace so rls_context (defined below) calls
+# set_rls_context through _db's namespace (enabling patch("knotify_db._db.set_rls_context")).
+from knotify_db._rls import _GUC_USER_ID, _GUC_USER_SEX, set_rls_context
+
 # Register UUID adapter once at import time so callers can pass uuid.UUID
 # objects without casting to str.
 psycopg2.extras.register_uuid()
-
-# GUC names from migration 0007 lines 115-116 — must not be changed.
-# Wrong names silently fail-close the RLS policy to zero rows.
-_GUC_USER_ID = "app.requesting_user_id"
-_GUC_USER_SEX = "app.requesting_user_sex"
 
 
 def get_connection(secret_or_env: Union[dict, str]) -> psycopg2.extensions.connection:
@@ -117,33 +113,6 @@ def get_connection(secret_or_env: Union[dict, str]) -> psycopg2.extensions.conne
         user=username,
         password=password,
     )
-
-
-def set_rls_context(
-    conn: psycopg2.extensions.connection,
-    user_id: str,
-    user_sex: str,
-) -> None:
-    """
-    Set the two RLS GUCs for the current transaction.
-
-    Must be called inside an open transaction (after BEGIN).  The GUC values
-    are transaction-local (SET LOCAL) and expire when the transaction ends.
-
-    Args:
-        conn:     An open psycopg2 connection.
-        user_id:  UUID string of the requesting user.
-        user_sex: 'Male' or 'Female' — the requesting user's sex.
-    """
-    with conn.cursor() as cur:
-        cur.execute(
-            f"SET LOCAL {_GUC_USER_ID} = %s",
-            (user_id,),
-        )
-        cur.execute(
-            f"SET LOCAL {_GUC_USER_SEX} = %s",
-            (user_sex,),
-        )
 
 
 @contextmanager
