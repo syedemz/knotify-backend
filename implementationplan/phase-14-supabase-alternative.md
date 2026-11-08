@@ -1,6 +1,6 @@
 phase: 14
 title: Supabase alternative to Aurora RDS and private VPC (dev cost reduction; prod-capable)
-last_updated: 2026-11-08 (phase 14 OPEN — stories 14.1 + 14.2 + 14.3 done; 14.4 (count-guard networking + aurora modules) is next)
+last_updated: 2026-11-08 (phase 14 OPEN — stories 14.1-14.4 done; 14.5 (wire supabase module + db-side locals in dev/main.tf) is next)
 
 context_summary: |
   Introduces a single Terraform flag `use_supabase` that toggles the dev environment between
@@ -107,7 +107,7 @@ stories:
   - id: 14.4
     title: Count-guard networking and aurora modules in dev/main.tf
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [14.2]
     tracking_issue: null
     acceptance_criteria:
