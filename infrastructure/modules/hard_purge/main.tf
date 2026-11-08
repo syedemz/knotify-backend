@@ -57,14 +57,10 @@ module "lambda" {
   # VPC config — REQUIRED: Aurora is VPC-private.
   vpc_config = var.vpc_config
 
-  environment_variables = {
-    # Secrets Manager secret name for the Aurora app_user credential.
+  environment_variables = merge(var.db_env_vars, {
+    # Secrets Manager secret friendly name for the Aurora app_user credential.
+    # DB_SECRET_ARN is carried by db_env_vars.
     DB_SECRET_NAME = var.db_secret_name
-
-    # Aurora connection endpoint params — sourced from aurora module outputs.
-    AURORA_HOST   = var.aurora_host
-    AURORA_PORT   = var.aurora_port
-    AURORA_DBNAME = var.aurora_dbname
 
     # ARN of the refresh_deck_view Lambda (hotfix #6) — async-invoked by the
     # handler after a successful DELETE to evict the purged row from the
@@ -72,7 +68,7 @@ module "lambda" {
     # 15-minute scheduled refresh. Empty default keeps the env var absent
     # when the caller does not supply it (the handler skips the invoke).
     REFRESH_LAMBDA_ARN = var.refresh_lambda_arn
-  }
+  })
 }
 
 # ---------------------------------------------------------------------------

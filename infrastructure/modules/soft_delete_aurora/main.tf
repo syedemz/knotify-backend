@@ -52,18 +52,11 @@ module "lambda" {
   # subnet_ids and security_group_ids are sourced from the networking module.
   vpc_config = var.vpc_config
 
-  environment_variables = {
-    # Secrets Manager secret name for the Aurora app_user credential.
+  environment_variables = merge(var.db_env_vars, {
+    # Secrets Manager secret friendly name for the Aurora app_user credential.
     # Pattern: knotify-<env>-app-user-credential (written by db_migrator).
+    # DB_SECRET_ARN is carried by db_env_vars.
     DB_SECRET_NAME = var.db_secret_name
-
-    # Aurora connection endpoint params — sourced from aurora module outputs.
-    # The Secrets Manager secret contains only username + password; host/port/
-    # dbname are injected separately so they can change (failover, blue/green)
-    # without requiring a secret rotation.
-    AURORA_HOST   = var.aurora_host
-    AURORA_PORT   = var.aurora_port
-    AURORA_DBNAME = var.aurora_dbname
 
     # ARN of the refresh_deck_view Lambda (hotfix #6) — async-invoked by the
     # handler after a successful soft-delete to evict the stale row from the
@@ -71,5 +64,5 @@ module "lambda" {
     # 15-minute scheduled refresh. Empty default keeps the env var absent
     # when the caller does not supply it (the handler skips the invoke).
     REFRESH_LAMBDA_ARN = var.refresh_lambda_arn
-  }
+  })
 }

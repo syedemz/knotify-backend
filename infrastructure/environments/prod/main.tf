@@ -1050,15 +1050,9 @@ module "chat_resolver" {
     module.db_layer.layer_arn,
   ]
 
-  vpc_config = {
-    subnet_ids         = one(module.networking[*].private_subnet_ids)
-    security_group_ids = [one(module.networking[*].lambda_security_group_id)]
-  }
-
+  vpc_config     = local.db_vpc_config
+  db_env_vars    = local.db_env_vars
   db_secret_name = "knotify-${var.environment}-app-user-credential"
-  aurora_host    = one(module.aurora[*].cluster_endpoint)
-  aurora_port    = tostring(one(module.aurora[*].port))
-  aurora_dbname  = one(module.aurora[*].database_name)
 }
 
 # ---------------------------------------------------------------------------
@@ -1123,19 +1117,11 @@ module "refresh_deck_view" {
     module.db_layer.layer_arn,
   ]
 
-  vpc_config = {
-    subnet_ids         = one(module.networking[*].private_subnet_ids)
-    security_group_ids = [one(module.networking[*].lambda_security_group_id)]
-  }
+  vpc_config  = local.db_vpc_config
+  db_env_vars = local.db_env_vars
 
   # The aurora_refresh credential — NOT the app_user credential.
   db_secret_name = "knotify-${var.environment}-aurora-refresh-credential"
-
-  # Aurora connection endpoint params — aurora_refresh credential carries only
-  # username + password; host/port/dbname come from aurora module outputs.
-  aurora_host   = one(module.aurora[*].cluster_endpoint)
-  aurora_port   = tostring(one(module.aurora[*].port))
-  aurora_dbname = one(module.aurora[*].database_name)
 
   # EventBridge schedule: every 15 minutes.
   schedule_expression = "rate(15 minutes)"
@@ -1361,13 +1347,8 @@ module "hard_purge" {
   role_arn       = module.iam_roles.role_arns["aurora_writer"]
   layers         = [module.db_layer.layer_arn, module.observability_layer.layer_arn]
   db_secret_name = "knotify-${var.environment}-app-user-credential"
-  aurora_host    = one(module.aurora[*].cluster_endpoint)
-  aurora_port    = tostring(one(module.aurora[*].port))
-  aurora_dbname  = one(module.aurora[*].database_name)
-  vpc_config = {
-    subnet_ids         = one(module.networking[*].private_subnet_ids)
-    security_group_ids = [one(module.networking[*].lambda_security_group_id)]
-  }
+  db_env_vars    = local.db_env_vars
+  vpc_config     = local.db_vpc_config
   # hotfix #6: async-refresh deck_view after DELETE to evict the stale row
   # immediately instead of waiting for the 15-minute scheduled refresh.
   refresh_lambda_arn = module.refresh_deck_view.function_arn
@@ -1443,13 +1424,8 @@ module "soft_delete_aurora" {
   role_arn       = module.iam_roles.role_arns["aurora_writer"]
   layers         = [module.db_layer.layer_arn, module.observability_layer.layer_arn]
   db_secret_name = "knotify-${var.environment}-app-user-credential"
-  aurora_host    = one(module.aurora[*].cluster_endpoint)
-  aurora_port    = tostring(one(module.aurora[*].port))
-  aurora_dbname  = one(module.aurora[*].database_name)
-  vpc_config = {
-    subnet_ids         = one(module.networking[*].private_subnet_ids)
-    security_group_ids = [one(module.networking[*].lambda_security_group_id)]
-  }
+  db_env_vars    = local.db_env_vars
+  vpc_config     = local.db_vpc_config
   # hotfix #6: async-refresh deck_view after UPDATE to evict the soft-deleted
   # user from the materialised view immediately rather than waiting up to 15
   # minutes for the scheduled refresh.

@@ -31,18 +31,13 @@ module "lambda" {
 
   vpc_config = var.vpc_config
 
-  environment_variables = {
-    # The aurora_refresh credential secret — NOT the app_user credential.
-    # The refresh Lambda connects as aurora_refresh, which has EXECUTE on
-    # refresh_deck_view() but is NOT the RLS-bearing app_user.
+  environment_variables = merge(var.db_env_vars, {
+    # The aurora_refresh credential secret friendly name — NOT the app_user
+    # credential. The refresh Lambda connects as aurora_refresh, which has
+    # EXECUTE on refresh_deck_view() but is NOT the RLS-bearing app_user.
+    # DB_SECRET_ARN is carried by db_env_vars.
     DB_SECRET_NAME = var.db_secret_name
-
-    # Aurora connection endpoint params — secret carries only username +
-    # password; host/port/dbname come from aurora module outputs.
-    AURORA_HOST   = var.aurora_host
-    AURORA_PORT   = var.aurora_port
-    AURORA_DBNAME = var.aurora_dbname
-  }
+  })
 }
 
 # ---------------------------------------------------------------------------
