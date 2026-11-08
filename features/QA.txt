@@ -1,0 +1,17 @@
+
+
+  1. A Supabase project in eu-central-1 (Frankfurt) — give me the project URL, project ref, database host (pooler endpoint preferred), database password,
+  and keep the anon + service_role keys handy 
+  answer: I have the project, but what is anon + service_role keys, you need to explain that
+  2. Open question #1 — do you want the current Aurora/VPC to keep running and just gate future deploys (bill stays ~$207), or actually terraform destroy
+  them once Supabase is proven (saves $167/mo)?
+  answer: i have manually torn down the previous deployment, when the supabase flag is set, there should be no deployment of aurora and private vpc, it should be that
+  terraform only deploys supabase in and uses it. only when the flag is set to false, then aurora and vpc should be deployed and supabase if it is running should not be used but destroyed
+  3. Open question #5 — fresh schema on Supabase (db_migrator reapplies migrations) vs. pg_dump of current Aurora dev state?
+  answer: it has to be a fresh schema, i have torn down the aurora rds
+  4. Confirmation we're OK committing the PRD file on a new feature branch cut from development (I'd propose feat/feature-1-supabase-alternative)
+  answer: yes we need a new feature branch ci/outputs-dev-on-main and there are uncommited changes, you need to first check, what is important and commit them , we need to merge it to development branch
+  and then create the new feature branch
+
+
+  make sure that in the future, switching back to aurora and private vpc with a fresh deployment should be easy
