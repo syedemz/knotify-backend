@@ -1,6 +1,6 @@
 phase: 14
 title: Supabase alternative to Aurora RDS and private VPC (dev cost reduction; prod-capable)
-last_updated: 2026-11-08 (phase 14 OPEN — stories 14.1-14.5 done; 14.5a (unify four specialized Lambda modules with the db_env_vars + db_vpc_config pattern) added as a follow-up and is next; 14.6 (iam_roles compact() rewrite) follows)
+last_updated: 2026-11-08 (phase 14 OPEN — stories 14.1-14.5a done; 14.6 (iam_roles compact() rewrite) is next)
 
 context_summary: |
   Introduces a single Terraform flag `use_supabase` that toggles the dev environment between
@@ -137,7 +137,7 @@ stories:
   - id: 14.5a
     title: Unify specialized Lambda modules (chat_resolver, refresh_deck_view, hard_purge, soft_delete_aurora) with the local.db_env_vars + local.db_vpc_config pattern
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [14.5]
     tracking_issue: null
     acceptance_criteria:
