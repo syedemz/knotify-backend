@@ -1,6 +1,6 @@
 phase: 14
 title: Supabase alternative to Aurora RDS and private VPC (dev cost reduction; prod-capable)
-last_updated: 2026-11-08 (phase 14 OPEN — stories 14.1-14.10 done; 14.11 (formal terraform plan verification for both flag values) is next and needs AWS creds; 14.5a pre-condition check also wants a plan run)
+last_updated: 2026-11-08 (phase 14 OPEN — stories 14.1-14.11 done; terraform surface PROVEN sound via real plans both flag values; 14.12 (first REAL apply on dev + populate supabase secret) is next and GATED on user approval)
 
 context_summary: |
   Introduces a single Terraform flag `use_supabase` that toggles the dev environment between
@@ -229,7 +229,7 @@ stories:
   - id: 14.11
     title: Terraform plan verification for both flag values
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [14.5, 14.6, 14.10]
     tracking_issue: null
     acceptance_criteria:
