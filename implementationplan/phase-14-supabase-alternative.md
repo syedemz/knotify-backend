@@ -1,6 +1,6 @@
 phase: 14
 title: Supabase alternative to Aurora RDS and private VPC (dev cost reduction; prod-capable)
-last_updated: 2026-11-08 (phase 14 OPEN — stories 14.1-14.4 done; 14.5 (wire supabase module + db-side locals in dev/main.tf) is next)
+last_updated: 2026-11-08 (phase 14 OPEN — stories 14.1-14.5 done; 14.6 (iam_roles compact() rewrite) is next; four specialized Lambda modules surfaced as a known follow-up before 14.11 — see context.md)
 
 context_summary: |
   Introduces a single Terraform flag `use_supabase` that toggles the dev environment between
@@ -121,7 +121,7 @@ stories:
   - id: 14.5
     title: Wire supabase module + db-side locals in dev/main.tf
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [14.3, 14.4]
     tracking_issue: null
     acceptance_criteria:
