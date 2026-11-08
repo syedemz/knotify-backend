@@ -2,20 +2,20 @@
 Unit tests for knotify_db._rls — shared RLS GUC helpers (story 14.7).
 
 Architecture:
-  _rls.py  — sole source of truth for GUC constants + set_rls_context.
-  _db.py   — imports set_rls_context from _rls; defines rls_context locally
-             (calling set_rls_context through _db's namespace so that
-             patch("knotify_db._db.set_rls_context") intercepts correctly
-             in the existing unit test suite).
+  _rls.py  — sole source of truth for GUC constants, set_rls_context, AND
+             the rls_context transaction manager.
+  _db.py   — imports all three symbols from _rls and re-exports them so the
+             existing public surface of knotify_db._db is preserved.
 
 Tests:
   - _rls._GUC_USER_ID and _GUC_USER_SEX match migration 0007 verbatim.
   - _rls.set_rls_context has the correct signature.
-  - rls_context (via knotify_db._db) is callable.
-  - _db.set_rls_context IS _rls.set_rls_context — identity re-export proof
-    (sole-source-of-truth invariant: exactly one implementation of set_rls_context).
-  - knotify_db.rls_context IS knotify_db._db.rls_context — public API resolves
-    to the _db-defined context manager.
+  - _rls.rls_context is callable (and so are the re-exports via _db and
+    knotify_db).
+  - _db.set_rls_context IS _rls.set_rls_context — identity re-export proof.
+  - _db.rls_context IS _rls.rls_context — identity re-export proof.
+    (Sole-source-of-truth invariant: exactly one implementation of each
+    RLS symbol in the codebase.)
 
 The GUC-name invariant: a one-character deviation causes current_setting(...,
 true) to return NULL, which the RLS USING clause evaluates as NULL
@@ -142,10 +142,19 @@ class TestRlsSetRlsContextSignature(unittest.TestCase):
 
 class TestRlsContextShape(unittest.TestCase):
     """
-    Given knotify_db._db.rls_context (defined in _db, exposed via knotify_db),
+    Given knotify_db._rls.rls_context (defined in _rls, re-exported via _db
+    and knotify_db),
     when inspected,
     then it is callable (a @contextmanager-decorated generator function).
     """
+
+    def test_rls_context_is_callable_via_rls(self):
+        import knotify_db._rls as rls
+
+        self.assertTrue(
+            callable(rls.rls_context),
+            "knotify_db._rls.rls_context must be callable",
+        )
 
     def test_rls_context_is_callable_via_db(self):
         import knotify_db._db as db
@@ -171,8 +180,11 @@ class TestRlsIdentityReExport(unittest.TestCase):
     1. _db.set_rls_context IS _rls.set_rls_context — exactly one
        implementation of set_rls_context (and thus of the GUC name constants).
 
-    2. knotify_db.rls_context IS knotify_db._db.rls_context — the public
-       API re-exports the _db-defined context manager without wrapping.
+    2. _db.rls_context IS _rls.rls_context — exactly one implementation of
+       the rls_context transaction manager.
+
+    3. knotify_db.rls_context IS knotify_db._db.rls_context — the public
+       API re-exports the _db re-export without wrapping.
     """
 
     def test_db_set_rls_context_is_rls_set_rls_context(self):
@@ -188,6 +200,21 @@ class TestRlsIdentityReExport(unittest.TestCase):
             rls.set_rls_context,
             "knotify_db._db.set_rls_context must be the SAME object as "
             "knotify_db._rls.set_rls_context (identity import, not re-implementation)",
+        )
+
+    def test_db_rls_context_is_rls_rls_context(self):
+        """
+        _db.rls_context is imported from _rls, not redefined.
+        Object identity proves sole-source-of-truth.
+        """
+        import knotify_db._db as db
+        import knotify_db._rls as rls
+
+        self.assertIs(
+            db.rls_context,
+            rls.rls_context,
+            "knotify_db._db.rls_context must be the SAME object as "
+            "knotify_db._rls.rls_context (identity import, not re-implementation)",
         )
 
     def test_public_rls_context_is_db_rls_context(self):

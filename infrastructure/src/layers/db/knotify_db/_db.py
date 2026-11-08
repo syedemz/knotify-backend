@@ -28,27 +28,29 @@ Public surface (re-exported by knotify_db/__init__.py):
       truth for the GUC name constants and the SET LOCAL implementation.
 
   rls_context(conn, user_id, user_sex)  [context manager]
-      Defined here so it calls set_rls_context through this module's
-      namespace, making `patch("knotify_db._db.set_rls_context")` intercept
-      the call correctly in the existing unit test suite.
-      Manages a full transaction lifetime: BEGIN on entry, set_rls_context
-      on entry, COMMIT on normal exit, ROLLBACK on exception exit.
+      Re-exported from knotify_db._rls — same SSoT guarantee.  Manages the
+      full transaction lifetime: BEGIN on entry, set_rls_context on entry,
+      COMMIT on normal exit, ROLLBACK on exception exit.
 """
 
 from __future__ import annotations
 
 import json
 import os
-from contextlib import contextmanager
 from typing import Union
 
 import psycopg2
 import psycopg2.extras
 
-# GUC constants and set_rls_context — sole source of truth is _rls.py.
-# Imported into this namespace so rls_context (defined below) calls
-# set_rls_context through _db's namespace (enabling patch("knotify_db._db.set_rls_context")).
-from knotify_db._rls import _GUC_USER_ID, _GUC_USER_SEX, set_rls_context
+# RLS symbols — sole source of truth is _rls.py.  Both backends (_db.py for
+# Aurora, _supabase.py for Supabase) import from _rls so there is exactly one
+# implementation of the sensitive RLS code in the codebase.
+from knotify_db._rls import (
+    _GUC_USER_ID,
+    _GUC_USER_SEX,
+    rls_context,
+    set_rls_context,
+)
 
 # Register UUID adapter once at import time so callers can pass uuid.UUID
 # objects without casting to str.
@@ -115,46 +117,3 @@ def get_connection(secret_or_env: Union[dict, str]) -> psycopg2.extensions.conne
     )
 
 
-@contextmanager
-def rls_context(
-    conn: psycopg2.extensions.connection,
-    user_id: str,
-    user_sex: str,
-):
-    """
-    Context manager that owns the full transaction lifetime.
-
-    Usage:
-        with rls_context(conn, user_id, user_sex):
-            # conn is inside a transaction with GUCs set
-            # queries here are filtered by the RLS policy
-        # transaction committed — GUCs expired (SET LOCAL is txn-scoped)
-
-    On entry:  BEGIN, then set_rls_context (SET LOCAL GUCs).
-    On normal exit:  COMMIT — GUCs expire automatically (SET LOCAL).
-    On exception exit:  ROLLBACK — GUCs expire automatically.
-
-    Because SET LOCAL is transaction-scoped, the GUC values are gone once
-    the transaction ends.  No explicit RESET is needed, and no GUC leakage
-    occurs across subsequent transactions on the same connection.
-
-    Note: Postgres custom GUCs retain an empty-string session value after the
-    first SET LOCAL in a session.  This does NOT cause a security regression
-    because: (a) the empty string does not match 'Male' or 'Female' for the
-    != comparison on the sex column — wait, it does return true. However, the
-    correct Lambda pattern is one connection per request (Lambda functions open
-    a new connection per invocation and close it before returning), so the
-    session GUC leakage scenario does not arise in production.  If connection
-    pooling is introduced in a future phase, the pool must reset the GUC state
-    on connection checkout — see architecture.md for guidance.
-    """
-    with conn.cursor() as cur:
-        cur.execute("BEGIN")
-    set_rls_context(conn, user_id, user_sex)
-    try:
-        yield
-    except Exception:
-        conn.rollback()
-        raise
-    else:
-        conn.commit()
