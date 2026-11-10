@@ -30,18 +30,20 @@ use_supabase = true
 # Supabase connection — populated 2026-11-10 for story 14.12.
 # Values derived from the Supabase project `waulcjgqytiqkwdrkchg`:
 #   - Project ref via MCP get_project_url: https://waulcjgqytiqkwdrkchg.supabase.co
-#   - Region detected via inet_server_addr() -> IPv6 2a05:d01c::/32 = AWS Frankfurt (eu-central-1)
-#     and confirmed consistent with the AWS account's eu-central-1 region.
-#   - Pooler host set to the aws-0 shared pooler in eu-central-1 (default for
-#     most Supabase projects). If this project uses the newer aws-1 generation
-#     the Supabase Dashboard → Connect → Transaction pooler dialog will show
-#     `aws-1-eu-central-1.pooler.supabase.com` — swap the single line below.
+#   - Region: eu-west-2 (London). The IPv6 2a05:d01c::/32 observed via
+#     inet_server_addr() is Supabase's own edge range — NOT AWS region — so
+#     the region had to be confirmed out of band by the operator. An initial
+#     eu-central-1 guess was rejected by the pooler with "tenant/user not
+#     found"; retrying against aws-0-eu-west-2 authenticated successfully.
+#   - Pooler host: aws-0-eu-west-2.pooler.supabase.com (shared pooler,
+#     port 6543, transaction mode). Verified end-to-end: psycopg2.connect
+#     with the operator-supplied password returned current_user='postgres'.
 #   - Pooler username format is `postgres.<project-ref>` on the shared pooler.
 # The Supabase database password is NOT stored here (nor anywhere in
 # Terraform). It is injected directly into AWS Secrets Manager via
 # `aws secretsmanager put-secret-value` after the 14.12 apply — see the
 # runbook (feature-1 story 14.16).
-supabase_host     = "aws-0-eu-central-1.pooler.supabase.com"
+supabase_host     = "aws-0-eu-west-2.pooler.supabase.com"
 supabase_username = "postgres.waulcjgqytiqkwdrkchg"
 
 # supabase_port defaults to 6543 (transaction mode — required for Lambda).
