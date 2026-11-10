@@ -1,6 +1,6 @@
 phase: 14
 title: Supabase alternative to Aurora RDS and private VPC (dev cost reduction; prod-capable)
-last_updated: 2026-11-10 (phase 14 OPEN — stories 14.1-14.12 done; dev apply LIVE; Supabase credential secret populated; 14.13 (db_migrator handler Supabase-awareness) is next; depends on handler refactor + zip rebuild + un-gating null_resource.db_migrator_invoke that the hotfix PR #183 added)
+last_updated: 2026-11-10 (phase 14 OPEN — stories 14.1-14.13 done; db_migrator handler is now Supabase-aware; null_resource.db_migrator_invoke un-gated; PR #184 open; post-merge SQL verification by main agent via Supabase MCP is the final acceptance gate for 14.13; 14.14 (phase 6-9 smoke tests against Supabase-backed stack) is next)
 
 context_summary: |
   Introduces a single Terraform flag `use_supabase` that toggles the dev environment between
@@ -256,7 +256,7 @@ stories:
   - id: 14.13
     title: Invoke db_migrator against fresh Supabase project
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [14.12]
     tracking_issue: null
     acceptance_criteria:
