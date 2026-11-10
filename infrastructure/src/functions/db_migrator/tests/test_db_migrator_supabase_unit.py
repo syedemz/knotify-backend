@@ -74,16 +74,74 @@ def _set_supabase_env(h) -> None:
     h._USE_SUPABASE = True
 
 
-def _invoke_supabase_handler(h, sm_mock=None):
+def _build_sm_mock(
+    role_secret_state: str = "first_time_create",
+) -> MagicMock:
+    """
+    Build an sm mock whose get_secret_value / create_secret / put_secret_value
+    behaviour simulates one of the three set-once-role-secret_supabase branches.
+
+    Args:
+        role_secret_state: one of
+          - "first_time_create": role secrets don't exist (ResourceNotFoundException)
+          - "first_time_empty":  role secrets exist with password=""  (empty placeholder)
+          - "populated":         role secrets exist with non-empty password (skip)
+    """
+    sm = MagicMock()
+
+    class _ResourceNotFoundException(Exception):
+        pass
+
+    class _ResourceExistsException(Exception):
+        pass
+
+    sm.exceptions.ResourceNotFoundException = _ResourceNotFoundException
+    sm.exceptions.ResourceExistsException = _ResourceExistsException
+
+    superuser_payload = _make_supabase_secret()
+    app_user_populated = json.dumps(
+        {"username": f"app_user.{_PROJECT_REF}", "password": "existingPopulated"}
+    )
+    aurora_refresh_populated = json.dumps(
+        {"username": f"aurora_refresh.{_PROJECT_REF}", "password": "existingPopulated"}
+    )
+    app_user_empty = json.dumps(
+        {"username": f"app_user.{_PROJECT_REF}", "password": ""}
+    )
+    aurora_refresh_empty = json.dumps(
+        {"username": f"aurora_refresh.{_PROJECT_REF}", "password": ""}
+    )
+
+    def _get(SecretId=None, **_):
+        if SecretId == _DB_SECRET_ARN:
+            return {"SecretString": superuser_payload}
+        if SecretId == _APP_USER_SECRET_NAME:
+            if role_secret_state == "first_time_create":
+                raise _ResourceNotFoundException(SecretId)
+            if role_secret_state == "first_time_empty":
+                return {"SecretString": app_user_empty}
+            return {"SecretString": app_user_populated}
+        if SecretId == _AURORA_REFRESH_SECRET_NAME:
+            if role_secret_state == "first_time_create":
+                raise _ResourceNotFoundException(SecretId)
+            if role_secret_state == "first_time_empty":
+                return {"SecretString": aurora_refresh_empty}
+            return {"SecretString": aurora_refresh_populated}
+        raise AssertionError(f"Unexpected SecretId in test mock: {SecretId!r}")
+
+    sm.get_secret_value.side_effect = _get
+    sm.create_secret.return_value = {}
+    sm.put_secret_value.return_value = {}
+    return sm
+
+
+def _invoke_supabase_handler(h, sm_mock=None, role_secret_state="first_time_create"):
     """
     Call h.handler({}, None) with the Supabase path fully mocked.
     Returns the handler's return value.
     """
     if sm_mock is None:
-        sm_mock = MagicMock()
-
-    sm_mock.get_secret_value.return_value = {"SecretString": _make_supabase_secret()}
-    sm_mock.create_secret.return_value = {}
+        sm_mock = _build_sm_mock(role_secret_state=role_secret_state)
 
     mock_conn = MagicMock()
     mock_cursor = MagicMock()
@@ -118,9 +176,7 @@ class TestSupabaseSecretFetch(unittest.TestCase):
 
     def test_given_use_supabase_true_handler_fetches_db_secret_arn(self):
         h = _load_handler()
-        sm = MagicMock()
-        sm.get_secret_value.return_value = {"SecretString": _make_supabase_secret()}
-        sm.create_secret.return_value = {}
+        sm = _build_sm_mock(role_secret_state="first_time_create")
 
         mock_conn = MagicMock()
         mock_cursor = MagicMock()
@@ -138,8 +194,10 @@ class TestSupabaseSecretFetch(unittest.TestCase):
                     mock_apply.return_value = {"applied_ids": [], "pending_count": 0}
                     h.handler({}, None)
 
-        # Must have called GetSecretValue with the Supabase ARN
-        sm.get_secret_value.assert_called_once_with(SecretId=_DB_SECRET_ARN)
+        # Must have called GetSecretValue with the Supabase ARN at least once
+        # (the set-once helper also calls it per role, so assert_called_once_with
+        # is too strict post-14.14b — use assert_any_call).
+        sm.get_secret_value.assert_any_call(SecretId=_DB_SECRET_ARN)
 
     def test_given_use_supabase_false_handler_fetches_aurora_master_arn(self):
         """Aurora regression guard: USE_SUPABASE=false → old AURORA path."""
@@ -290,10 +348,9 @@ class TestAppUserSecretPoolerUsername(unittest.TestCase):
     """
 
     def test_app_user_secret_username_is_pooler_qualified(self):
+        """On first-time create, the app_user secret is written with pooler-qualified username."""
         h = _load_handler()
-        sm = MagicMock()
-        sm.get_secret_value.return_value = {"SecretString": _make_supabase_secret()}
-        sm.create_secret.return_value = {}
+        sm = _build_sm_mock(role_secret_state="first_time_create")
 
         mock_conn = MagicMock()
         mock_cursor = MagicMock()
@@ -311,29 +368,16 @@ class TestAppUserSecretPoolerUsername(unittest.TestCase):
                     mock_apply.return_value = {"applied_ids": [], "pending_count": 0}
                     h.handler({}, None)
 
-        # Find the create_secret or put_secret_value call for the app_user secret
-        all_create_calls = sm.create_secret.call_args_list
         app_user_call = None
-        for c in all_create_calls:
-            args_str = str(c)
-            if _APP_USER_SECRET_NAME in args_str:
+        for c in sm.create_secret.call_args_list:
+            if c.kwargs.get("Name") == _APP_USER_SECRET_NAME:
                 app_user_call = c
                 break
 
         self.assertIsNotNone(app_user_call, "Expected a create_secret call for app_user secret")
-        secret_string_arg = None
-        # SecretString may be in kwargs or positional; search the call representation
-        for _, kwargs in [app_user_call]:
-            secret_string_arg = kwargs.get("SecretString", None)
-
-        if secret_string_arg is None:
-            # Try parsing from string representation
-            args_str = str(app_user_call)
-            # The call will contain SecretString='{"username": "app_user.waulcjgq...", ...}'
-            self.assertIn(f'"app_user.{_PROJECT_REF}"', args_str)
-        else:
-            payload = json.loads(secret_string_arg)
-            self.assertEqual(payload["username"], f"app_user.{_PROJECT_REF}")
+        payload = json.loads(app_user_call.kwargs["SecretString"])
+        self.assertEqual(payload["username"], f"app_user.{_PROJECT_REF}")
+        self.assertTrue(payload["password"], "Expected a non-empty generated password")
 
 
 # ---------------------------------------------------------------------------
@@ -348,10 +392,9 @@ class TestAuroraRefreshSecretPoolerUsername(unittest.TestCase):
     """
 
     def test_aurora_refresh_secret_username_is_pooler_qualified(self):
+        """On first-time create, aurora_refresh secret is written with pooler-qualified username."""
         h = _load_handler()
-        sm = MagicMock()
-        sm.get_secret_value.return_value = {"SecretString": _make_supabase_secret()}
-        sm.create_secret.return_value = {}
+        sm = _build_sm_mock(role_secret_state="first_time_create")
 
         mock_conn = MagicMock()
         mock_cursor = MagicMock()
@@ -369,17 +412,16 @@ class TestAuroraRefreshSecretPoolerUsername(unittest.TestCase):
                     mock_apply.return_value = {"applied_ids": [], "pending_count": 0}
                     h.handler({}, None)
 
-        all_create_calls = sm.create_secret.call_args_list
         refresh_call = None
-        for c in all_create_calls:
-            args_str = str(c)
-            if _AURORA_REFRESH_SECRET_NAME in args_str:
+        for c in sm.create_secret.call_args_list:
+            if c.kwargs.get("Name") == _AURORA_REFRESH_SECRET_NAME:
                 refresh_call = c
                 break
 
         self.assertIsNotNone(refresh_call, "Expected a create_secret call for aurora_refresh secret")
-        args_str = str(refresh_call)
-        self.assertIn(f'"aurora_refresh.{_PROJECT_REF}"', args_str)
+        payload = json.loads(refresh_call.kwargs["SecretString"])
+        self.assertEqual(payload["username"], f"aurora_refresh.{_PROJECT_REF}")
+        self.assertTrue(payload["password"], "Expected a non-empty generated password")
 
 
 # ---------------------------------------------------------------------------
@@ -491,19 +533,100 @@ class TestSupabaseResponseShape(unittest.TestCase):
         h = _load_handler()
         result = _invoke_supabase_handler(h)
         self.assertIn("app_user_secret_action", result)
-        self.assertIn(result["app_user_secret_action"], ("created", "updated"))
+        self.assertIn(
+            result["app_user_secret_action"],
+            ("created", "updated", "unchanged"),
+        )
 
     def test_supabase_response_has_aurora_refresh_secret_action(self):
         h = _load_handler()
         result = _invoke_supabase_handler(h)
         self.assertIn("aurora_refresh_secret_action", result)
-        self.assertIn(result["aurora_refresh_secret_action"], ("created", "updated", "skipped"))
+        self.assertIn(
+            result["aurora_refresh_secret_action"],
+            ("created", "updated", "unchanged", "skipped"),
+        )
 
     def test_supabase_response_has_elapsed_time_seconds(self):
         h = _load_handler()
         result = _invoke_supabase_handler(h)
         self.assertIn("elapsed_time_seconds", result)
         self.assertIsInstance(result["elapsed_time_seconds"], float)
+
+
+# ---------------------------------------------------------------------------
+# Set-once role secret — three branches (story 14.14b)
+# ---------------------------------------------------------------------------
+
+class TestSetOnceRoleSecretSupabase(unittest.TestCase):
+    """
+    Given _set_once_role_secret_supabase,
+    when invoked under each of the three secret states,
+    then it rotates on first-time-create, rotates on first-time-empty,
+    and SKIPs rotation when the secret is already populated — avoiding the
+    Supavisor pooler cache-lag auth failures (story 14.14b).
+    """
+
+    def test_first_time_create_returns_created(self):
+        """Secret absent → generate password, ALTER ROLE, create_secret."""
+        h = _load_handler()
+        result = _invoke_supabase_handler(h, role_secret_state="first_time_create")
+        self.assertEqual(result["app_user_secret_action"], "created")
+        self.assertEqual(result["aurora_refresh_secret_action"], "created")
+
+    def test_first_time_empty_returns_updated(self):
+        """Secret exists with empty password → ALTER ROLE, put_secret_value."""
+        h = _load_handler()
+        result = _invoke_supabase_handler(h, role_secret_state="first_time_empty")
+        self.assertEqual(result["app_user_secret_action"], "updated")
+        self.assertEqual(result["aurora_refresh_secret_action"], "updated")
+
+    def test_populated_returns_unchanged_and_skips_alter_role(self):
+        """Secret has non-empty password → SKIP rotation. No ALTER ROLE."""
+        h = _load_handler()
+        sm = _build_sm_mock(role_secret_state="populated")
+
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+        _set_supabase_env(h)
+
+        with patch.object(h, "boto3") as mock_boto3:
+            mock_boto3.client.return_value = sm
+            with patch.object(h, "psycopg2") as mock_psycopg2:
+                mock_psycopg2.connect.return_value = mock_conn
+                with patch.object(h, "_apply_migrations") as mock_apply:
+                    mock_apply.return_value = {"applied_ids": [], "pending_count": 0}
+                    result = h.handler({}, None)
+
+        # Both role secrets remain unchanged
+        self.assertEqual(result["app_user_secret_action"], "unchanged")
+        self.assertEqual(result["aurora_refresh_secret_action"], "unchanged")
+
+        # No ALTER ROLE executed for either role
+        altered = [
+            c for c in mock_cursor.execute.call_args_list
+            if c.args and isinstance(c.args[0], str) and "ALTER ROLE" in c.args[0]
+        ]
+        self.assertEqual(
+            altered, [],
+            f"Expected zero ALTER ROLE executions when secret is populated. "
+            f"Got: {altered}",
+        )
+
+        # No create_secret or put_secret_value for role secrets either
+        role_create_calls = [
+            c for c in sm.create_secret.call_args_list
+            if c.kwargs.get("Name") in (_APP_USER_SECRET_NAME, _AURORA_REFRESH_SECRET_NAME)
+        ]
+        role_put_calls = [
+            c for c in sm.put_secret_value.call_args_list
+            if c.kwargs.get("SecretId") in (_APP_USER_SECRET_NAME, _AURORA_REFRESH_SECRET_NAME)
+        ]
+        self.assertEqual(role_create_calls, [])
+        self.assertEqual(role_put_calls, [])
 
 
 if __name__ == "__main__":
