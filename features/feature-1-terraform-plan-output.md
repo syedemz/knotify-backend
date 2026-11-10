@@ -169,3 +169,41 @@ Identical to 2026-11-08 early-run results:
 - Prod code path: validate-only until prod state bootstrap.
 
 Ready to proceed to story 14.12 (apply `use_supabase=true` on dev, populate the Supabase secret, verify the deployed stack boots clean). 14.12 is the first REAL AWS state change in phase 14 — gated on user approval.
+
+---
+
+## 2026-11-10 — story 14.13 landing (db_migrator Supabase-awareness)
+
+### Handler refactor scope
+
+`infrastructure/src/functions/db_migrator/handler.py` was refactored to be backend-aware. An import-time boolean `_USE_SUPABASE = os.environ.get("USE_SUPABASE") == "true"` (lowercase, case-sensitive — matches what Terraform emits) gates dispatch inside `handler()`. The original Aurora logic was lifted verbatim into a private `_handler_aurora(sm)` function; a new `_handler_supabase(sm)` function covers the Supabase path. The public `handler(event, context)` entrypoint calls one or the other and appends `elapsed_time_seconds` to whichever dict is returned, so the five-key response shape is identical for both backends.
+
+The Supabase path: (1) fetches `DB_SECRET_ARN` (the `knotify/dev/supabase_credential` secret populated in story 14.12) via boto3; (2) derives the project ref by splitting the superuser username on `.` — asserts exactly two segments via `_extract_project_ref()` (fails loudly on malformed payload); (3) connects with `psycopg2.connect(sslmode="require")` to `SUPABASE_HOST:SUPABASE_PORT`; (4) creates `app_user` and `aurora_refresh` roles idempotently if absent; (5) applies yoyo migrations using the superuser credential with `sslmode=require` appended as a query param in the yoyo db_url; (6) rotates both role passwords and writes pooler-qualified usernames (`app_user.<ref>`, `aurora_refresh.<ref>`) to Secrets Manager. The Aurora path is byte-identical in behaviour to the pre-14.13 handler.
+
+### Un-gate of null_resource.db_migrator_invoke
+
+`count = var.use_supabase ? 0 : 1` removed from `null_resource.db_migrator_invoke` in both `infrastructure/environments/dev/main.tf` and `infrastructure/environments/prod/main.tf`. The resource is now unconditional. Comment block updated to reflect the new backend-aware behaviour. After the next CI apply the null_resource will fire (triggered by the new Lambda version hash), invoke the db_migrator Lambda with the Supabase-path handler, and run all 19 migration files (0000-0018) against the empty Supabase project.
+
+### terraform fmt -check + terraform validate
+
+Both commands pass clean on dev and prod environments:
+
+```
+dev:  terraform fmt -check  → clean (no reformatting needed)
+dev:  terraform validate    → Success! (2 pre-existing dynamodb hash_key/range_key deprecation warnings — out of scope)
+prod: terraform fmt -check  → clean
+prod: terraform validate    → Success! (same 2 pre-existing warnings)
+```
+
+### Expected post-merge trajectory
+
+1. CI runs `terraform apply` on dev (triggered by PR merge into `development`).
+2. Apply detects that `null_resource.db_migrator_invoke.count` changed from 0 to 1 (hotfix PR #183 set it to 0; this PR removes the count entirely).
+3. Terraform creates the null_resource and fires the `local-exec` provisioner.
+4. The provisioner invokes `knotify-db-migrator-dev` with the new handler (USE_SUPABASE=true, DB_SECRET_ARN set, SUPABASE_HOST/PORT/DBNAME set).
+5. Handler connects to Supabase, creates `app_user` and `aurora_refresh` roles, applies migrations 0000-0018.
+6. After apply completes, `relation "users" does not exist` errors cease for all Lambdas that call `knotify_db.get_connection()`.
+
+### Scope boundary
+
+The ACTUAL verification of migration application (CloudWatch log inspection, read-only SQL query against Supabase confirming table set, pgvector column presence, RLS policy smoke test) is OUT of this subagent's scope. Those checks constitute the story 14.13 acceptance criteria and are executed post-merge by the main agent via the Supabase MCP `execute_sql` tool. This digest records the pre-merge local verification only.
