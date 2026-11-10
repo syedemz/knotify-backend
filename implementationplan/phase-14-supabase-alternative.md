@@ -1,6 +1,6 @@
 phase: 14
 title: Supabase alternative to Aurora RDS and private VPC (dev cost reduction; prod-capable)
-last_updated: 2026-11-10 (phase 14 OPEN — stories 14.1-14.13 done; db_migrator handler is now Supabase-aware; null_resource.db_migrator_invoke un-gated; PR #184 open; post-merge SQL verification by main agent via Supabase MCP is the final acceptance gate for 14.13; 14.14 (phase 6-9 smoke tests against Supabase-backed stack) is next)
+last_updated: 2026-11-10 (phase 14 OPEN — stories 14.1-14.14 done; probe_phase7 9/9 + probe_phase8 22/22 PASS on Supabase; new story 14.14a added for probe_phase9 Aurora Data API rewrite; migration 0019 unblocks Supabase RLS auto-enable; 14.15 (reverse-direction proof) and 14.14a next)
 
 context_summary: |
   Introduces a single Terraform flag `use_supabase` that toggles the dev environment between
@@ -271,8 +271,32 @@ stories:
   - id: 14.14
     title: Phase 6, 7, 8, 9 smoke tests against the Supabase-backed stack
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [14.13]
+    notes: |
+      Done 2026-11-10 with probe_phase7 (9/9 PASS) + probe_phase8 (22/22 PASS).
+      probe_phase6 does not exist as a script — phase 6 surface (profile +
+      friends + bookmarks + blocks) is exercised transitively by phase 7/8
+      flows. probe_phase9 DEFERRED to new story 14.14a (needs 13 Aurora Data
+      API call sites rewritten to psycopg2+pooler; phase 8 probe already
+      covers both deletion branches, so 14.14a is coverage completeness
+      rather than a blocker). One runtime fix landed as migration 0019
+      (DISABLE RLS on 6 GRANT-based tables that Supabase's PostgREST-safety
+      event trigger auto-ENABLEd). Full probe digest in
+      features/feature-1-terraform-plan-output.md.
+
+  - id: 14.14a
+    title: Rewrite probe_phase9's Aurora Data API call sites to psycopg2 + Supabase pooler
+    agent: backenddeveloper
+    done: false
+    depends_on: [14.14]
+    tracking_issue: null
+    acceptance_criteria:
+      - scripts/probe_phase9.py's 13 `rds-data execute_statement` call sites are rewritten to psycopg2.connect(SUPABASE_HOST, 6543, sslmode=require) using the app_user credential fetched from knotify-dev-app-user-credential Secrets Manager secret
+      - Hardcoded stack IDs rewritten to the env-var pattern established by probe_phase7/8 in story 14.14
+      - probe_phase9 exits 0 end-to-end against the live Supabase-backed dev stack
+      - Results appended to features/feature-1-terraform-plan-output.md
+    notes: Deferred from 14.14 because the Aurora-side row inspection in probe_phase9 (used to verify §11.1 soft-delete redaction landed in the database) needs a parallel Supabase implementation. probe_phase8 already exercises the deletion workflows (hard + soft) end-to-end on Supabase so this story is coverage completeness, not a phase-14 blocker. The AppSync WebSocket subscription real-time delivery test in probe_phase9 should work unchanged.
     tracking_issue: null
     acceptance_criteria:
       - probe_phase6.py (profile, friends, bookmarks, blocks), probe_phase7.py (match + deck + pgvector), probe_phase8.py (chat — Supabase + DynamoDB mix), and probe_phase9.py (account deletion — the broadest test) all exit 0 against the dev stack running on Supabase

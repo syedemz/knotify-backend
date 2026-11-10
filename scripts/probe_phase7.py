@@ -22,12 +22,23 @@ import boto3
 import requests
 
 
+# Resource IDs for the current dev stack (post-phase-14 apply, Supabase-backed).
+# Captured from the outputs-dev CI workflow (run 42846206576) on 2026-11-10.
+# EDGE_SECRET lives in Terraform state only; read it from any Lambda's env config
+# at runtime (see SECRET_FROM_LAMBDA below) or override via the EDGE_SECRET env var.
 REGION = "eu-central-1"
-USER_POOL_ID = "eu-central-1_YnzRDU4EZ"
-CLIENT_ID = "213tgsm22heuvf49gpdoef096m"  # knotify-dev-integration-test
-DOMAIN = "d3sfhc4jobfipj.cloudfront.net"
-EDGE_SECRET = "kUIOgUn7pJIoj9jVeZrTb1uEw8aRE245NquhLT9w0Cmf8MY0fCSwtY0TXvP6Irbn"
+USER_POOL_ID = os.environ.get("USER_POOL_ID", "eu-central-1_LpNtSxYGJ")
+CLIENT_ID = os.environ.get("CLIENT_ID", "3pirin9ur92g04bjjaogdplnan")  # knotify-dev-integration-test
+DOMAIN = os.environ.get("DOMAIN", "d1q0ybua37gukq.cloudfront.net")
+EDGE_SECRET = os.environ.get("EDGE_SECRET", "")  # MUST be set in env; fetched from Lambda config
 REFRESH_LAMBDA = "knotify-refresh-deck-view-dev"
+
+if not EDGE_SECRET:
+    raise SystemExit(
+        "EDGE_SECRET env var must be set. Fetch via: "
+        "aws lambda get-function-configuration --function-name knotify-profile-dev "
+        "--query 'Environment.Variables.EDGE_SECRET' --output text"
+    )
 
 
 def _http_with_retry(method: str, url: str, *, headers, json_body=None, attempts=4):

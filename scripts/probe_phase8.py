@@ -45,17 +45,27 @@ import boto3
 import requests
 
 
+# Resource IDs for the current dev stack (post-phase-14 apply, Supabase-backed).
+# Captured from the outputs-dev CI workflow (run 42846206576) on 2026-11-10.
+# EDGE_SECRET lives in Terraform state only; fetch it from any Lambda's env config.
 REGION = "eu-central-1"
-USER_POOL_ID = "eu-central-1_MO0oZRQ1b"
-CLIENT_ID = "353v3brvscce7bnkh7dphsnd4p"  # knotify-dev-integration-test
-DOMAIN = "d3ocejjf37kge5.cloudfront.net"
-EDGE_SECRET = "35hX4kxDlB4vcatyhqtKYapRIs3PeULfCAUmvTg1dHu9MJeS0ThMF5y51m371vXt"
+USER_POOL_ID = os.environ.get("USER_POOL_ID", "eu-central-1_LpNtSxYGJ")
+CLIENT_ID = os.environ.get("CLIENT_ID", "3pirin9ur92g04bjjaogdplnan")  # knotify-dev-integration-test
+DOMAIN = os.environ.get("DOMAIN", "d1q0ybua37gukq.cloudfront.net")
+EDGE_SECRET = os.environ.get("EDGE_SECRET", "")
 REFRESH_LAMBDA = "knotify-refresh-deck-view-dev"
 APPSYNC_API_NAME = "knotify-dev-chat-api"
 CHAT_MESSAGES_TABLE = "ChatMessages"
 AUDIT_TABLE = "account_deletion_audit"
 DELETION_POLL_MAX_ATTEMPTS = 30
 DELETION_POLL_SLEEP_SECS = 10
+
+if not EDGE_SECRET:
+    raise SystemExit(
+        "EDGE_SECRET env var must be set. Fetch via: "
+        "aws lambda get-function-configuration --function-name knotify-profile-dev "
+        "--query 'Environment.Variables.EDGE_SECRET' --output text"
+    )
 
 
 def _http_with_retry(method: str, url: str, *, headers, json_body=None, attempts=4):
@@ -643,7 +653,8 @@ def main() -> int:
                 failures.append(f"jack sendMessage senderId mismatch: got {m3['senderId']} expected {jack_sub}")
 
         print("\n[14] Kate listMyRooms — expect rooms A and B both active, friendshipActive=true,")
-        print("     and room A first (sorted by lastMessageAt desc; only A has messages)")
+        print("     and room B first (sorted by lastMessageAt desc; Jack's 'hey' in B is")
+        print("     the most recent message overall, per step [13b])")
         resp = _gql(graphql_url, kate_tok, LIST_MY_ROOMS)
         if resp.get("errors"):
             failures.append(f"listMyRooms pre-block: {resp['errors']}")
@@ -661,13 +672,14 @@ def main() -> int:
                     failures.append(f"pre-block room {rid} status={rooms[rid]['status']} expected active")
                 elif not rooms[rid]["friendshipActive"]:
                     failures.append(f"pre-block room {rid} friendshipActive=false expected true")
-            # Ordering: room A should sort before room B because A has messages and B doesn't.
+            # Ordering: room B should sort before room A because Jack's 'hey' in B
+            # (sent at step [13b]) is the most recent message across both rooms.
             try:
                 idx_a = next(i for i, r in enumerate(ordered) if r["roomId"] == room_a_id)
                 idx_b = next(i for i, r in enumerate(ordered) if r["roomId"] == room_b_id)
-                if idx_a > idx_b:
-                    failures.append(f"listMyRooms ordering: roomA@{idx_a} should precede roomB@{idx_b} "
-                                    f"(A has messages, B does not)")
+                if idx_b > idx_a:
+                    failures.append(f"listMyRooms ordering: roomB@{idx_b} should precede roomA@{idx_a} "
+                                    f"(Jack's 'hey' in B is the most recent message overall)")
             except StopIteration:
                 pass  # already captured as missing-room failure above
 

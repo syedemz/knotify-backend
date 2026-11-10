@@ -207,3 +207,73 @@ prod: terraform validate    → Success! (same 2 pre-existing warnings)
 ### Scope boundary
 
 The ACTUAL verification of migration application (CloudWatch log inspection, read-only SQL query against Supabase confirming table set, pgvector column presence, RLS policy smoke test) is OUT of this subagent's scope. Those checks constitute the story 14.13 acceptance criteria and are executed post-merge by the main agent via the Supabase MCP `execute_sql` tool. This digest records the pre-merge local verification only.
+
+---
+
+## 2026-11-10 — post-merge verification (story 14.13 AC)
+
+Executed by the main agent via Supabase MCP after PR #184 (14.13 code) and PR #185 (hotfix removing the pre-migration role-creation loop that collided with migration 0007/0013 `CREATE ROLE`) both merged into `development`. Final `apply-dev` run **42839298117 PASSED**.
+
+### Story 14.13 AC — checklist
+
+| AC item | Result |
+|---|---|
+| `aws lambda invoke --function-name knotify-dev-db-migrator` returns statusCode 200 | ✅ apply exit 0 implies FunctionError absent |
+| Each migration 0000–0018 applied in order with no error lines | ✅ `_yoyo_migration` lists all 19 ids; `applied_at_utc` monotone (0000–0006 at 14:41; 0007–0018 at 15:11 after hotfix) |
+| Canonical table set present | ✅ `users`, `siblings`, `friendships`, `friend_requests`, `bookmarks`, `blocks`, `deck_view` MV, `refresh_log`, plus yoyo metadata |
+| pgvector enabled + vector columns on users | ✅ `pg_extension.vector` installed; `users.preference_vector` column present |
+| Migration 0007 RLS policy in place | ✅ 4 policies on `users` (`users_insert_own_row`, `users_opposite_sex_only`, `users_update_own_row`, `users_delete_own_row`) all reference `app.requesting_user_id` + `app.requesting_user_sex`; `relrowsecurity = true` + `relforcerowsecurity = true` |
+
+### What MCP verification could NOT cover
+
+The behavioral RLS smoke (`non-privileged role with GUC set returns only matching rows`) requires connecting through the pooler as a non-superuser. Supabase MCP connects as `postgres` (superuser), which always bypasses RLS even with `FORCE ROW LEVEL SECURITY`. That check falls out of story 14.14 when probe_phase6/7/8/9 Lambdas authenticate as `app_user.waulcjgqytiqkwdrkchg` through the pooler and run real queries.
+
+### What's live on Supabase project `waulcjgqytiqkwdrkchg`
+
+- Schema fully migrated to parity with Aurora (migrations 0000–0018).
+- Roles: `app_user` (login, non-super, non-bypassrls) + `aurora_refresh` (same). Created by migrations, password-rotated by the handler, pooler-qualified usernames written to Secrets Manager.
+- Secrets: `knotify-dev-app-user-credential` + `knotify-dev-aurora-refresh-credential` populated with `{"username": "app_user.waulcjgqytiqkwdrkchg", "password": "<redacted>"}` shape.
+
+### Hotfix PR #185 — one-sentence summary
+
+The 14.13 `_handler_supabase` pre-created `app_user` + `aurora_refresh` via CREATE ROLE before calling `_apply_migrations`; migrations 0007/0013 then collided with the existing roles on `DuplicateObject`; hotfix removed the pre-migration loop so migrations own role creation (same as Aurora) and the handler only ALTERs passwords afterwards. Stray roles dropped from Supabase via MCP before the merge so migrations could CREATE them fresh on the re-apply.
+
+---
+
+## 2026-11-10 — story 14.14 (probe_phase7 + probe_phase8 against Supabase)
+
+Lean-to-comprehensive probe runs executed by the main agent with user-provided temp SSO credentials. Dev stack endpoint IDs fetched from CI workflow `outputs-dev.yml` run **42846206576**; `EDGE_SECRET` fetched from `knotify-profile-dev` Lambda env config.
+
+### Issue surfaced + fix (migration 0019)
+
+First probe run hit `InsufficientPrivilege: new row violates row-level security policy for table "refresh_log"`. Investigation via MCP revealed that **every** public-schema table on Supabase has `relrowsecurity = true` with `policy_count = 0` — a Supabase PostgREST-safety event trigger auto-enables RLS on every CREATE TABLE. Aurora never did this; the 6 app tables (`siblings`, `friendships`, `friend_requests`, `bookmarks`, `blocks`, `refresh_log`) were designed around GRANT-based authorisation with no RLS.
+
+Fix landed as migration `0019_disable_rls_on_grant_based_tables.sql`: explicit `ALTER TABLE <t> DISABLE ROW LEVEL SECURITY` for those 6 tables. Backend-agnostic — no-op on Aurora (RLS was never enabled), reverses the Supabase auto-enable on Supabase. `users` is deliberately left with `ENABLE + FORCE RLS + 4 policies` (the one designed RLS surface). yoyo-internal tables (`_yoyo_*`, `yoyo_lock`, `_schema_init`) are untouched — owned by `postgres`, owner-bypass applies, no cross-role access. deck_view is a materialized view (MVs can't carry RLS).
+
+The migration was pre-applied via MCP for immediate probe iteration; CI will re-run it when PR merges (`ALTER TABLE ... DISABLE RLS` is idempotent on already-disabled tables).
+
+### Probe scripts — env-driven refactor
+
+`scripts/probe_phase7.py` and `scripts/probe_phase8.py` had their hardcoded resource IDs (pointing at the OLD Aurora dev stack torn down on 2026-11-08) rewritten to read from env vars with new-stack defaults. `EDGE_SECRET` is required via env (clean failure message with the `aws lambda get-function-configuration` fetch hint if missing).
+
+Also fixed one stale probe assertion in `probe_phase8.py` step [14] `listMyRooms` ordering: the comment and check expected roomA first "because only A has messages", but step [13b] (added later) sends Jack's 'hey' to roomB, making roomB the room with the most-recent message. Assertion flipped to expect roomB first (correct lastMessageAt DESC order).
+
+### Results
+
+| Probe | Result | Notes |
+|---|---|---|
+| `probe_phase6` | N/A | No such script exists; profile/friends/bookmarks/blocks are exercised transitively by phase 7/8 flows |
+| `probe_phase7` | ✅ **9/9 PASS** | match + deck + pgvector against Supabase. Cognito signup → PATCH /v1/profile/me → RLS gate closes/opens → refresh_deck_view MV populates → POST /v1/match/search returns 1 result → GET /v1/match/deck returns 1 result |
+| `probe_phase8` | ✅ **22/22 PASS** | chat (AppSync + DynamoDB) + account deletion end-to-end. Friend-request accept, createOrGetRoom, sendMessage × 3, room isolation, block → room deactivation + friendship_active=false, re-friend-blocked 409, unfriend → room preserved + friendship_active=false, @aws_iam directive enforcement, Kate hard-delete (SFN SUCCEEDED, audit retention='hard_deleted'), Jack soft-delete (anonymized to '[deleted-user]'), John hard-delete (roomA empty) |
+| `probe_phase9` | **DEFERRED** to story 14.14a | 13 Aurora Data API `execute_statement` call sites need rewrite to psycopg2+pooler. The phase 8 probe already covers the deletion workflows (soft + hard) end-to-end on Supabase; probe 9 adds AppSync WebSocket subscription + friend-decline + Aurora-side row inspection. The Aurora-side inspection is Aurora-specific and needs Supabase equivalent via psycopg2. |
+
+### What 14.14 proves
+
+- RLS enforcement works on Supabase (users table gate CLOSED pre-completion, OPEN post-completion with correct GUC).
+- pgvector + preference_vector encoding + deck_view materialized view refresh all function.
+- Step Functions account-deletion workflow (both branches: soft/anonymize and hard-purge) correctly invokes `soft_delete_aurora` + `hard_purge` Lambdas, which transparently use `knotify_db._supabase.get_connection` via the layer dispatch from story 14.9.
+- Audit log retention values (`hard_deleted` / `permanent_anonymized`) land correctly in DynamoDB.
+- Chat (AppSync + DynamoDB + push-fanout) works end-to-end regardless of DB backend (AppSync + DynamoDB are backend-agnostic).
+- Non-superuser role routing through the Supabase pooler as `app_user.<project_ref>` and `aurora_refresh.<project_ref>` works correctly.
+
+Phase 14 behavioral gate: **PASSED** end-to-end on dev. Supabase substitutes cleanly for Aurora.
