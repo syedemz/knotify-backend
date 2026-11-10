@@ -47,15 +47,9 @@ module "lambda" {
 
   vpc_config = var.vpc_config
 
-  environment_variables = {
-    # app_user credential — used by knotify_db.get_connection()
+  environment_variables = merge(var.db_env_vars, {
+    # app_user credential friendly name — used by knotify_db.get_connection()
+    # alongside the DB_SECRET_ARN carried by db_env_vars.
     DB_SECRET_NAME = var.db_secret_name
-
-    # Aurora connection endpoint params — secret carries only username +
-    # password; host/port/dbname come from aurora module outputs (same
-    # pattern as all other VPC-resident Lambdas in this project).
-    AURORA_HOST   = var.aurora_host
-    AURORA_PORT   = var.aurora_port
-    AURORA_DBNAME = var.aurora_dbname
-  }
+  })
 }

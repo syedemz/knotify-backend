@@ -46,9 +46,13 @@ variables {
   filename       = "./tests/dummy.zip"
   role_arn       = "arn:aws:iam::123456789012:role/knotify-test-aurora-writer"
   db_secret_name = "knotify-test-app-user-credential"
-  aurora_host    = "knotify-test.cluster.eu-central-1.rds.amazonaws.com"
-  aurora_port    = "5432"
-  aurora_dbname  = "knotify"
+  db_env_vars = {
+    USE_SUPABASE  = "false"
+    AURORA_HOST   = "knotify-test.cluster.eu-central-1.rds.amazonaws.com"
+    AURORA_PORT   = "5432"
+    AURORA_DBNAME = "knotify"
+    DB_SECRET_ARN = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:knotify-test-aurora-master"
+  }
   vpc_config = {
     subnet_ids         = ["subnet-0000000000000001", "subnet-0000000000000002"]
     security_group_ids = ["sg-0000000000000001"]

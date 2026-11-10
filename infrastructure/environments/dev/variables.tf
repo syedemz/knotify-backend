@@ -115,3 +115,44 @@ variable "api_gateway_throttling_rate_limit" {
   type        = number
   default     = 25
 }
+
+# ---------------------------------------------------------------------------
+# Supabase toggle — phase 14 (dev cost reduction).
+# Set use_supabase=true in dev.tfvars to route traffic through Supabase hosted
+# Postgres instead of Aurora Serverless v2.  Prod is pinned false in
+# prod/prod.tfvars as a safety until a dedicated prod-cutover PRD is executed.
+# supabase_host and supabase_username are operator-supplied placeholders; they
+# must be filled in dev.tfvars before the first `terraform apply` with the flag
+# on (story 14.12).  supabase_password is never stored in Terraform — it is
+# injected directly into Secrets Manager via aws-cli per the phase 14 runbook.
+# ---------------------------------------------------------------------------
+
+variable "use_supabase" {
+  description = "When true, dev env routes database traffic through Supabase hosted Postgres instead of Aurora Serverless v2 (phase 14). Set false to use the Aurora + private VPC stack. Prod must remain false until a dedicated prod-cutover PRD is executed."
+  type        = bool
+  default     = false
+}
+
+variable "supabase_host" {
+  description = "Supabase pooler hostname (e.g. aws-0-eu-central-1.pooler.supabase.com). Required when use_supabase=true; leave empty string when false."
+  type        = string
+  default     = ""
+}
+
+variable "supabase_port" {
+  description = "Supabase pooler port. 6543 = transaction mode (default and required for Lambda — stateless connections). 5432 = direct / session mode."
+  type        = number
+  default     = 6543
+}
+
+variable "supabase_dbname" {
+  description = "Supabase database name. Supabase projects always expose a database named 'postgres'."
+  type        = string
+  default     = "postgres"
+}
+
+variable "supabase_username" {
+  description = "Supabase pooler username (e.g. postgres.<project-ref>). Required when use_supabase=true; leave empty string when false."
+  type        = string
+  default     = ""
+}

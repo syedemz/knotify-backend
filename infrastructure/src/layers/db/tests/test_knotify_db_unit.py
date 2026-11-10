@@ -196,7 +196,7 @@ class TestRlsContextManager(unittest.TestCase):
         conn, cur = self._make_conn()
         user_id = "a1b2c3d4-0000-0000-0000-000000000001"
 
-        with patch("knotify_db._db.set_rls_context") as mock_set:
+        with patch("knotify_db._rls.set_rls_context") as mock_set:
             with rls_context(conn, user_id, "Male"):
                 mock_set.assert_called_once_with(conn, user_id, "Male")
 

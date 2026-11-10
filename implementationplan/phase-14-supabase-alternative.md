@@ -1,6 +1,6 @@
 phase: 14
 title: Supabase alternative to Aurora RDS and private VPC (dev cost reduction; prod-capable)
-last_updated: 2026-11-08 (phase 14 OPEN — PRD and detailed TDD plan drafted; see features/feature-1-* for the full step-by-step; this file is the phase-index-level PRD)
+last_updated: 2026-11-08 (phase 14 OPEN — stories 14.1-14.11 done; terraform surface PROVEN sound via real plans both flag values; 14.12 (first REAL apply on dev + populate supabase secret) is next and GATED on user approval)
 
 context_summary: |
   Introduces a single Terraform flag `use_supabase` that toggles the dev environment between
@@ -62,7 +62,7 @@ stories:
   - id: 14.1
     title: Pre-flight proof — SET LOCAL app.requesting_user_id survives Supabase pooler transaction mode
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: []
     tracking_issue: null
     acceptance_criteria:
@@ -70,12 +70,17 @@ stories:
       - The script reads SUPABASE_HOST / PORT / DBNAME / USERNAME / PASSWORD from the environment — nothing is hard-coded, no secret enters the repo
       - User runs the script manually with real Supabase credentials and confirms PASS in the dispatch feedback before story 14.2 begins. A FAIL halts the phase; a different pooler mode (session) or direct-connection path must be evaluated in a separate design round
       - Script is committed to the phase branch
-    notes: This is the single gating assumption of the entire phase. If SET LOCAL does not survive pooler transaction mode, the RLS policy will silently return zero rows and every downstream integration test will fail without a clear signal. Prove it in isolation first.
+    notes: |
+      PASS on 2026-11-08 via Supabase MCP execute_sql (user-directed alternative to running the committed script locally). The equivalent SQL batch
+      `BEGIN; SET LOCAL app.requesting_user_id = 'some-test-uuid'; SELECT current_setting('app.requesting_user_id', true); COMMIT;`
+      returned `guc_value = 'some-test-uuid'` inside the transaction. A follow-up `SELECT current_setting(...)` in a fresh statement returned `null`,
+      confirming SET LOCAL (not SET SESSION) scoping — the value does not leak across transactions, which is the pooler-safety invariant.
+      The committed script `scripts/supabase_pooler_proof.py` remains the reproducible artifact for anyone wanting to re-prove this against the pooler directly.
 
   - id: 14.2
     title: Add use_supabase + supabase_* variables to dev and pin prod false
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [14.1]
     tracking_issue: null
     acceptance_criteria:
@@ -88,7 +93,7 @@ stories:
   - id: 14.3
     title: New Terraform module — supabase (Secrets Manager secret only)
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [14.2]
     tracking_issue: null
     acceptance_criteria:
@@ -102,7 +107,7 @@ stories:
   - id: 14.4
     title: Count-guard networking and aurora modules in dev/main.tf
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [14.2]
     tracking_issue: null
     acceptance_criteria:
@@ -116,7 +121,7 @@ stories:
   - id: 14.5
     title: Wire supabase module + db-side locals in dev/main.tf
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [14.3, 14.4]
     tracking_issue: null
     acceptance_criteria:
@@ -129,24 +134,43 @@ stories:
       - `terraform plan` with use_supabase=true produces a Supabase secret create + SUPABASE_HOST env var on every Aurora-using Lambda; `terraform plan` with use_supabase=false produces zero diff vs. baseline
     notes: The locals pattern is the single-source-of-truth design choice that keeps per-Lambda edits mechanical and auditable. See features/feature-1-supabase-alternative-plan.md story f1.4 for the exact locals block body.
 
-  - id: 14.6
-    title: iam_roles conditional secret ARN via compact()
+  - id: 14.5a
+    title: Unify specialized Lambda modules (chat_resolver, refresh_deck_view, hard_purge, soft_delete_aurora) with the local.db_env_vars + local.db_vpc_config pattern
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [14.5]
     tracking_issue: null
     acceptance_criteria:
-      - infrastructure/modules/iam_roles/variables.tf declares supabase_master_user_secret_arn (string, default "") with a docstring referencing phase 14
-      - Every statement in infrastructure/modules/iam_roles/main.tf that grants secretsmanager:GetSecretValue on var.aurora_master_user_secret_arn has its Resource list rewritten to compact([var.aurora_master_user_secret_arn, var.supabase_master_user_secret_arn]) — exactly one ARN is non-empty for any given flag state, so compact() yields a single-element list
-      - No statement has its scope widened to Resource="*" — if any pre-existing statement was already wildcarded, it is NOT re-scoped here and the discrepancy is surfaced in a questions/ file for a follow-up
-      - Existing iam_roles Terraform tests pass unchanged; if the module has no tests, dev-env-level validation (terraform plan with flag both ways, grep for the secret ARN in the GetSecretValue policy block) is the acceptance signal
-      - prod plan output is unchanged
-    notes: ""
+      - Each of the four modules — `infrastructure/modules/chat_resolver/`, `infrastructure/modules/refresh_deck_view/`, `infrastructure/modules/hard_purge/`, `infrastructure/modules/soft_delete_aurora/` — has its `variables.tf` rewritten to drop the typed `aurora_host` / `aurora_port` / `aurora_dbname` inputs and instead accept a single generic `db_env_vars` map input (same shape as `local.db_env_vars` in the env main.tf). The `vpc_config` input is changed from a non-nullable object to a nullable object so `null` is a legal value when `use_supabase=true`.
+      - Each of the four modules has its `main.tf` rewritten so the inner `aws_lambda_function` (or the inner `module "lambda"` call, depending on the module's pattern) passes `environment_variables = merge(var.db_env_vars, { bespoke non-DB keys })` instead of constructing `AURORA_HOST = var.aurora_host` etc., and `vpc_config = var.vpc_config` (passed through unchanged, now possibly null).
+      - Lambda handler code (`infrastructure/src/functions/<name>/handler.py`) is NOT modified. The `knotify_db` layer (stories 14.7-14.9) will route to Aurora or Supabase based on the `USE_SUPABASE` env var — handlers simply call `knotify_db.get_connection()` as they do today. If a handler reads `AURORA_HOST` directly instead of going through the layer, surface the pre-existing bug in the writeup and do NOT fix it in this story.
+      - `environments/dev/main.tf` and `environments/prod/main.tf` call-sites for the four modules are rewritten to pass `db_env_vars = local.db_env_vars` and `vpc_config = local.db_vpc_config` instead of `aurora_host = one(module.aurora[*].cluster_endpoint)` + inline vpc_config blocks.
+      - Each module's existing `.tftest.hcl` tests (where present) are updated to reflect the new input schema and continue to pass.
+      - `terraform fmt -check` and `terraform validate` pass clean on both dev and prod envs.
+      - `grep -nE 'aurora_host *=|aurora_port *=|aurora_dbname *=' infrastructure/environments/{dev,prod}/main.tf` returns zero hits — these four module call-sites were the last places those inputs were set.
+    notes: |
+      Surfaced during 14.5 as a known follow-up. 14.5 wired the locals pattern into seven standard Lambda modules (modules/lambda-pattern) but left these four specialized modules (each with its own hand-written `aws_lambda_function` resource and typed `aurora_*` inputs) untouched because the rewrite requires changing module-level variable schemas. Without 14.5a, `terraform plan` with `use_supabase=true` would fail at these four call-sites because `one(module.aurora[*].cluster_endpoint)` evaluates to `null` and Terraform rejects null for the modules' non-nullable string inputs. Must be resolved before 14.11's formal plan-verification story.
+
+  - id: 14.6
+    title: iam_roles conditional secret ARN via compact() + env-root null→"" coercion
+    agent: backenddeveloper
+    done: true
+    depends_on: [14.5]
+    tracking_issue: null
+    acceptance_criteria:
+      - infrastructure/modules/iam_roles/variables.tf already declares supabase_master_user_secret_arn (string, default "") from the story 14.5 stub — verify the docstring references phase 14 and update if needed (the stub docstring is already phase-14-aware, so this may be a no-op).
+      - infrastructure/environments/dev/main.tf and infrastructure/environments/prod/main.tf iam_roles module invocations rewrite the Aurora pass from `aurora_master_user_secret_arn = one(module.aurora[*].master_user_secret_arn)` to `aurora_master_user_secret_arn = try(one(module.aurora[*].master_user_secret_arn), "")` (and same pattern for supabase: `supabase_master_user_secret_arn = try(one(module.supabase[*].secret_arn), "")`). WHY: `one()` returns `null` when count=0 and Terraform rejects `null` in a `resources = [...]` list even if wrapped in `compact()` (compact filters empty strings, NOT nulls). Confirmed by the 2026-11-08 plan run captured in features/feature-1-terraform-plan-output.md.
+      - Every statement in infrastructure/modules/iam_roles/main.tf that grants secretsmanager:GetSecretValue on var.aurora_master_user_secret_arn has its Resource list rewritten to compact([var.aurora_master_user_secret_arn, var.supabase_master_user_secret_arn]) — exactly one ARN is non-empty for any given flag state, so compact() yields a single-element list.
+      - No statement has its scope widened to Resource="*" — if any pre-existing statement was already wildcarded, it is NOT re-scoped here and the discrepancy is surfaced in a questions/ file for a follow-up.
+      - `terraform plan -var-file=dev.tfvars -var 'use_supabase=true'` on dev produces ZERO errors (the single pre-14.6 error `module.iam_roles.data.aws_iam_policy_document.db_migrator_secrets: Null value found in list` is now gone). Verified via the user's temp credentials or deferred to story 14.11 if credentials are unavailable.
+      - `terraform plan -var-file=dev.tfvars -var 'use_supabase=false'` on dev remains clean (304 resources, 0 errors — no regression on the Aurora path).
+      - prod plan output is structurally unchanged (prod state bucket does not exist per docs/PROD_CUTOVER.md; prod verification is validate-only until prod bootstrap).
+    notes: Scope was expanded on 2026-11-08 after the early plan verification run surfaced the null-value-in-list bug that compact() alone cannot fix. The env-root try() coercion is the upstream fix; the compact() module rewrite is the downstream consumer. Both must land together.
 
   - id: 14.7
     title: Extract RLS GUC helpers from _db.py into shared _rls.py (pure refactor)
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: []
     tracking_issue: null
     acceptance_criteria:
@@ -161,7 +185,7 @@ stories:
   - id: 14.8
     title: Create _supabase.py connection builder
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [14.7]
     tracking_issue: null
     acceptance_criteria:
@@ -177,7 +201,7 @@ stories:
   - id: 14.9
     title: Conditional backend dispatch in knotify_db/__init__.py
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [14.7, 14.8]
     tracking_issue: null
     acceptance_criteria:
@@ -192,7 +216,7 @@ stories:
   - id: 14.10
     title: Rebuild DB Lambda layer zip to include _rls.py and _supabase.py
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [14.7, 14.8, 14.9]
     tracking_issue: null
     acceptance_criteria:
@@ -205,7 +229,7 @@ stories:
   - id: 14.11
     title: Terraform plan verification for both flag values
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [14.5, 14.6, 14.10]
     tracking_issue: null
     acceptance_criteria:
