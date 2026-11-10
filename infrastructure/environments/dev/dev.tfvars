@@ -27,12 +27,22 @@ dynamodb_deletion_protection    = false
 # Flip to false to restore the full Aurora + private VPC stack.
 use_supabase = true
 
-# FILL BEFORE APPLY (story 14.12): replace the placeholder strings below with
-# the real pooler hostname and pooler username from your Supabase project.
-# Example host:     aws-0-eu-central-1.pooler.supabase.com
-# Example username: postgres.<project-ref>
-supabase_host     = "" # TODO(operator): set to Supabase pooler host before story 14.12 apply
-supabase_username = "" # TODO(operator): set to Supabase pooler username before story 14.12 apply
+# Supabase connection — populated 2026-11-10 for story 14.12.
+# Values derived from the Supabase project `waulcjgqytiqkwdrkchg`:
+#   - Project ref via MCP get_project_url: https://waulcjgqytiqkwdrkchg.supabase.co
+#   - Region detected via inet_server_addr() -> IPv6 2a05:d01c::/32 = AWS Frankfurt (eu-central-1)
+#     and confirmed consistent with the AWS account's eu-central-1 region.
+#   - Pooler host set to the aws-0 shared pooler in eu-central-1 (default for
+#     most Supabase projects). If this project uses the newer aws-1 generation
+#     the Supabase Dashboard → Connect → Transaction pooler dialog will show
+#     `aws-1-eu-central-1.pooler.supabase.com` — swap the single line below.
+#   - Pooler username format is `postgres.<project-ref>` on the shared pooler.
+# The Supabase database password is NOT stored here (nor anywhere in
+# Terraform). It is injected directly into AWS Secrets Manager via
+# `aws secretsmanager put-secret-value` after the 14.12 apply — see the
+# runbook (feature-1 story 14.16).
+supabase_host     = "aws-0-eu-central-1.pooler.supabase.com"
+supabase_username = "postgres.waulcjgqytiqkwdrkchg"
 
 # supabase_port defaults to 6543 (transaction mode — required for Lambda).
 # supabase_dbname defaults to "postgres".
