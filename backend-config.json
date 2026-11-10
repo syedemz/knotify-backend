@@ -1,0 +1,187 @@
+{
+  "_meta": {
+    "description": "Knotify backend endpoint config for the React Native frontend. Values marked <FILL_...> are placeholders — replace them with terraform outputs after `terraform apply`.",
+    "schemaVersion": "1.1.0",
+    "generatedAt": "2026-11-10",
+    "generatedFor": "dev environment (structure identical for prod, values differ)",
+    "backendRepo": "knotify-backend",
+    "phaseCoverage": "phases 1-11 + phase 14 (Supabase-backed DB; phase 12 photo uploads block is placeholder-only)",
+    "backendDbNote": "Dev is backed by Supabase hosted Postgres (phase 14) — transparent to the frontend; all API routes below are unchanged. Prod remains Aurora."
+  },
+
+  "environment": "dev",
+  "region": "eu-central-1",
+
+  "cognito": {
+    "region": "eu-central-1",
+    "userPoolId": "eu-central-1_LpNtSxYGJ",
+    "userPoolEndpoint": "https://cognito-idp.eu-central-1.amazonaws.com/eu-central-1_LpNtSxYGJ",
+    "appClientId": "6kl07e1j0djddm6jh8jfopm474",
+    "appClientHasSecret": false,
+    "authFlows": ["ALLOW_USER_SRP_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"],
+    "tokenValidity": {
+      "accessTokenMinutes": 60,
+      "idTokenMinutes": 60,
+      "refreshTokenDays": 30
+    },
+    "mfa": "OPTIONAL_TOTP",
+    "accountRecovery": "EMAIL_ONLY",
+    "signupAttributes": {
+      "required": ["email"],
+      "custom": ["profile_complete"],
+      "optionalStandard": ["given_name", "family_name", "gender", "birthdate"]
+    },
+    "jwtCustomClaims": ["profile_complete"],
+    "hostedUi": null,
+    "identityPoolId": null,
+    "notes": "Native SRP sign-in via aws-amplify. No hosted UI. No Cognito Identity Pool — Aurora/DynamoDB access is Lambda-mediated, so no direct AWS SDK usage from client."
+  },
+
+  "restApi": {
+    "baseUrl": "https://d1q0ybua37gukq.cloudfront.net/v1",
+    "rawApiGatewayUrl": "https://63n0kvbnxe.execute-api.eu-central-1.amazonaws.com/v1",
+    "clientMustUseCloudFront": true,
+    "auth": {
+      "mode": "COGNITO_JWT",
+      "headerName": "Authorization",
+      "tokenPrefix": "Bearer"
+    },
+    "throttling": {
+      "burst": 10,
+      "rateLimitPerSecond": 25
+    },
+    "edgeSecret": {
+      "headerName": "x-knotify-edge-secret",
+      "description": "Injected by CloudFront; validated server-side. Frontend does NOT need to send this — CloudFront adds it."
+    },
+    "routes": {
+      "profile": {
+        "getMe":            { "method": "GET",    "path": "/profile/me" },
+        "updateMe":         { "method": "PATCH",  "path": "/profile/me" },
+        "deleteMe":         { "method": "DELETE", "path": "/profile/me" },
+        "deletionStatus":   { "method": "GET",    "path": "/profile/me/deletion-status", "query": ["executionArn"] },
+        "listProfiles":     { "method": "GET",    "path": "/profiles", "query": ["email", "limit", "offset"] },
+        "getProfileById":   { "method": "GET",    "path": "/profiles/{userId}" }
+      },
+      "match": {
+        "search":           { "method": "POST", "path": "/match/search", "requiresProfileComplete": true },
+        "deck":             { "method": "GET",  "path": "/match/deck",   "requiresProfileComplete": true }
+      },
+      "friends": {
+        "list":             { "method": "GET",    "path": "/friends" },
+        "remove":           { "method": "DELETE", "path": "/friends/{userId}" }
+      },
+      "friendRequests": {
+        "list":             { "method": "GET",    "path": "/friend-requests" },
+        "send":             { "method": "POST",   "path": "/friend-requests" },
+        "accept":           { "method": "POST",   "path": "/friend-requests/{id}/accept" },
+        "decline":          { "method": "POST",   "path": "/friend-requests/{id}/decline" },
+        "cancel":           { "method": "DELETE", "path": "/friend-requests/{id}" }
+      },
+      "blocks": {
+        "list":             { "method": "GET",    "path": "/blocks" },
+        "create":           { "method": "POST",   "path": "/blocks" },
+        "remove":           { "method": "DELETE", "path": "/blocks/{userId}" }
+      },
+      "bookmarks": {
+        "list":             { "method": "GET",    "path": "/bookmarks" },
+        "create":           { "method": "POST",   "path": "/bookmarks" },
+        "remove":           { "method": "DELETE", "path": "/bookmarks/{userId}" }
+      },
+      "pushTokens": {
+        "register":         { "method": "POST", "path": "/push-tokens" }
+      }
+    }
+  },
+
+  "appsync": {
+    "apiId": "soj2c4gjjffa7aw5rcmzjstmgq",
+    "graphqlUrl": "https://26ve3dcqxbh2zgd2hf2ylbn76q.appsync-api.eu-central-1.amazonaws.com/graphql",
+    "realtimeUrl": "wss://26ve3dcqxbh2zgd2hf2ylbn76q.appsync-realtime-api.eu-central-1.amazonaws.com/graphql",
+    "auth": {
+      "primaryMode": "AMAZON_COGNITO_USER_POOLS",
+      "headerName": "Authorization",
+      "tokenPrefix": null,
+      "notes": "AppSync expects the raw JWT in the Authorization header (no 'Bearer ' prefix). Backend publishers use AWS_IAM as a secondary mode — frontend never uses this."
+    },
+    "idleTimeoutMinutes": 10,
+    "operations": {
+      "mutations": [
+        { "name": "createOrGetRoom", "args": ["userId"] },
+        { "name": "sendMessage",     "args": ["roomId", "content"] },
+        { "name": "markAsRead",      "args": ["roomId"] }
+      ],
+      "queries": [
+        { "name": "listMyRooms",         "args": [] },
+        { "name": "messagesByChatRoom",  "args": ["roomId", "limit", "nextToken"] }
+      ],
+      "subscriptions": [
+        { "name": "onMessageInRoom",         "args": ["roomId"] },
+        { "name": "onTypingInRoom",          "args": ["roomId"] },
+        { "name": "onReadReceipt",           "args": ["roomId"] },
+        { "name": "onRoomDeactivated",       "args": [] },
+        { "name": "onRoomReactivated",       "args": [] },
+        { "name": "onNotificationForMe",     "args": [] },
+        { "name": "onFriendRequestUpdated",  "args": [] }
+      ]
+    }
+  },
+
+  "pushNotifications": {
+    "provider": "expo",
+    "registerEndpoint": "/v1/push-tokens",
+    "expoPushApi": "https://exp.host/--/api/v2/push/send",
+    "notes": "Frontend registers device tokens via the REST endpoint. Delivery to Expo is done by backend fan-out Lambdas — frontend does not call Expo directly."
+  },
+
+  "accountDeletion": {
+    "initiateEndpoint": "/v1/profile/me",
+    "initiateMethod": "DELETE",
+    "statusEndpoint": "/v1/profile/me/deletion-status",
+    "statusMethod": "GET",
+    "statusQueryParams": ["executionArn"],
+    "flow": "DELETE returns an executionArn; frontend polls the status endpoint until status is SUCCEEDED | FAILED | TIMED_OUT.",
+    "modes": ["soft_delete_with_grace_period", "purge_immediately"]
+  },
+
+  "media": {
+    "phase12Placeholder": true,
+    "region": "eu-central-1",
+    "uploadEndpoints": {
+      "requestPhotoUpload":            { "method": "POST", "path": "/v1/profile/photos" },
+      "requestVerificationDocUpload":  { "method": "POST", "path": "/v1/profile/verification-docs" }
+    },
+    "preSignedUrl": {
+      "expirySeconds": 300,
+      "maxFileSizeMB": 10
+    },
+    "readPhotoCloudFrontDomain": "<FILL_PHOTO_CLOUDFRONT_DOMAIN>",
+    "signedReadUrlExpirySeconds": 3600,
+    "notes": "Not yet deployed. Backend returns a pre-signed S3 PUT URL; frontend uploads directly to S3, then calls PATCH /v1/profile/me with the returned objectKey."
+  },
+
+  "errorHandling": {
+    "commonStatusCodes": {
+      "401": "Missing or invalid JWT — refresh token or re-authenticate",
+      "403": "Authorized but forbidden. On /match/* this means profile_complete=false. Frontend should route user to onboarding.",
+      "409": "Conflict — e.g., duplicate friend request, already blocked",
+      "429": "Throttled by API Gateway or WAF rate rule",
+      "403_edgeSecret": "If a 403 comes back with a message referring to edge secret, the request bypassed CloudFront. Always call the CloudFront URL, never the raw API Gateway URL."
+    }
+  },
+
+  "environmentDifferences": {
+    "dev": {
+      "cloudfrontDomain": "d1q0ybua37gukq.cloudfront.net",
+      "customDomain": null,
+      "database": "supabase (phase 14 cutover, project ref waulcjgqytiqkwdrkchg). Not reachable from the frontend; all data flows through the REST + AppSync endpoints above.",
+      "integrationTestClient": "exists (clientId 3pirin9ur92g04bjjaogdplnan, ADMIN_USER_PASSWORD_AUTH — NOT for production frontend use)"
+    },
+    "prod": {
+      "cloudfrontDomain": "<FILL_PROD_CUSTOM_DOMAIN e.g. api.knotify.com>",
+      "customDomain": "<FILL_PROD_CUSTOM_DOMAIN>",
+      "database": "aurora (prod.tfvars is pinned use_supabase=false until a dedicated prod-cutover PRD lands)",
+      "integrationTestClient": null
+    }
+  }
+}
