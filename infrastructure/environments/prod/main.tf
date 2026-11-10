@@ -316,10 +316,9 @@ module "db_migrator" {
 }
 
 resource "null_resource" "db_migrator_invoke" {
-  # Gated on the Aurora backend — see dev/main.tf for the full rationale.
-  # Prod pins use_supabase=false so count=1 always; this is a no-op
-  # structural change until the prod-cutover PRD lands.
-  count = var.use_supabase ? 0 : 1
+  # Unconditional — handler is now backend-aware (story 14.13). Prod pins
+  # use_supabase=false so this always takes the Aurora path in production.
+  # See dev/main.tf comment for the full backend-dispatch rationale.
 
   triggers = {
     migrations_hash = sha256(jsonencode([
