@@ -414,34 +414,6 @@ def _write_aurora_refresh_password(
 _alter_aurora_refresh_password = _write_aurora_refresh_password
 
 
-def _ensure_role_exists(
-    conn: psycopg2.extensions.connection,
-    role_name: str,
-    password: str,
-) -> None:
-    """
-    Create *role_name* idempotently with LOGIN + PASSWORD on Supabase.
-
-    On Aurora, roles are created by the yoyo migrations (which run as the
-    Aurora master user and can CREATE ROLE). On Supabase the postgres
-    superuser account also has CREATEROLE, so we create the role here
-    before migrations run. GRANT USAGE on the public schema is also granted
-    so the role can see objects created by migrations.
-
-    Uses IF NOT EXISTS so the call is safe on every invocation (idempotent).
-
-    Args:
-        conn:      Open psycopg2 connection (Supabase superuser).
-        role_name: Name of the role to create (e.g. "app_user").
-        password:  Initial password for the role.
-    """
-    with conn.cursor() as cur:
-        cur.execute(
-            f"CREATE ROLE {role_name} LOGIN PASSWORD %s",
-            (password,),
-        )
-    conn.commit()
-
 
 def _apply_migrations(db_url: str, migrations_path: Path) -> dict:
     """
@@ -518,21 +490,14 @@ def _handler_supabase(sm) -> dict:
     )
 
     try:
-        # 4. Create roles idempotently before migrations run.
-        #    migrations create Aurora-side roles via ALTER ROLE; on Supabase
-        #    those roles may not yet exist and CREATE ROLE is safe to run here.
-        for role_name in ("app_user", "aurora_refresh"):
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT 1 FROM pg_roles WHERE rolname = %s",
-                    (role_name,),
-                )
-                if cur.fetchone() is None:
-                    _ensure_role_exists(conn, role_name, _generate_password())
-
-        # 5. Apply yoyo migrations as the Supabase superuser (DDL + GRANTs
-        #    require the superuser; the same migration SQL is backend-agnostic
-        #    PostgreSQL).
+        # 4. Apply yoyo migrations as the Supabase superuser.
+        #    Migrations are backend-agnostic PostgreSQL and own role creation:
+        #    0007 creates app_user, 0013 creates aurora_refresh. A previous
+        #    revision of this handler pre-created those roles here before
+        #    running migrations, which caused 0007/0013 to fail with
+        #    DuplicateObject on the CREATE ROLE statement. The handler now
+        #    trusts migrations to create the roles, then ALTERs their
+        #    passwords afterwards — same contract as the Aurora path.
         db_url = (
             f"postgresql://{quote(superuser_username, safe='')}:{quote(superuser_password, safe='')}"
             f"@{host}:{port}/{dbname}?sslmode=require"
@@ -542,7 +507,7 @@ def _handler_supabase(sm) -> dict:
         applied_ids = migration_result["applied_ids"]
         pending_count = migration_result["pending_count"]
 
-        # 6. Rotate app_user password
+        # 5. Rotate app_user password
         new_app_password = _generate_password()
         with conn.cursor() as cur:
             cur.execute("ALTER ROLE app_user WITH PASSWORD %s", (new_app_password,))
@@ -551,7 +516,7 @@ def _handler_supabase(sm) -> dict:
             sm, _APP_USER_SECRET_NAME, new_app_password, project_ref
         )
 
-        # 7. Rotate aurora_refresh password
+        # 6. Rotate aurora_refresh password
         aurora_refresh_secret_action: str
         if _AURORA_REFRESH_SECRET_NAME:
             new_refresh_password = _generate_password()
