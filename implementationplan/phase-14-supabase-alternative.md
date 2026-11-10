@@ -1,6 +1,6 @@
 phase: 14
 title: Supabase alternative to Aurora RDS and private VPC (dev cost reduction; prod-capable)
-last_updated: 2026-11-10 (phase 14 OPEN — stories 14.1-14.14 done; probe_phase7 9/9 + probe_phase8 22/22 PASS on Supabase; new story 14.14a added for probe_phase9 Aurora Data API rewrite; migration 0019 unblocks Supabase RLS auto-enable; 14.15 (reverse-direction proof) and 14.14a next)
+last_updated: 2026-11-10 (phase 14 OPEN — stories 14.1-14.15 done; 14.14a PR #187 open for probe_phase9 psycopg2 rewrite; only 14.16 operator runbook + 14.14a merge/run remain)
 
 context_summary: |
   Introduces a single Terraform flag `use_supabase` that toggles the dev environment between
@@ -308,8 +308,22 @@ stories:
   - id: 14.15
     title: Reverse-direction proof — use_supabase=true → false in an ephemeral workspace
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [14.14]
+    notes: |
+      Done 2026-11-10 with a plan-only interpretation (user-approved, cheaper
+      than the PRD's literal full-apply-in-ephemeral-workspace cycle). Ran
+      `terraform plan -var 'use_supabase=false'` against the current
+      Supabase-live dev state and captured: 40 adds (aurora + networking),
+      65 in-place updates (Lambda env vars + iam_roles ARN swaps), 5 destroys
+      (2 supabase secret resources + 3 layer/null_resource replacements).
+      Zero errors. All invariants verified via grep: exactly the 2 Supabase
+      resources destroy, every aurora+networking resource creates, the
+      iam_roles compact() swap works bidirectionally. No ephemeral workspace
+      was created (only `default` exists). Full digest in
+      features/feature-1-terraform-plan-output.md. The "does apply sequence
+      cleanly end-to-end" 5% (race conditions, provider retry loops) is
+      deferred to a real cutover event if Supabase doesn't work out.
     tracking_issue: null
     acceptance_criteria:
       - A throwaway Terraform workspace (e.g. `terraform workspace new feature1-reverse-proof`) is used so the real dev state is not touched

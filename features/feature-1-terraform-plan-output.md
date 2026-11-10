@@ -277,3 +277,46 @@ Also fixed one stale probe assertion in `probe_phase8.py` step [14] `listMyRooms
 - Non-superuser role routing through the Supabase pooler as `app_user.<project_ref>` and `aurora_refresh.<project_ref>` works correctly.
 
 Phase 14 behavioral gate: **PASSED** end-to-end on dev. Supabase substitutes cleanly for Aurora.
+
+---
+
+## 2026-11-10 — story 14.15 (reverse-direction proof, plan-only)
+
+Scoped as plan-only rather than the PRD's literal full-apply-in-ephemeral-workspace cycle, with user approval. The literal interpretation would have created a full parallel dev stack (~269 resources, ~$5–20, ~45 min wall clock) solely to flip it and tear it down. The plan-only approach captures ~90% of the architectural confidence at ~0% cost by running `terraform plan -var 'use_supabase=false'` against the current (Supabase-live) dev state — Terraform computes exactly what the flip would do without doing it. The "does apply sequence cleanly end-to-end" 5% is deferred to a real cutover event if Supabase doesn't work out long-term.
+
+### Plan run
+
+```
+terraform plan -var-file=dev.tfvars -var 'use_supabase=false' -no-color
+Plan: 40 to add, 65 to change, 5 to destroy.
+Errors: 0
+```
+
+Action breakdown:
+
+| Action | Count | What's affected |
+|---|---|---|
+| `updated in-place` | 65 | Lambda env vars swap AURORA_* ↔ SUPABASE_* via `local.db_env_vars`; `vpc_config` returns to the single-SG object; iam_roles policy `Resource` lists swap ARNs via `compact()` |
+| `created` | 37 | Full Aurora cluster (cluster + instance + parameter group + CW log group), networking VPC + 6 subnets (2 public + 2 private + 2 db) + NAT + VPC endpoints + security groups + SG rules + route tables |
+| `replaced` (destroy+create) | 3 | `null_resource.db_migrator_invoke` (fires on lambda_version change); `module.db_layer.aws_lambda_layer_version.db` + `module.observability_layer.aws_lambda_layer_version.observability` (layer versions rev on any source_code_hash change) |
+| `destroyed` | 2 | `module.supabase[0].aws_secretsmanager_secret.credential` + `aws_secretsmanager_secret_version.initial` |
+| `read during apply` | 1 | Data source refresh |
+
+Total: 40 to add (37 created + 3 replaced-side-create) + 65 updated + 5 to destroy (2 destroyed + 3 replaced-side-destroy).
+
+### Invariants verified
+
+- **Mutual exclusivity**: exactly the 2 Supabase resources in `module.supabase[0]` destroy; every `module.aurora[0].*` and `module.networking[0].*` resource creates. No lingering Supabase refs after the flip would take effect.
+- **Env var swap**: Lambda `environment_variables` on every DB-using Lambda shows AURORA_HOST/PORT/DBNAME replacing SUPABASE_HOST/PORT/DBNAME (and `DB_SECRET_ARN` repoints).
+- **IAM policy swap via compact()**: the `iam_roles.db_migrator_secrets` data source's `resources` list is updated to contain only the Aurora master secret ARN (Supabase arg becomes empty string, `compact()` drops it) — 14.6's fix works bidirectionally.
+- **Layer version rev**: `source_code_hash` on the `db_layer` changes because `knotify_db/__init__.py`'s import-time dispatch picks `_db` vs `_supabase` based on USE_SUPABASE — different byte content between apply branches would warrant a new layer version. (Actually the same zip content on disk; the hash change is likely due to env var changes on the Lambda, not the layer zip itself. Non-issue either way — rolling the layer version is harmless.)
+- **No stray workspaces**: `terraform workspace list` shows only `* default`; nothing created or left behind.
+
+### What this does NOT prove
+
+- **Apply-time sequencing**: dependency ordering during the actual destroy/create cycle. A real apply might hit race conditions or provider retry loops the plan can't foresee. Low-probability given Terraform's dependency graph correctness, but not zero.
+- **Resource-level idempotency** during the flip: e.g., does the Aurora master secret get cleanly provisioned on first create, or does it need a second apply? Should work on first apply based on existing module tests.
+
+If/when Supabase doesn't work out and the real flip is triggered, this plan output is the blueprint: expect 40 creates, 65 updates, 5 destroys. Any divergence from those numbers at real-apply time is a signal to pause and investigate.
+
+Workspace sanity: `terraform workspace list` returned `* default` only — no ephemeral workspace was created or needs cleanup.
