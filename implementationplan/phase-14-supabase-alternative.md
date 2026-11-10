@@ -305,6 +305,23 @@ stories:
       - If ANY probe fails: halt the phase here, do not advance to 14.15, surface the failure, and invoke systematic-debugging per the superpowers skill
     notes: probe_phase9.py is the most comprehensive — it exercises Step Functions, multiple Lambdas, Supabase soft-delete + hard-purge paths, DynamoDB membership cleanup, Cognito, and the audit log. Green here is high-confidence Supabase integration.
 
+  - id: 14.14b
+    title: db_migrator skips password rotation on Supabase when the role secret already carries a non-empty password (avoid Supavisor cache-lag auth failures)
+    agent: backenddeveloper
+    done: false
+    depends_on: [14.14]
+    tracking_issue: null
+    acceptance_criteria:
+      - `_handler_supabase` no longer rotates the app_user + aurora_refresh passwords unconditionally. A new helper `_set_once_role_secret_supabase(sm_client, conn, role_name, secret_name, project_ref)` encapsulates the decision: secret absent → generate password + ALTER ROLE + create_secret; secret present with empty password → ALTER ROLE + put_secret_value; secret present with non-empty password → SKIP ALTER ROLE and return "unchanged".
+      - The orphaned Supabase-specific secret-writer helpers (`_write_app_user_secret_supabase`, `_write_aurora_refresh_secret_supabase`) are deleted.
+      - The Aurora path is untouched (`_write_aurora_refresh_secret` and `_alter_role_password` still used by `_handler_aurora`).
+      - Response-shape contract: `app_user_secret_action` + `aurora_refresh_secret_action` can now be `"created"`, `"updated"`, `"unchanged"` (plus `"skipped"` for aurora_refresh when `_AURORA_REFRESH_SECRET_NAME` is empty).
+      - Unit tests updated to simulate the three secret states ("first_time_create", "first_time_empty", "populated") via a per-SecretId mock `side_effect`; new class `TestSetOnceRoleSecretSupabase` covers all three branches and asserts zero ALTER ROLE execution + zero create_secret / put_secret_value calls when state is "populated". 20/20 Supabase tests pass; Aurora 18/18 tests pass (no regression).
+      - Operator-triggered rotation is documented: delete the Secrets Manager secret (CLI, console, or `terraform taint module.supabase[0].aws_secretsmanager_secret.credential`) then re-invoke db_migrator — the "secret absent" branch then fires and a fresh password is generated.
+      - `build/db_migrator.zip` rebuilt with the new handler (local-only; CI rebuilds on merge).
+    notes: |
+      Surfaced during 14.14a's live probe_phase9 run on 2026-11-10. The first probe run failed on PATCH /v1/profile/me → HTTP 404 "not_found"; the Cognito PostConfirmation Lambda's CloudWatch log showed `password authentication failed for user "app_user"` even though the Secrets Manager secret and the Postgres role were mathematically in sync (verified via MCP). Root cause: Supavisor (Supabase's pooler) caches role passwords with a 30-60s propagation lag after ALTER ROLE, so any Lambda that cold-boots during that window sees auth failures. Threat-model trade-off accepted: the 32-char random password never leaves AWS; IAM access to the Secrets Manager secret is tightly scoped; rotation on every CI apply was cargo-cult hygiene adding operational cost without reducing real risk. Deliberate rotation remains available via explicit secret deletion.
+
   - id: 14.15
     title: Reverse-direction proof — use_supabase=true → false in an ephemeral workspace
     agent: backenddeveloper

@@ -243,47 +243,6 @@ def _write_app_user_secret(
         return "updated"
 
 
-def _write_app_user_secret_supabase(
-    sm_client,
-    secret_name: str,
-    password: str,
-    project_ref: str,
-) -> str:
-    """
-    Write the app_user credential to Secrets Manager for the Supabase backend.
-
-    Identical to _write_app_user_secret except the username is pooler-qualified
-    as "app_user.<project_ref>" — required by Supabase Transaction Mode pooler
-    to route the connection to the correct role.
-
-    Args:
-        sm_client:   boto3 SecretsManager client.
-        secret_name: The friendly name for the secret.
-        password:    The new password to store.
-        project_ref: The Supabase project ref extracted from the superuser
-                     username (e.g. "waulcjgqytiqkwdrkchg").
-
-    Returns:
-        "created" or "updated".
-    """
-    secret_value = json.dumps(
-        {"password": password, "username": f"app_user.{project_ref}"}
-    )
-    try:
-        sm_client.create_secret(
-            Name=secret_name,
-            SecretString=secret_value,
-            Description="app_user role credential — rotated on every migrator invocation",
-        )
-        return "created"
-    except sm_client.exceptions.ResourceExistsException:
-        sm_client.put_secret_value(
-            SecretId=secret_name,
-            SecretString=secret_value,
-        )
-        return "updated"
-
-
 def _write_aurora_refresh_secret(
     sm_client,
     secret_name: str,
@@ -322,41 +281,87 @@ def _write_aurora_refresh_secret(
         return "updated"
 
 
-def _write_aurora_refresh_secret_supabase(
+def _set_once_role_secret_supabase(
     sm_client,
+    conn: psycopg2.extensions.connection,
+    role_name: str,
     secret_name: str,
-    password: str,
     project_ref: str,
 ) -> str:
     """
-    Write the aurora_refresh credential to Secrets Manager for the Supabase
-    backend with a pooler-qualified username.
+    Set the role password + Secrets Manager secret ONCE on first run; skip on
+    subsequent runs (story 14.14b).
+
+    Why set-once: Supavisor (Supabase's pooler) caches role passwords with a
+    30-60s propagation lag after ALTER ROLE. Rotating on every db_migrator
+    invocation creates a lag window during which cold-boot Lambdas hit auth
+    failures. See the comment block in _handler_supabase for the full
+    rationale.
+
+    Behavior:
+      - Secret does NOT exist (ResourceNotFoundException on get_secret_value):
+        generate a new random password, ALTER ROLE, create the secret with the
+        pooler-qualified username. Return "created".
+      - Secret exists but its `password` field is empty string or missing:
+        generate a new random password, ALTER ROLE, put_secret_value. Return
+        "updated" (this is the first-time case after `module.supabase`
+        provisioned the empty placeholder version).
+      - Secret exists with a non-empty password: SKIP ALTER ROLE and SKIP
+        put_secret_value. Return "unchanged". The Postgres role already has
+        this password set from the first run, and the Supavisor cache has
+        warmed to it.
+
+    Operator-triggered rotation: delete the Secrets Manager secret
+    (`aws secretsmanager delete-secret --force-delete-without-recovery` or
+    `terraform taint module.supabase[0].aws_secretsmanager_secret.credential`)
+    and re-invoke db_migrator; the "secret does not exist" branch above fires
+    and the role + secret get a fresh password.
 
     Args:
         sm_client:   boto3 SecretsManager client.
-        secret_name: The friendly name for the secret.
-        password:    The new password to store.
-        project_ref: The Supabase project ref.
+        conn:        An open psycopg2 connection (Supabase superuser).
+        role_name:   "app_user" or "aurora_refresh".
+        secret_name: Friendly name of the Secrets Manager secret.
+        project_ref: Supabase project ref for pooler-qualified username.
 
     Returns:
-        "created" or "updated".
+        "created", "updated", or "unchanged".
     """
-    secret_value = json.dumps(
-        {"password": password, "username": f"aurora_refresh.{project_ref}"}
-    )
+    # Probe current secret state.
     try:
+        response = sm_client.get_secret_value(SecretId=secret_name)
+    except sm_client.exceptions.ResourceNotFoundException:
+        # First-time path, secret absent: create role password + create secret.
+        new_password = _generate_password()
+        with conn.cursor() as cur:
+            cur.execute(f"ALTER ROLE {role_name} WITH PASSWORD %s", (new_password,))
+        conn.commit()
         sm_client.create_secret(
             Name=secret_name,
-            SecretString=secret_value,
-            Description="aurora_refresh role credential — rotated on every migrator invocation",
+            SecretString=json.dumps(
+                {"password": new_password, "username": f"{role_name}.{project_ref}"}
+            ),
+            Description=f"{role_name} role credential — Supabase (set-once; rotate via secret delete)",
         )
         return "created"
-    except sm_client.exceptions.ResourceExistsException:
-        sm_client.put_secret_value(
-            SecretId=secret_name,
-            SecretString=secret_value,
-        )
-        return "updated"
+
+    current_payload = json.loads(response["SecretString"])
+    if current_payload.get("password"):
+        # Already populated; skip rotation. Pooler cache is warm to this value.
+        return "unchanged"
+
+    # Secret exists with empty password placeholder — first-time write.
+    new_password = _generate_password()
+    with conn.cursor() as cur:
+        cur.execute(f"ALTER ROLE {role_name} WITH PASSWORD %s", (new_password,))
+    conn.commit()
+    sm_client.put_secret_value(
+        SecretId=secret_name,
+        SecretString=json.dumps(
+            {"password": new_password, "username": f"{role_name}.{project_ref}"}
+        ),
+    )
+    return "updated"
 
 
 def _alter_role_password(conn: psycopg2.extensions.connection, password: str) -> None:
@@ -452,10 +457,13 @@ def _handler_supabase(sm) -> dict:
     """
     DB migrator logic for the Supabase backend.
 
-    Connects as the Supabase postgres superuser, creates the app_user and
-    aurora_refresh roles idempotently, applies yoyo migrations, rotates both
-    role passwords, writes pooler-qualified credentials to Secrets Manager,
-    and returns the same five-key response shape as the Aurora path.
+    Connects as the Supabase postgres superuser, applies yoyo migrations
+    (which own role creation for app_user + aurora_refresh via 0007 and
+    0013), and then sets each role's password + Secrets Manager secret
+    ONCE (set-once-skip-on-rerun, story 14.14b — avoids Supavisor pooler
+    cache-lag auth failures that the earlier per-run rotation caused).
+    Returns the same five-key response shape as the Aurora path; the
+    secret-action values can be "created", "updated", or "unchanged".
 
     Args:
         sm: boto3 SecretsManager client (injected by handler() for testability).
@@ -507,24 +515,36 @@ def _handler_supabase(sm) -> dict:
         applied_ids = migration_result["applied_ids"]
         pending_count = migration_result["pending_count"]
 
-        # 5. Rotate app_user password
-        new_app_password = _generate_password()
-        with conn.cursor() as cur:
-            cur.execute("ALTER ROLE app_user WITH PASSWORD %s", (new_app_password,))
-        conn.commit()
-        app_user_secret_action = _write_app_user_secret_supabase(
-            sm, _APP_USER_SECRET_NAME, new_app_password, project_ref
+        # 5. Set-once password for app_user — SKIP rotation on subsequent runs.
+        #
+        # Why skip on re-runs (story 14.14b): Supavisor (Supabase's pooler)
+        # caches role passwords with a 30-60s propagation lag after
+        # ALTER ROLE. On every db_migrator invocation that rotated,
+        # Lambdas that cold-boot during that window saw auth failures even
+        # though the Secrets Manager secret and the Postgres role were
+        # mathematically in sync. The error "password authentication failed"
+        # was indistinguishable from a real misconfig and caused probe_phase9
+        # to fail on first run (2026-11-10).
+        #
+        # Threat-model trade-off: the password is a 32-char cryptographic
+        # random, never leaves AWS (Secrets Manager -> Lambda env), and the
+        # Lambda role that can read it is tightly IAM-scoped. Frequent
+        # rotation on every CI apply adds operational cost (the cache-lag
+        # outage window) without meaningfully reducing real risk.
+        #
+        # Operator-triggered rotation: delete the Secrets Manager secret
+        # (console, CLI, or `terraform taint`) and re-run db_migrator; the
+        # handler sees no existing secret -> regenerates, writes new, and
+        # the Supavisor cache lag affects only the deliberate rotation.
+        app_user_secret_action = _set_once_role_secret_supabase(
+            sm, conn, "app_user", _APP_USER_SECRET_NAME, project_ref
         )
 
-        # 6. Rotate aurora_refresh password
+        # 6. Set-once password for aurora_refresh — same pattern as app_user.
         aurora_refresh_secret_action: str
         if _AURORA_REFRESH_SECRET_NAME:
-            new_refresh_password = _generate_password()
-            with conn.cursor() as cur:
-                cur.execute("ALTER ROLE aurora_refresh WITH PASSWORD %s", (new_refresh_password,))
-            conn.commit()
-            aurora_refresh_secret_action = _write_aurora_refresh_secret_supabase(
-                sm, _AURORA_REFRESH_SECRET_NAME, new_refresh_password, project_ref
+            aurora_refresh_secret_action = _set_once_role_secret_supabase(
+                sm, conn, "aurora_refresh", _AURORA_REFRESH_SECRET_NAME, project_ref
             )
         else:
             aurora_refresh_secret_action = "skipped"
