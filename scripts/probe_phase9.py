@@ -10,16 +10,39 @@ Phase 9 live probe — closes the three coverage gaps left by probe_phase8.py:
      POST /v1/friend-requests/{id}/decline; verify 200 + declined:true,
      and that the request no longer appears in Kate's inbox.
 
-  3. Aurora row-level state after soft delete: Jack soft-deletes
-     (purge_immediately=false), then Aurora Data API SELECT confirms
-     the §11.1 step-2 redaction landed (deleted_at NOT NULL, sentinels
-     on email/username/first_name/last_name, PII columns NULLed).
+  3. Supabase row-level state after soft delete: Jack soft-deletes
+     (purge_immediately=false), then a psycopg2 SELECT via the Supabase
+     pooler confirms the §11.1 step-2 redaction landed (deleted_at NOT
+     NULL, sentinels on email/username/first_name/last_name, PII columns
+     NULLed).
+
+NOTE (story 14.14a, 2026-11-10): This probe was rewritten from Aurora
+Data API (boto3 RDS-Data service) to psycopg2 + Supabase transaction-mode
+pooler so it runs against the Supabase-backed dev stack provisioned by
+phase 14 (use_supabase=true).  The 13 Data API call sites in the original
+probe_phase9.py have been replaced with direct psycopg2 queries using the
+app_user credential fetched from the knotify-dev-app-user-credential
+Secrets Manager secret.
 
 3 users created via the same flow as probe_phase8.py (sign_up +
 admin_confirm_sign_up + admin_initiate_auth). No admin_create_user.
 
 Run from project root:
     python scripts/probe_phase9.py
+
+Required environment variables:
+    EDGE_SECRET   — fetch via:
+        aws lambda get-function-configuration \\
+            --function-name knotify-profile-dev \\
+            --query 'Environment.Variables.EDGE_SECRET' --output text
+    SUPABASE_HOST    — Supabase transaction-mode pooler host
+    SUPABASE_PORT    — pooler port (default 6543)
+    SUPABASE_DBNAME  — database name (default postgres)
+
+Optional environment variables (defaults match the current dev stack):
+    USER_POOL_ID  — Cognito user pool ID
+    CLIENT_ID     — Cognito app client ID
+    DOMAIN        — CloudFront distribution domain
 """
 from __future__ import annotations
 
@@ -33,26 +56,106 @@ import urllib.parse
 import uuid
 
 import boto3
+import psycopg2
+import psycopg2.extras
 import requests
 import websockets
 
 
+# ---------------------------------------------------------------------------
+# Stack resource IDs — read from env vars; defaults match post-14.14 dev stack
+# (captured from outputs-dev CI workflow run 42846206576 on 2026-11-10).
+# EDGE_SECRET is required at runtime; not provided as a default because it
+# comes from Terraform state and must never be hard-coded.
+# ---------------------------------------------------------------------------
 REGION = "eu-central-1"
-USER_POOL_ID = "eu-central-1_MO0oZRQ1b"
-CLIENT_ID = "353v3brvscce7bnkh7dphsnd4p"  # knotify-dev-integration-test
-DOMAIN = "d3ocejjf37kge5.cloudfront.net"
-EDGE_SECRET = "35hX4kxDlB4vcatyhqtKYapRIs3PeULfCAUmvTg1dHu9MJeS0ThMF5y51m371vXt"
+USER_POOL_ID = os.environ.get("USER_POOL_ID", "eu-central-1_LpNtSxYGJ")
+CLIENT_ID = os.environ.get("CLIENT_ID", "3pirin9ur92g04bjjaogdplnan")  # knotify-dev-integration-test
+DOMAIN = os.environ.get("DOMAIN", "d1q0ybua37gukq.cloudfront.net")
+EDGE_SECRET = os.environ.get("EDGE_SECRET", "")  # MUST be set in env
 REFRESH_LAMBDA = "knotify-refresh-deck-view-dev"
 APPSYNC_API_NAME = "knotify-dev-chat-api"
-AURORA_CLUSTER_ARN = "arn:aws:rds:eu-central-1:776217504626:cluster:knotify-dev-aurora"
-AURORA_SECRET_ARN = (
-    "arn:aws:secretsmanager:eu-central-1:776217504626:"
-    "secret:knotify-dev-app-user-credential-CYdd9g"
-)
-AURORA_DB = "knotify"
 DELETION_POLL_MAX_ATTEMPTS = 30
 DELETION_POLL_SLEEP_SECS = 10
 SUBSCRIPTION_RECEIVE_TIMEOUT = 30  # seconds to wait for the pushed Message
+
+# Supabase pooler connection parameters — read from env vars wired by Terraform
+# via local.db_env_vars when use_supabase=true.
+_SUPABASE_HOST = os.environ.get("SUPABASE_HOST", "")
+_SUPABASE_PORT = int(os.environ.get("SUPABASE_PORT", "6543"))
+_SUPABASE_DBNAME = os.environ.get("SUPABASE_DBNAME", "postgres")
+
+# Secrets Manager name for the app_user credential.  The probe needs to query
+# the users table as app_user (not postgres superuser) so that the RLS GUC
+# SET LOCAL path is exercised exactly as it is in the Lambda runtime.
+_APP_USER_SECRET_NAME = "knotify-dev-app-user-credential"
+
+if not EDGE_SECRET:
+    raise SystemExit(
+        "EDGE_SECRET env var must be set. Fetch via:\n"
+        "  aws lambda get-function-configuration --function-name knotify-profile-dev "
+        "--query 'Environment.Variables.EDGE_SECRET' --output text"
+    )
+
+
+# ---------------------------------------------------------------------------
+# psycopg2 connection helper — single long-lived connection per probe run
+# ---------------------------------------------------------------------------
+
+# Module-level connection singleton — created lazily on first call, reused for
+# all subsequent DB queries.  Avoids opening a new pooler connection per query
+# (the transaction-mode pooler releases the server connection after each
+# transaction, but the client-side psycopg2 object is reused).
+_pg_conn: psycopg2.extensions.connection | None = None
+
+
+def _pg_app_user_connection() -> psycopg2.extensions.connection:
+    """
+    Return a live psycopg2 connection to the Supabase transaction-mode pooler
+    authenticated as app_user.
+
+    Credentials are fetched once from the knotify-dev-app-user-credential
+    Secrets Manager secret (payload shape: {"username": ..., "password": ...}).
+    Connection endpoint (host/port/dbname) comes from SUPABASE_HOST /
+    SUPABASE_PORT / SUPABASE_DBNAME env vars wired by Terraform.
+
+    The connection is module-level (singleton) — all 13 call sites in this
+    probe share the same connection object.  The transaction-mode pooler
+    releases the backend server connection at COMMIT/ROLLBACK, so this is
+    correct: we open one psycopg2 connection per probe run and issue all
+    queries over it.
+
+    sslmode="require" is non-negotiable: Supabase enforces TLS at the
+    transaction-mode pooler — plaintext connections are rejected before
+    the PostgreSQL handshake.
+    """
+    global _pg_conn
+    if _pg_conn is not None and not _pg_conn.closed:
+        return _pg_conn
+
+    if not _SUPABASE_HOST:
+        raise EnvironmentError(
+            "SUPABASE_HOST env var must be set. "
+            "It is wired by Terraform via local.db_env_vars when use_supabase=true."
+        )
+
+    sm = boto3.client("secretsmanager", region_name=REGION)
+    resp = sm.get_secret_value(SecretId=_APP_USER_SECRET_NAME)
+    creds = json.loads(resp["SecretString"])
+    username = creds["username"]
+    password = creds["password"]
+
+    _pg_conn = psycopg2.connect(
+        host=_SUPABASE_HOST,
+        port=_SUPABASE_PORT,
+        dbname=_SUPABASE_DBNAME,
+        user=username,
+        password=password,
+        sslmode="require",
+    )
+    # autocommit=False is the default; each logical query block uses an
+    # explicit BEGIN / COMMIT via context manager or manual call.
+    return _pg_conn
 
 
 # ---------------------------------------------------------------------------
@@ -194,11 +297,14 @@ def _delete_cognito(cognito, identity: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Aurora warm-up — refresh_deck_view; retry through Serverless v2 cold-start
+# Warm-up — invoke refresh_deck_view Lambda to warm Lambda cold-start
+# (previously named _warm_aurora; on the Supabase-backed stack this also
+# verifies the refresh_deck_view Lambda can connect to Supabase and refresh
+# the deck_view materialized view without error)
 # ---------------------------------------------------------------------------
 
-def _warm_aurora(lam) -> None:
-    print("[0] warm Aurora via refresh_deck_view invoke (sync)")
+def _warm_db(lam) -> None:
+    print("[0] warm DB / Lambda cold-start via refresh_deck_view invoke (sync)")
     for i in range(1, 6):
         t0 = time.time()
         resp = lam.invoke(FunctionName=REFRESH_LAMBDA, InvocationType="RequestResponse")
@@ -209,7 +315,7 @@ def _warm_aurora(lam) -> None:
             return
         print(f"    payload: {resp['Payload'].read().decode()[:300]}")
         if i == 5:
-            raise RuntimeError("Aurora warm-up exhausted retries")
+            raise RuntimeError("DB / Lambda warm-up exhausted retries")
         time.sleep(15)
 
 
@@ -366,70 +472,64 @@ def _poll_deletion_status(token: str, execution_arn: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Aurora Data API
+# Supabase row inspection via psycopg2
 # ---------------------------------------------------------------------------
 
-def _select_user_row(rds_data, user_id: str) -> dict | None:
+def _select_user_row(user_id: str) -> dict | None:
     """Return the `users` row for user_id formatted as {col: value} (or None).
 
-    Note: the `users` table has FORCE ROW LEVEL SECURITY. The SELECT policy
-    (`users_opposite_sex_only`) requires GUC `app.requesting_user_id` to match.
-    We wrap the SELECT in a transaction with SET LOCAL so the GUC is in scope.
+    Uses psycopg2 + the Supabase transaction-mode pooler via the app_user
+    credential fetched from knotify-dev-app-user-credential.
+
+    RLS note: the `users` table has FORCE ROW LEVEL SECURITY.  The SELECT
+    policy (`users_opposite_sex_only`) requires either:
+      - app.requesting_user_id == the row's user_id  (user-id-match branch), OR
+      - the querying user's sex != the row's sex      (opposite-sex branch).
+
+    For row inspection (we need to read Jack's own row to verify the soft-delete
+    sentinels), we use the user-id-match branch: SET LOCAL
+    app.requesting_user_id = jack_sub so the policy's
+    `user_id = current_setting(..., true)::uuid` branch evaluates true.  This
+    is equivalent to the _rls.set_rls_context pattern used in every Lambda
+    handler — the same GUC name `app.requesting_user_id` defined in migration
+    0007 is the authority.
+
+    The connection is reused across calls (see _pg_app_user_connection); each
+    SELECT is wrapped in its own transaction (BEGIN / COMMIT) so SET LOCAL
+    scoping is correct — the GUC value is discarded at COMMIT and does not
+    leak to subsequent queries issued on the same psycopg2 connection.
     """
-    txn = rds_data.begin_transaction(
-        resourceArn=AURORA_CLUSTER_ARN,
-        secretArn=AURORA_SECRET_ARN,
-        database=AURORA_DB,
-    )
-    txn_id = txn["transactionId"]
-    try:
-        rds_data.execute_statement(
-            resourceArn=AURORA_CLUSTER_ARN,
-            secretArn=AURORA_SECRET_ARN,
-            database=AURORA_DB,
-            transactionId=txn_id,
-            sql=f"SET LOCAL app.requesting_user_id = '{user_id}'",
+    conn = _pg_app_user_connection()
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("BEGIN")
+        cur.execute(
+            "SET LOCAL app.requesting_user_id = %s",
+            (user_id,),
         )
-        resp = rds_data.execute_statement(
-            resourceArn=AURORA_CLUSTER_ARN,
-            secretArn=AURORA_SECRET_ARN,
-            database=AURORA_DB,
-            transactionId=txn_id,
-            sql=(
-                "SELECT user_id::text AS user_id, "
-                "deleted_at::text AS deleted_at, email, username, "
-                "first_name, last_name, phone_number, photo_url, "
-                "chosen_profile_avatar, preferences::text AS preferences, "
-                "preference_vector IS NULL AS preference_vector_is_null "
-                "FROM users WHERE user_id = CAST(:uid AS uuid)"
-            ),
-            parameters=[{"name": "uid", "value": {"stringValue": user_id}}],
-            includeResultMetadata=True,
+        cur.execute(
+            """
+            SELECT
+                user_id::text          AS user_id,
+                deleted_at::text       AS deleted_at,
+                email,
+                username,
+                first_name,
+                last_name,
+                phone_number,
+                photo_url,
+                chosen_profile_avatar,
+                preferences::text      AS preferences,
+                (preference_vector IS NULL) AS preference_vector_is_null
+            FROM users
+            WHERE user_id = %s::uuid
+            """,
+            (user_id,),
         )
-    finally:
-        rds_data.commit_transaction(
-            resourceArn=AURORA_CLUSTER_ARN,
-            secretArn=AURORA_SECRET_ARN,
-            transactionId=txn_id,
-        )
-    records = resp.get("records") or []
-    if not records:
+        row = cur.fetchone()
+        cur.execute("COMMIT")
+    if row is None:
         return None
-    cols = [c["name"] for c in resp.get("columnMetadata", [])]
-    row = records[0]
-    out: dict = {}
-    for col, cell in zip(cols, row):
-        if "isNull" in cell and cell["isNull"]:
-            out[col] = None
-        elif "stringValue" in cell:
-            out[col] = cell["stringValue"]
-        elif "booleanValue" in cell:
-            out[col] = cell["booleanValue"]
-        elif "longValue" in cell:
-            out[col] = cell["longValue"]
-        else:
-            out[col] = cell
-    return out
+    return dict(row)
 
 
 # ---------------------------------------------------------------------------
@@ -567,7 +667,6 @@ def main() -> int:
     cognito = boto3.client("cognito-idp", region_name=REGION)
     lam = boto3.client("lambda", region_name=REGION)
     appsync = boto3.client("appsync", region_name=REGION)
-    rds_data = boto3.client("rds-data", region_name=REGION)
 
     run_id = uuid.uuid4().hex[:8]
     kate_email = f"knotify-p9+kate{run_id}@example.com"
@@ -585,7 +684,7 @@ def main() -> int:
     failures: list[str] = []
 
     try:
-        _warm_aurora(lam)
+        _warm_db(lam)
 
         print("\n[1] Discover AppSync URIs (GraphQL + realtime)")
         graphql_url, realtime_uri, appsync_host = _discover_appsync_uris(appsync)
@@ -697,16 +796,16 @@ def main() -> int:
             print("    OK — Kate received John's message in real time over wss")
 
         # -------------------------------------------------------------
-        # Aurora soft-delete row inspection
+        # Supabase soft-delete row inspection
         # -------------------------------------------------------------
         print("\n[6] Jack soft-deletes (purge_immediately=false)")
-        pre = _select_user_row(rds_data, jack_sub)
-        print(f"    Aurora users row BEFORE: email={pre and pre.get('email')!r} "
+        pre = _select_user_row(jack_sub)
+        print(f"    Supabase users row BEFORE: email={pre and pre.get('email')!r} "
               f"username={pre and pre.get('username')!r} "
               f"first_name={pre and pre.get('first_name')!r} "
               f"deleted_at={pre and pre.get('deleted_at')!r}")
         if not pre:
-            failures.append("aurora pre-check: Jack's users row missing before soft-delete")
+            failures.append("supabase pre-check: Jack's users row missing before soft-delete")
 
         arn = _initiate_deletion(jack_tok, purge_immediately=False)
         print(f"    executionArn={arn}")
@@ -715,40 +814,40 @@ def main() -> int:
         if status != "SUCCEEDED":
             failures.append(f"jack deletion not SUCCEEDED: {status}")
 
-        # Aurora updates are synchronous within the SFN task, but we give a
-        # brief moment for Data API connection pool warming.
+        # Supabase updates are synchronous within the SFN task, but we give a
+        # brief moment for the pooler to settle.
         time.sleep(2)
 
-        post = _select_user_row(rds_data, jack_sub)
-        print(f"    Aurora users row AFTER:  {json.dumps(post)[:400] if post else post!r}")
+        post = _select_user_row(jack_sub)
+        print(f"    Supabase users row AFTER:  {json.dumps(post)[:400] if post else post!r}")
         if not post:
-            failures.append("aurora post-check: Jack's users row vanished — soft delete should keep the row")
+            failures.append("supabase post-check: Jack's users row vanished — soft delete should keep the row")
         else:
             if not post.get("deleted_at"):
-                failures.append(f"aurora post-check: deleted_at is NULL — got {post.get('deleted_at')!r}")
+                failures.append(f"supabase post-check: deleted_at is NULL — got {post.get('deleted_at')!r}")
             expected_email = f"deleted-{jack_sub}@deleted.knotify.local"
             if post.get("email") != expected_email:
                 failures.append(
-                    f"aurora post-check: email sentinel mismatch — got {post.get('email')!r}, expected {expected_email!r}"
+                    f"supabase post-check: email sentinel mismatch — got {post.get('email')!r}, expected {expected_email!r}"
                 )
             expected_username = f"[deleted-{jack_sub}]"
             if post.get("username") != expected_username:
                 failures.append(
-                    f"aurora post-check: username sentinel mismatch — got {post.get('username')!r}, expected {expected_username!r}"
+                    f"supabase post-check: username sentinel mismatch — got {post.get('username')!r}, expected {expected_username!r}"
                 )
             if post.get("first_name") != "Deleted":
-                failures.append(f"aurora post-check: first_name={post.get('first_name')!r}, expected 'Deleted'")
+                failures.append(f"supabase post-check: first_name={post.get('first_name')!r}, expected 'Deleted'")
             if post.get("last_name") != "User":
-                failures.append(f"aurora post-check: last_name={post.get('last_name')!r}, expected 'User'")
+                failures.append(f"supabase post-check: last_name={post.get('last_name')!r}, expected 'User'")
             for nullable_col in ("phone_number", "photo_url", "chosen_profile_avatar"):
                 if post.get(nullable_col) is not None:
                     failures.append(
-                        f"aurora post-check: {nullable_col}={post.get(nullable_col)!r}, expected NULL"
+                        f"supabase post-check: {nullable_col}={post.get(nullable_col)!r}, expected NULL"
                     )
             if post.get("preferences") not in ("{}", None):
-                failures.append(f"aurora post-check: preferences={post.get('preferences')!r}, expected '{{}}'")
+                failures.append(f"supabase post-check: preferences={post.get('preferences')!r}, expected '{{}}'")
             if not post.get("preference_vector_is_null"):
-                failures.append("aurora post-check: preference_vector should be NULL after soft-delete")
+                failures.append("supabase post-check: preference_vector should be NULL after soft-delete")
 
         # ----------------------------------------------------------
         print("\n== summary ==")
@@ -761,6 +860,14 @@ def main() -> int:
         return 0
 
     finally:
+        # Close the psycopg2 connection cleanly
+        global _pg_conn
+        if _pg_conn is not None and not _pg_conn.closed:
+            try:
+                _pg_conn.close()
+            except Exception:
+                pass
+
         print("\n[teardown] sweep Cognito for any survivors (no-op if Jack's SFN deletion succeeded)")
         for ident in (kate_email, kate_sub, john_email, john_sub, jack_email, jack_sub):
             if ident:
