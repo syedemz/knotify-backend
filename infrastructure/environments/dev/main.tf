@@ -340,6 +340,15 @@ module "db_migrator" {
 # ---------------------------------------------------------------------------
 
 resource "null_resource" "db_migrator_invoke" {
+  # Gated on the Aurora backend: the db_migrator handler reads
+  # AURORA_MASTER_SECRET_ARN at init time to connect as the Aurora master
+  # user. When use_supabase=true, module.aurora has count=0 so that env var
+  # is the empty string and the handler fails boto3 parameter validation
+  # (SecretId must have min length 1). The Supabase-path migration is
+  # handled separately by story 14.13, which modifies the handler to be
+  # backend-aware and invokes the Lambda out of band of terraform apply.
+  count = var.use_supabase ? 0 : 1
+
   triggers = {
     migrations_hash = sha256(jsonencode([
       for f in sort(fileset("${path.module}/../../../infrastructure/db/migrations", "*.sql")) :
