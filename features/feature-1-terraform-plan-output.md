@@ -207,3 +207,33 @@ prod: terraform validate    → Success! (same 2 pre-existing warnings)
 ### Scope boundary
 
 The ACTUAL verification of migration application (CloudWatch log inspection, read-only SQL query against Supabase confirming table set, pgvector column presence, RLS policy smoke test) is OUT of this subagent's scope. Those checks constitute the story 14.13 acceptance criteria and are executed post-merge by the main agent via the Supabase MCP `execute_sql` tool. This digest records the pre-merge local verification only.
+
+---
+
+## 2026-11-10 — post-merge verification (story 14.13 AC)
+
+Executed by the main agent via Supabase MCP after PR #184 (14.13 code) and PR #185 (hotfix removing the pre-migration role-creation loop that collided with migration 0007/0013 `CREATE ROLE`) both merged into `development`. Final `apply-dev` run **42839298117 PASSED**.
+
+### Story 14.13 AC — checklist
+
+| AC item | Result |
+|---|---|
+| `aws lambda invoke --function-name knotify-dev-db-migrator` returns statusCode 200 | ✅ apply exit 0 implies FunctionError absent |
+| Each migration 0000–0018 applied in order with no error lines | ✅ `_yoyo_migration` lists all 19 ids; `applied_at_utc` monotone (0000–0006 at 14:41; 0007–0018 at 15:11 after hotfix) |
+| Canonical table set present | ✅ `users`, `siblings`, `friendships`, `friend_requests`, `bookmarks`, `blocks`, `deck_view` MV, `refresh_log`, plus yoyo metadata |
+| pgvector enabled + vector columns on users | ✅ `pg_extension.vector` installed; `users.preference_vector` column present |
+| Migration 0007 RLS policy in place | ✅ 4 policies on `users` (`users_insert_own_row`, `users_opposite_sex_only`, `users_update_own_row`, `users_delete_own_row`) all reference `app.requesting_user_id` + `app.requesting_user_sex`; `relrowsecurity = true` + `relforcerowsecurity = true` |
+
+### What MCP verification could NOT cover
+
+The behavioral RLS smoke (`non-privileged role with GUC set returns only matching rows`) requires connecting through the pooler as a non-superuser. Supabase MCP connects as `postgres` (superuser), which always bypasses RLS even with `FORCE ROW LEVEL SECURITY`. That check falls out of story 14.14 when probe_phase6/7/8/9 Lambdas authenticate as `app_user.waulcjgqytiqkwdrkchg` through the pooler and run real queries.
+
+### What's live on Supabase project `waulcjgqytiqkwdrkchg`
+
+- Schema fully migrated to parity with Aurora (migrations 0000–0018).
+- Roles: `app_user` (login, non-super, non-bypassrls) + `aurora_refresh` (same). Created by migrations, password-rotated by the handler, pooler-qualified usernames written to Secrets Manager.
+- Secrets: `knotify-dev-app-user-credential` + `knotify-dev-aurora-refresh-credential` populated with `{"username": "app_user.waulcjgqytiqkwdrkchg", "password": "<redacted>"}` shape.
+
+### Hotfix PR #185 — one-sentence summary
+
+The 14.13 `_handler_supabase` pre-created `app_user` + `aurora_refresh` via CREATE ROLE before calling `_apply_migrations`; migrations 0007/0013 then collided with the existing roles on `DuplicateObject`; hotfix removed the pre-migration loop so migrations own role creation (same as Aurora) and the handler only ALTERs passwords afterwards. Stray roles dropped from Supabase via MCP before the merge so migrations could CREATE them fresh on the re-apply.

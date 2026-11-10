@@ -1,6 +1,6 @@
 phase: 14
 title: Supabase alternative to Aurora RDS and private VPC (dev cost reduction; prod-capable)
-last_updated: 2026-11-10 (phase 14 OPEN — stories 14.1-14.13 done; db_migrator handler is now Supabase-aware; null_resource.db_migrator_invoke un-gated; PR #184 open; post-merge SQL verification by main agent via Supabase MCP is the final acceptance gate for 14.13; 14.14 (phase 6-9 smoke tests against Supabase-backed stack) is next)
+last_updated: 2026-11-10 (phase 14 OPEN — stories 14.1-14.13 done; PR #184 + hotfix PR #185 merged; 19 migrations applied against Supabase and RLS policy verified via MCP; 14.14 (phase 6-9 smoke tests against Supabase-backed stack) is next)
 
 context_summary: |
   Introduces a single Terraform flag `use_supabase` that toggles the dev environment between
