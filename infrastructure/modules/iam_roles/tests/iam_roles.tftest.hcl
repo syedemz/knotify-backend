@@ -122,7 +122,7 @@ run "db_migrator_master_secret_inline_policy_exists" {
 #         and is correctly wired to the role
 #
 # Satisfies AC bullet 2: "allows secretsmanager:CreateSecret + PutSecretValue
-# + DescribeSecret scoped to knotify-${env}-app-user-credential-*"
+# + DescribeSecret + GetSecretValue scoped to knotify-${env}-app-user-credential-*"
 # ---------------------------------------------------------------------------
 run "db_migrator_app_user_credential_inline_policy_exists" {
   command = plan
