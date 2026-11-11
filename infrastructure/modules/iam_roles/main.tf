@@ -114,7 +114,8 @@ resource "aws_iam_role_policy" "db_migrator_secrets" {
 
 # Allow creating and updating the app_user credential post-migration.
 # CreateSecret on first run; PutSecretValue + DescribeSecret on subsequent
-# runs (brainstorm B2 — split 0007 fix).
+# runs (brainstorm B2 — split 0007 fix). GetSecretValue added by story 14.14b:
+# _set_once_role_secret_supabase() probes the secret before rotating.
 data "aws_iam_policy_document" "db_migrator_app_user_credential" {
   statement {
     sid    = "ManageAppUserCredential"
@@ -123,6 +124,7 @@ data "aws_iam_policy_document" "db_migrator_app_user_credential" {
       "secretsmanager:CreateSecret",
       "secretsmanager:PutSecretValue",
       "secretsmanager:DescribeSecret",
+      "secretsmanager:GetSecretValue",
     ]
     resources = [
       "${local.sm_arn_prefix}:secret:knotify-${var.environment}-app-user-credential-*",
@@ -555,7 +557,8 @@ resource "aws_iam_role_policy" "aurora_refresh_lambda_credential" {
 
 # Also allow the db_migrator to write (create/update) the aurora-refresh
 # credential secret. The db_migrator IAM role is extended in the same module
-# rather than opening a separate policy attachment.
+# rather than opening a separate policy attachment. GetSecretValue added by
+# story 14.14b: _set_once_role_secret_supabase() probes the secret before rotating.
 data "aws_iam_policy_document" "db_migrator_aurora_refresh_credential" {
   statement {
     sid    = "ManageAuroraRefreshCredential"
@@ -564,6 +567,7 @@ data "aws_iam_policy_document" "db_migrator_aurora_refresh_credential" {
       "secretsmanager:CreateSecret",
       "secretsmanager:PutSecretValue",
       "secretsmanager:DescribeSecret",
+      "secretsmanager:GetSecretValue",
     ]
     resources = [
       "${local.sm_arn_prefix}:secret:knotify-${var.environment}-aurora-refresh-credential-*",
