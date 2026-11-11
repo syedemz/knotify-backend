@@ -1,6 +1,6 @@
 phase: 14
 title: Supabase alternative to Aurora RDS and private VPC (dev cost reduction; prod-capable)
-last_updated: 2026-11-11 (phase 14 OPEN — stories 14.1-14.16 done; 14.14a PR #187 open for probe_phase9 psycopg2 rewrite; 14.16 operator runbook committed)
+last_updated: 2026-11-11 (phase 14 COMPLETE — all 18 stories (14.1-14.16 including 14.5a, 14.14a, 14.14b) done; all merge PRs landed; stale flags cleaned up in PR #193)
 
 context_summary: |
   Introduces a single Terraform flag `use_supabase` that toggles the dev environment between
@@ -288,7 +288,7 @@ stories:
   - id: 14.14a
     title: Rewrite probe_phase9's Aurora Data API call sites to psycopg2 + Supabase pooler
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [14.14]
     tracking_issue: null
     acceptance_criteria:
@@ -308,7 +308,7 @@ stories:
   - id: 14.14b
     title: db_migrator skips password rotation on Supabase when the role secret already carries a non-empty password (avoid Supavisor cache-lag auth failures)
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: [14.14]
     tracking_issue: null
     acceptance_criteria:
