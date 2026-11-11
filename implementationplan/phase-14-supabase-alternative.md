@@ -1,6 +1,6 @@
 phase: 14
 title: Supabase alternative to Aurora RDS and private VPC (dev cost reduction; prod-capable)
-last_updated: 2026-11-10 (phase 14 OPEN — stories 14.1-14.15 done; 14.14a PR #187 open for probe_phase9 psycopg2 rewrite; only 14.16 operator runbook + 14.14a merge/run remain)
+last_updated: 2026-11-11 (phase 14 OPEN — stories 14.1-14.16 done; 14.14a PR #187 open for probe_phase9 psycopg2 rewrite; 14.16 operator runbook committed)
 
 context_summary: |
   Introduces a single Terraform flag `use_supabase` that toggles the dev environment between
@@ -353,7 +353,7 @@ stories:
   - id: 14.16
     title: Operator runbook
     agent: backenddeveloper
-    done: false
+    done: true
     depends_on: []
     tracking_issue: null
     acceptance_criteria:
