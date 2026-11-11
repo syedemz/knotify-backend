@@ -27,57 +27,74 @@
 -- Verified 2026-11-10 via a live anon-key probe that read a sentinel row
 -- inserted into `siblings`. The leak is real.
 --
--- Aurora never had this surface because Aurora does not expose PostgREST.
+-- Aurora never had this attack surface because Aurora does not expose
+-- PostgREST, and the `anon`, `authenticated`, `service_role` roles do not
+-- exist there.
 --
--- Fix
--- ---
--- 1. REVOKE every default grant on every knotify table from anon,
---    authenticated, and service_role. Our app Lambdas connect as `app_user`
---    (or `aurora_refresh`) via the Supavisor pooler — those roles are
---    unaffected. Our db_migrator connects as `postgres` — also unaffected.
+-- Backend-agnostic design (phase 14 symmetry requirement)
+-- -------------------------------------------------------
+-- This migration must apply cleanly on both Supabase AND Aurora so the
+-- `use_supabase=true -> false` toggle proven in story 14.15 remains valid.
+-- On Aurora the three Supabase roles do not exist, and a bare
+-- `REVOKE ... FROM anon` would raise `ERROR: role "anon" does not exist`
+-- (SQLSTATE 42704) and halt the migration.
 --
--- 2. ALTER DEFAULT PRIVILEGES in the public schema so any future migrations
---    that CREATE TABLE as the postgres role do NOT re-introduce the hole.
---    (This covers the grants made by the OWNER role; Supabase's bootstrap
---    event trigger may or may not re-grant on CREATE TABLE — defensive
---    posture: if a future migration creates a public-schema table and the
---    probe-scripts fail with a permission_denied-style regression, add an
---    explicit REVOKE in that migration.)
---
--- 3. Leave the Aurora path unaffected. On Aurora there is no anon /
---    authenticated / service_role; the REVOKEs are no-ops there.
---
--- Operator-triggered re-grant (if someone EVER needs PostgREST on a specific
--- table in future): run `GRANT ... TO anon, authenticated` manually and
--- consciously. Do not re-enable globally.
+-- Fix: wrap every REVOKE and ALTER DEFAULT PRIVILEGES in a `DO $$ ... $$`
+-- block that first checks pg_roles for each role's existence. On Supabase
+-- the role exists -> the statement executes -> the PostgREST exposure is
+-- closed. On Aurora the role does not exist -> the block is a no-op.
+-- Clarifies the intent: this is a Supabase-specific hardening migration
+-- that happens to be invariant-preserving on every other PostgreSQL.
 
-REVOKE ALL PRIVILEGES ON TABLE
-    users,
-    siblings,
-    friendships,
-    friend_requests,
-    bookmarks,
-    blocks,
-    refresh_log
-  FROM anon, authenticated, service_role;
-
--- deck_view is a materialized view; same treatment.
-REVOKE ALL PRIVILEGES ON TABLE deck_view FROM anon, authenticated, service_role;
-
--- yoyo bookkeeping — not application data but defense in depth.
-REVOKE ALL PRIVILEGES ON TABLE
-    _yoyo_migration,
-    _yoyo_log,
-    _yoyo_version,
-    yoyo_lock,
-    _schema_init
-  FROM anon, authenticated, service_role;
-
--- Prevent future CREATE TABLE (as the postgres role) from re-introducing
--- the auto-grant. Covers tables + sequences + functions.
-ALTER DEFAULT PRIVILEGES IN SCHEMA public
-  REVOKE ALL ON TABLES FROM anon, authenticated, service_role;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public
-  REVOKE ALL ON SEQUENCES FROM anon, authenticated, service_role;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public
-  REVOKE ALL ON FUNCTIONS FROM anon, authenticated, service_role;
+DO $$
+DECLARE
+  r TEXT;
+  role_list TEXT[] := ARRAY['anon', 'authenticated', 'service_role'];
+BEGIN
+  FOREACH r IN ARRAY role_list LOOP
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
+      -- Application tables
+      EXECUTE format(
+        'REVOKE ALL PRIVILEGES ON TABLE
+            users,
+            siblings,
+            friendships,
+            friend_requests,
+            bookmarks,
+            blocks,
+            refresh_log,
+            deck_view
+         FROM %I',
+        r
+      );
+      -- yoyo bookkeeping (defense in depth)
+      EXECUTE format(
+        'REVOKE ALL PRIVILEGES ON TABLE
+            _yoyo_migration,
+            _yoyo_log,
+            _yoyo_version,
+            yoyo_lock,
+            _schema_init
+         FROM %I',
+        r
+      );
+      -- Future-proofing: stop any CREATE TABLE/SEQUENCE/FUNCTION
+      -- performed as the postgres owner from auto-re-granting to this role.
+      EXECUTE format(
+        'ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON TABLES FROM %I',
+        r
+      );
+      EXECUTE format(
+        'ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON SEQUENCES FROM %I',
+        r
+      );
+      EXECUTE format(
+        'ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON FUNCTIONS FROM %I',
+        r
+      );
+      RAISE NOTICE 'migration 0020: revoked grants from role %', r;
+    ELSE
+      RAISE NOTICE 'migration 0020: role % does not exist on this backend, skipping', r;
+    END IF;
+  END LOOP;
+END $$;
