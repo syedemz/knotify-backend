@@ -86,15 +86,26 @@ _SEARCH_RESULT_COLS = (
     "u.created_at"
 )
 
-# Result columns for GET /v1/match/deck — mirrors search shape, but sourced
-# from deck_view (alias dv). sex is included so the handler can log/assert;
-# created_at is not in deck_view (not needed; deck orders by user_id).
+# Result columns for GET /v1/match/deck — sourced from deck_view (alias dv).
+# sex is included so the handler can log/assert; created_at is not in
+# deck_view (not needed; deck orders by user_id).
+#
+# first_name / last_name / profile_complete_verified are columns the
+# deck_view has carried since migration 0009; they were simply missing from
+# the SELECT list until this change, which caused names and the verified
+# badge to render blank on the swipe card.
+#
+# marital_status / marriage_time were added to deck_view in migration 0020
+# and are shipped to the UI so each card can show marital status + the
+# user's marriage timeline chip.
 _DECK_RESULT_COLS = (
     "dv.user_id, dv.username, dv.age, dv.religion, "
     "dv.current_residence_country, dv.resident_country_code, "
     "dv.current_residence_city, dv.job_title, "
     "dv.photo_url, dv.chosen_profile_avatar, "
-    "dv.sex"
+    "dv.sex, "
+    "dv.first_name, dv.last_name, dv.profile_complete_verified, "
+    "dv.marital_status, dv.marriage_time"
 )
 
 # Number of candidates per deck page.
