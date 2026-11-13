@@ -224,12 +224,15 @@ def test_given_no_cursor_no_filters_when_build_deck_sql_then_profile_complete_no
     """
     given no cursor and no filters,
     when _build_deck_sql,
-    then SQL does NOT contain a profile_complete_verified predicate
-    (deck_view's defining query already filters on it — no double-filter needed).
+    then the WHERE clause does NOT contain a profile_complete_verified
+    predicate (deck_view's defining query already filters on it — no
+    double-filter needed). The column IS allowed to appear in the SELECT
+    list — it is shipped to the UI as a "verified" badge.
     """
     mod = _import_handler()
     sql, _ = mod._build_deck_sql(user_id=_UUID_1, user_sex="Male")
-    assert "profile_complete_verified" not in sql
+    where_clause = sql.split("WHERE", 1)[1] if "WHERE" in sql else ""
+    assert "profile_complete_verified" not in where_clause
 
 
 # ---------------------------------------------------------------------------
@@ -422,6 +425,8 @@ def _make_mock_conn_for_deck(rows: list[tuple]) -> MagicMock:
         ("current_residence_city",), ("job_title",),
         ("photo_url",), ("chosen_profile_avatar",),
         ("sex",),
+        ("first_name",), ("last_name",), ("profile_complete_verified",),
+        ("marital_status",), ("marriage_time",),
     ]
     mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cur)
     mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
@@ -449,7 +454,8 @@ def test_given_full_batch_when_get_match_deck_then_next_cursor_is_last_user_id()
     last_uuid = f"aaaaaaaa-0000-0000-0000-{20:012d}"
     rows = [
         (f"aaaaaaaa-0000-0000-0000-{i:012d}", f"user{i}", 25, "Islam",
-         "UK", "GB", "London", "Engineer", None, None, "Female")
+         "UK", "GB", "London", "Engineer", None, None, "Female",
+         f"First{i}", f"Last{i}", True, "Never Married", "4-12 months")
         for i in range(1, 21)
     ]
     mock_conn = _make_mock_conn_for_deck(rows)
@@ -472,7 +478,8 @@ def test_given_partial_batch_when_get_match_deck_then_next_cursor_is_null() -> N
     mod = _import_handler()
     rows = [
         (f"aaaaaaaa-0000-0000-0000-{i:012d}", f"user{i}", 25, "Islam",
-         "UK", "GB", "London", "Engineer", None, None, "Female")
+         "UK", "GB", "London", "Engineer", None, None, "Female",
+         f"First{i}", f"Last{i}", True, "Never Married", "4-12 months")
         for i in range(1, 6)
     ]
     mock_conn = _make_mock_conn_for_deck(rows)
