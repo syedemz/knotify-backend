@@ -899,6 +899,132 @@ class TestAcceptFriendRequest:
         # Missing id param → 400 or 404 (dispatcher won't match the route)
         assert response["statusCode"] in (400, 404)
 
+    def test_given_valid_accept_then_reverse_pending_request_is_cancelled(self):
+        """
+        When the acceptor has their own outgoing pending request to the original
+        sender (bidirectional pending — both users sent each other requests),
+        accepting one must cancel the reverse row in the same transaction so
+        the acceptor does not see a ghost pending request after the pair
+        becomes friends.
+
+        Expected SQL: UPDATE friend_requests SET status='cancelled' ...
+        WHERE from_user_id = <acceptor> AND to_user_id = <original sender>
+        AND status = 'pending'.
+        """
+        mod = _import_handler()
+        conn, cur = _make_conn()
+
+        req_id = str(uuid.uuid4())
+        # The incoming request being accepted: from USER_A → to USER_B.
+        # The acceptor (JWT caller) is USER_B.
+        cur.fetchone.return_value = (req_id, _USER_A, _USER_B, "pending", "2026-01-01")
+        cur.description = [
+            ("request_id",), ("from_user_id",), ("to_user_id",), ("status",), ("created_at",),
+        ]
+
+        event = _make_event(
+            "POST",
+            f"/v1/friend-requests/{req_id}/accept",
+            path_params={"id": req_id},
+            user_sub=_USER_B,
+        )
+
+        with (
+            patch.object(mod, "_get_conn", return_value=conn),
+            patch.object(mod, "is_blocked", return_value=False),
+            patch.dict(os.environ, _ENV_DEFAULTS),
+        ):
+            response = mod.handler(event, None)
+
+        assert response["statusCode"] == 200
+
+        # Find the reverse-cancel UPDATE among all execute calls. It must set
+        # status='cancelled' on the reverse direction (acceptor → sender) and
+        # scope the WHERE clause to status='pending' so it is a no-op when
+        # no reverse row exists.
+        cancel_calls = [
+            c for c in cur.execute.call_args_list
+            if (
+                "UPDATE friend_requests" in str(c.args[0] if c.args else "")
+                and "cancelled" in str(c.args[0] if c.args else "")
+            )
+        ]
+        assert len(cancel_calls) == 1, (
+            f"accept must issue exactly one reverse-cancel UPDATE; got {cancel_calls!r}"
+        )
+
+        sql, params = cancel_calls[0].args[0], cancel_calls[0].args[1]
+        assert "from_user_id" in sql and "to_user_id" in sql, (
+            "reverse-cancel UPDATE must filter on from_user_id and to_user_id"
+        )
+        assert "status = 'pending'" in sql, (
+            "reverse-cancel UPDATE must only affect rows whose status is 'pending'"
+        )
+        # Params: (acceptor_user_id, original_sender_user_id) — i.e. the
+        # reverse of the row being accepted.
+        assert params[0] == _USER_B and params[1] == _USER_A, (
+            f"reverse-cancel params should be (acceptor={_USER_B!r}, sender={_USER_A!r}), "
+            f"got {params!r}"
+        )
+
+    def test_given_valid_accept_then_sql_order_is_update_then_insert_then_cancel_reverse(self):
+        """
+        Precedence inside the accept transaction:
+          1. UPDATE friend_requests → 'accepted' (the request being accepted)
+          2. INSERT INTO friendships  (lex-min/max canonical pair)
+          3. UPDATE friend_requests → 'cancelled' (reverse-direction pending)
+          4. SELECT first_name       (for post-commit Notifications PutItem)
+
+        The reverse-cancel runs AFTER the INSERT so a transient conflict on
+        the friendships INSERT does not silently cancel the acceptor's own
+        outgoing request without them actually becoming friends.
+        """
+        mod = _import_handler()
+        conn, cur = _make_conn()
+
+        req_id = str(uuid.uuid4())
+        cur.fetchone.return_value = (req_id, _USER_A, _USER_B, "pending", "2026-01-01")
+        cur.description = [
+            ("request_id",), ("from_user_id",), ("to_user_id",), ("status",), ("created_at",),
+        ]
+
+        event = _make_event(
+            "POST",
+            f"/v1/friend-requests/{req_id}/accept",
+            path_params={"id": req_id},
+            user_sub=_USER_B,
+        )
+
+        with (
+            patch.object(mod, "_get_conn", return_value=conn),
+            patch.object(mod, "is_blocked", return_value=False),
+            patch.dict(os.environ, _ENV_DEFAULTS),
+        ):
+            mod.handler(event, None)
+
+        # Collapse to a sequence of operation names in call order.
+        op_sequence: list[str] = []
+        for c in cur.execute.call_args_list:
+            sql = str(c.args[0] if c.args else "")
+            if "SELECT request_id" in sql and "FOR UPDATE" in sql:
+                op_sequence.append("select_for_update")
+            elif "UPDATE friend_requests" in sql and "'accepted'" in sql:
+                op_sequence.append("update_accepted")
+            elif "INSERT INTO friendships" in sql:
+                op_sequence.append("insert_friendship")
+            elif "UPDATE friend_requests" in sql and "'cancelled'" in sql:
+                op_sequence.append("cancel_reverse")
+            elif "SELECT first_name" in sql:
+                op_sequence.append("select_first_name")
+
+        # The four load-bearing accept operations must appear in this order.
+        expected = ["update_accepted", "insert_friendship", "cancel_reverse", "select_first_name"]
+        # Filter the observed sequence to only the ops we care about.
+        observed = [op for op in op_sequence if op in expected]
+        assert observed == expected, (
+            f"accept SQL order should be {expected!r}, got {observed!r}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Area F: POST /v1/friend-requests/{id}/decline
