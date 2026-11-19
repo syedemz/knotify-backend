@@ -1,7 +1,7 @@
 phase: friend-request-correctness (hotfix, not a numbered phase)
 title: Friend-request correctness — GET direction filter, reverse/already-friends checks, Notifications-row writes
 created: 2026-11-19
-last_updated: 2026-11-19 (FR-3 done)
+last_updated: 2026-11-19 (FR-1..FR-4 done)
 owner: backenddeveloper
 status: in_progress
 depends_on: [phase 6 (friends Lambda), phase 8 (notifications_publisher)]
@@ -70,6 +70,7 @@ stories:
     title: Honour `direction=incoming|outgoing` query param on GET /v1/friend-requests
     agent: backenddeveloper
     depends_on: []
+    done: true
     acceptance_criteria:
       - "`_handle_get_friend_requests` parses `event['queryStringParameters']['direction']` and accepts exactly one of `'incoming'`, `'outgoing'`, or missing (=both, preserved for backward compat with any caller that doesn't pass direction)."
       - When `direction == 'incoming'`: WHERE clause narrows to `fr.to_user_id = %s::uuid` only. The caller sees only requests sent TO them.
@@ -116,6 +117,7 @@ stories:
     title: Reject new friend requests when caller has already sent a pending request to target
     agent: backenddeveloper
     depends_on: []
+    done: true  # Verification-only: covered by test added in FR-2 — test_given_existing_pending_request_when_same_direction_duplicate_then_409_already_pending. UniqueViolation path unchanged; no code change needed.
     acceptance_criteria:
       - "This is already enforced by the DB-level UNIQUE constraint `(from_user_id, to_user_id, status)` from migration 0005. The current handler translates `psycopg2.errors.UniqueViolation` into 409 `{\"error\": \"already_pending\"}` — verify that path is covered by an integration test."
       - "No code change required UNLESS the integration test reveals the UniqueViolation path is not being hit (e.g. race between two concurrent POSTs). If racy, wrap the pre-check `SELECT 1 FROM friend_requests WHERE from_user_id = %s AND to_user_id = %s AND status = 'pending'` in the same transaction as FR-2 / FR-3 and return the same 409 explicitly."
