@@ -775,18 +775,17 @@ resource "aws_appsync_resolver" "publish_room_deactivated" {
   field       = "_publishRoomDeactivated"
   data_source = aws_appsync_datasource.pipeline_none.name
 
-  # UNIT resolver — parses the AWSJSON `payload` argument and returns the
-  # parsed object as the resolver result so AppSync can bind the ChatRoom
-  # selection-set fields against it. Forwarding `$ctx.args` as-is leaves
-  # `payload` as an unparsed JSON string, which causes AppSync to resolve
-  # every field on ChatRoom as null and fail with
-  # "Cannot return null for non-nullable type". See the fix history comment
-  # on `publish_friend_request_updated` below for the full trace.
+  # UNIT resolver — forwards the ChatRoom-shaped AWSJSON `payload` argument
+  # directly as the resolver result. AppSync has already parsed the AWSJSON
+  # scalar for us by the time the request template runs ($ctx.args.payload
+  # is an object, NOT a string), so the correct shape is to put that object
+  # in the payload field. The response template then returns it verbatim
+  # for the ChatRoom selection-set binding. See the fix history comment on
+  # `publish_friend_request_updated` below.
   request_template  = <<-VTL
-    #set($parsed = $util.parseJson($ctx.args.payload))
     {
       "version": "2018-05-29",
-      "payload": $util.toJson($parsed)
+      "payload": $util.toJson($ctx.args.payload)
     }
   VTL
   response_template = "$util.toJson($ctx.result)"
@@ -799,10 +798,9 @@ resource "aws_appsync_resolver" "publish_room_reactivated" {
   data_source = aws_appsync_datasource.pipeline_none.name
 
   request_template  = <<-VTL
-    #set($parsed = $util.parseJson($ctx.args.payload))
     {
       "version": "2018-05-29",
-      "payload": $util.toJson($parsed)
+      "payload": $util.toJson($ctx.args.payload)
     }
   VTL
   response_template = "$util.toJson($ctx.result)"
@@ -839,14 +837,15 @@ resource "aws_appsync_resolver" "publish_notification" {
   field       = "publishNotification"
   data_source = aws_appsync_datasource.pipeline_none.name
 
-  # UNIT resolver — parses the AWSJSON `notification` argument before
-  # forwarding so AppSync binds the Notification selection-set fields
-  # against a real object. See fix history on publish_friend_request_updated.
+  # UNIT resolver — forwards the Notification-shaped AWSJSON `notification`
+  # argument directly as the resolver result. $ctx.args.notification is an
+  # object (AppSync auto-parses AWSJSON scalars before the template runs),
+  # so the correct shape is to put the object itself in the payload field.
+  # See fix history on publish_friend_request_updated.
   request_template  = <<-VTL
-    #set($parsed = $util.parseJson($ctx.args.notification))
     {
       "version": "2018-05-29",
-      "payload": $util.toJson($parsed)
+      "payload": $util.toJson($ctx.args.notification)
     }
   VTL
   response_template = "$util.toJson($ctx.result)"
@@ -854,18 +853,22 @@ resource "aws_appsync_resolver" "publish_notification" {
 
 # Fix history (publish resolvers):
 #   2026-11-19 — original VTL forwarded $ctx.args verbatim as the payload.
-#   AWSJSON scalar arguments arrive as unparsed JSON strings, so the
-#   subscription payload resolved to e.g. {"payload": "<json string>"}
-#   instead of the parsed Notification object. AppSync then tried to
-#   resolve Notification.userId / notificationId / type / read / delivered
-#   against this string shape, got null for every field, and raised
+#   $ctx.args has shape {<argName>: <AlreadyParsedObject>}, so $ctx.result
+#   ended up as {notification: {...}} or {payload: {...}} — one level too
+#   deep. AppSync tried to resolve Notification.userId etc. on this shape,
+#   got null for every field, and raised
 #   "Cannot return null for non-nullable type: 'ID' within parent
-#   'Notification' (/_publishFriendRequestUpdated/userId)" etc. The entire
-#   mutation returned errors, the notifications_publisher Lambda raised,
-#   and no subscription event was ever broadcast — so RequestAcceptedModal
-#   never appeared on the acceptor's counterpart's device.
-#   Fix: parse the AWSJSON arg before forwarding so $ctx.result is a real
-#   Notification-shaped object that AppSync can bind against.
+#   'Notification' (/_publishFriendRequestUpdated/userId)" etc.
+#   A first attempted fix used $util.parseJson on the arg, but AppSync
+#   had already parsed the AWSJSON scalar — parseJson(object) returns null,
+#   so the whole mutation returned null and the error shifted to
+#   "Cannot return null for non-nullable type: 'Notification' within
+#   parent 'Mutation' (/_publishFriendRequestUpdated)".
+#   Correct fix (verified via aws appsync evaluate-mapping-template):
+#   forward the already-parsed argument object directly — $ctx.args.payload
+#   for this mutation, $ctx.args.notification for publishNotification,
+#   $ctx.args.payload for the room publishers. $ctx.result then has the
+#   correct shape for AppSync to bind the selection-set fields against.
 resource "aws_appsync_resolver" "publish_friend_request_updated" {
   api_id      = aws_appsync_graphql_api.knotify.id
   type        = "Mutation"
@@ -873,10 +876,9 @@ resource "aws_appsync_resolver" "publish_friend_request_updated" {
   data_source = aws_appsync_datasource.pipeline_none.name
 
   request_template  = <<-VTL
-    #set($parsed = $util.parseJson($ctx.args.payload))
     {
       "version": "2018-05-29",
-      "payload": $util.toJson($parsed)
+      "payload": $util.toJson($ctx.args.payload)
     }
   VTL
   response_template = "$util.toJson($ctx.result)"
