@@ -236,6 +236,20 @@ VALUES (%s::uuid, %s::uuid, NOW())
 ON CONFLICT (user_a, user_b) DO NOTHING
 """
 
+# Accept: cancel the acceptor's own reverse-direction pending request to the
+# original sender (if any). Prevents a "ghost pending" where the acceptor's
+# outgoing request to the sender remains pending after the pair has already
+# become friends via the inbound accept. Mirrors the DELETE-outgoing route's
+# status semantics (flip to 'cancelled' rather than DELETE — preserves audit
+# trail). No-op (0 rows affected) when no reverse row exists.
+_UPDATE_REVERSE_PENDING_CANCELLED_SQL = """
+UPDATE friend_requests
+SET status = 'cancelled', responded_at = NOW()
+WHERE from_user_id = %s::uuid
+  AND to_user_id   = %s::uuid
+  AND status = 'pending'
+"""
+
 # POST /v1/friend-requests/{id}/decline
 _UPDATE_REQUEST_DECLINED_SQL = """
 UPDATE friend_requests
@@ -886,12 +900,20 @@ def _handle_accept_friend_request(
       BEGIN →
         SELECT ... FOR UPDATE (locks the row, prevents concurrent double-accept) →
         if not found → 404 {"error":"not_found"} (row was deleted by a block)
-        UPDATE friend_requests SET status = 'accepted'
+        UPDATE friend_requests SET status = 'accepted'  (the request being accepted)
         INSERT INTO friendships using lex-min/max canonical ordering
+        UPDATE friend_requests SET status = 'cancelled' (reverse-direction pending,
+          if any — the acceptor's own outgoing request to the original sender;
+          prevents a ghost pending after mutual accept)
         SELECT first_name FROM users WHERE user_id = <acceptor> (same connection,
           no extra round trip after commit — value used for the post-commit
           Notifications PutItem)
       COMMIT → 200
+
+    Partial unique index per migration 0021 means the UPDATE to 'accepted' is
+    safe to issue even when a stale `(from, to, accepted)` row exists from a
+    prior handshake-then-unfriend cycle. Before 0021, that stale row caused a
+    UniqueViolation 500 on the second accept in the same direction.
 
     AFTER the Aurora transaction commits, calls DynamoDB to set friendship_active=true
     on the ChatRooms row (story 8.9b).  ConditionalCheckFailed → no-op (no room yet;
@@ -932,6 +954,17 @@ def _handle_accept_friend_request(
             with conn.cursor() as cur:
                 cur.execute(_UPDATE_REQUEST_ACCEPTED_SQL, (request_id,))
                 cur.execute(_INSERT_FRIENDSHIP_SQL, (user_a, user_b))
+                # Reverse-direction cleanup: if the acceptor (= user_id) also had
+                # a pending outgoing request to the original sender (bidirectional
+                # pending — common when both users sent each other requests),
+                # cancel it now so the acceptor doesn't see a ghost pending after
+                # the pair becomes friends. This runs AFTER the friendships INSERT
+                # so a transaction rollback (unlikely, but possible on e.g. an RLS
+                # policy failure) leaves no partial state.
+                cur.execute(
+                    _UPDATE_REVERSE_PENDING_CANCELLED_SQL,
+                    (user_id, from_user_id),
+                )
 
             # Acceptor first-name lookup — inside the transaction (same connection,
             # no extra round trip after commit) so the value is available for the
