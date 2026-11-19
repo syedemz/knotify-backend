@@ -957,3 +957,230 @@ def test_given_invalid_direction_param_when_get_friend_requests_then_returns_400
     assert body.get("error") == "invalid_direction", (
         f"Expected error='invalid_direction', got {body!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# FR-2: reverse-pending check on POST /v1/friend-requests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("completed_profile_user", ["Female"], indirect=True)
+def test_given_a_sent_request_to_b_when_b_sends_to_a_then_409_reverse_pending(
+    completed_profile_user,
+):
+    """
+    FR-2 AC: when A has a pending request to B and B tries to send a request
+    to A, the POST must return 409 {"error": "reverse_pending",
+    "request_id": "<id of the A->B row>"}.
+
+    The frontend uses the returned request_id to offer "they also want to be
+    friends — accept their request" UX.
+
+    Setup:
+      - user_a = Male (minted inline), user_b = Female (from fixture).
+      - A sends a friend request to B → 201, capture request_id.
+      - B sends a friend request to A → must return 409 reverse_pending with
+        request_id == the A->B row's id.
+    """
+    _check_integration_gate()
+
+    try:
+        import boto3
+        import requests as http_requests
+    except ImportError:
+        pytest.skip("boto3 or requests not installed — live AWS environment required")
+
+    distribution_domain = _require_env("DISTRIBUTION_DOMAIN_NAME")
+    edge_secret = _require_env("EDGE_SECRET")
+    region = _require_env("AWS_REGION")
+    user_pool_id = _require_env("COGNITO_USER_POOL_ID")
+    integration_client_id = _require_env("COGNITO_INTEGRATION_TEST_CLIENT_ID")
+
+    cognito_client = boto3.client("cognito-idp", region_name=region)
+
+    # user_b = Female (from fixture)
+    user_b = completed_profile_user
+    b_id = user_b["sub"]
+    aurora_conn = user_b["_aurora_conn"]
+
+    a: dict | None = None
+
+    try:
+        # Mint A=Male inline
+        a = _mint_user(
+            cognito_client, integration_client_id, user_pool_id,
+            distribution_domain, edge_secret, "Male", http_requests,
+        )
+        a_id = a["sub"]
+
+        # A sends a friend request to B → expect 201
+        post_ab = http_requests.post(
+            _api_url(distribution_domain, "/v1/friend-requests"),
+            json={"toUserId": b_id},
+            headers=_authed_headers(a["access_token"], edge_secret),
+        )
+        assert post_ab.status_code in (200, 201), (
+            f"A->B POST /v1/friend-requests returned HTTP {post_ab.status_code}: "
+            f"{post_ab.text!r}"
+        )
+        ab_request_id = post_ab.json().get("request_id")
+        assert ab_request_id, (
+            f"Expected 'request_id' in A->B response, got {post_ab.json()!r}"
+        )
+
+        # B sends a friend request to A → must return 409 reverse_pending
+        post_ba = http_requests.post(
+            _api_url(distribution_domain, "/v1/friend-requests"),
+            json={"toUserId": a_id},
+            headers=_authed_headers(user_b["access_token"], edge_secret),
+        )
+        assert post_ba.status_code == 409, (
+            f"Expected HTTP 409 (reverse_pending) when B sends request to A, "
+            f"got {post_ba.status_code}: {post_ba.text!r}"
+        )
+        body = post_ba.json()
+        assert body.get("error") == "reverse_pending", (
+            f"Expected error='reverse_pending', got {body!r}"
+        )
+        assert body.get("request_id") == ab_request_id, (
+            f"Expected request_id={ab_request_id!r} (the A->B row) in 409 body, "
+            f"got request_id={body.get('request_id')!r}"
+        )
+
+    finally:
+        if a is not None:
+            _teardown_pair(aurora_conn, a["sub"], b_id)
+            _teardown_user(cognito_client, user_pool_id, a["email"], a["sub"], aurora_conn)
+
+
+@pytest.mark.parametrize("completed_profile_user", ["Male"], indirect=True)
+def test_given_no_reverse_pending_when_post_friend_request_then_201_regression(
+    completed_profile_user,
+):
+    """
+    FR-2 regression: when there is no reverse-pending row, the POST must
+    succeed with 201 (the reverse-pending check must not block fresh requests).
+
+    This is a focused regression guard — the full happy path is covered by
+    test_given_two_users_when_a_sends_request_and_b_accepts_then_friendship_established.
+    """
+    _check_integration_gate()
+
+    try:
+        import boto3
+        import requests as http_requests
+    except ImportError:
+        pytest.skip("boto3 or requests not installed — live AWS environment required")
+
+    distribution_domain = _require_env("DISTRIBUTION_DOMAIN_NAME")
+    edge_secret = _require_env("EDGE_SECRET")
+    region = _require_env("AWS_REGION")
+    user_pool_id = _require_env("COGNITO_USER_POOL_ID")
+    integration_client_id = _require_env("COGNITO_INTEGRATION_TEST_CLIENT_ID")
+
+    cognito_client = boto3.client("cognito-idp", region_name=region)
+
+    user_a = completed_profile_user
+    a_id = user_a["sub"]
+    aurora_conn = user_a["_aurora_conn"]
+
+    b: dict | None = None
+
+    try:
+        b = _mint_user(
+            cognito_client, integration_client_id, user_pool_id,
+            distribution_domain, edge_secret, "Female", http_requests,
+        )
+        b_id = b["sub"]
+
+        # A sends a friend request to B — no reverse-pending row exists
+        post_resp = http_requests.post(
+            _api_url(distribution_domain, "/v1/friend-requests"),
+            json={"toUserId": b_id},
+            headers=_authed_headers(user_a["access_token"], edge_secret),
+        )
+        assert post_resp.status_code in (200, 201), (
+            f"POST /v1/friend-requests (no reverse pending) returned HTTP "
+            f"{post_resp.status_code}: {post_resp.text!r}"
+        )
+        resp_body = post_resp.json()
+        assert resp_body.get("request_id"), (
+            f"Expected 'request_id' in 201 response, got {resp_body!r}"
+        )
+
+    finally:
+        if b is not None:
+            _teardown_pair(aurora_conn, a_id, b["sub"])
+            _teardown_user(cognito_client, user_pool_id, b["email"], b["sub"], aurora_conn)
+
+
+@pytest.mark.parametrize("completed_profile_user", ["Male"], indirect=True)
+def test_given_existing_pending_request_when_same_direction_duplicate_then_409_already_pending(
+    completed_profile_user,
+):
+    """
+    FR-2 regression: same-direction duplicate (A sends to B twice) must still
+    return 409 {"error": "already_pending"} via the UniqueViolation path.
+
+    This test verifies that the new reverse-pending check does not interfere
+    with the existing UniqueViolation handling.
+    """
+    _check_integration_gate()
+
+    try:
+        import boto3
+        import requests as http_requests
+    except ImportError:
+        pytest.skip("boto3 or requests not installed — live AWS environment required")
+
+    distribution_domain = _require_env("DISTRIBUTION_DOMAIN_NAME")
+    edge_secret = _require_env("EDGE_SECRET")
+    region = _require_env("AWS_REGION")
+    user_pool_id = _require_env("COGNITO_USER_POOL_ID")
+    integration_client_id = _require_env("COGNITO_INTEGRATION_TEST_CLIENT_ID")
+
+    cognito_client = boto3.client("cognito-idp", region_name=region)
+
+    user_a = completed_profile_user
+    a_id = user_a["sub"]
+    aurora_conn = user_a["_aurora_conn"]
+
+    b: dict | None = None
+
+    try:
+        b = _mint_user(
+            cognito_client, integration_client_id, user_pool_id,
+            distribution_domain, edge_secret, "Female", http_requests,
+        )
+        b_id = b["sub"]
+
+        # First POST — must succeed
+        first_resp = http_requests.post(
+            _api_url(distribution_domain, "/v1/friend-requests"),
+            json={"toUserId": b_id},
+            headers=_authed_headers(user_a["access_token"], edge_secret),
+        )
+        assert first_resp.status_code in (200, 201), (
+            f"First POST /v1/friend-requests returned HTTP {first_resp.status_code}: "
+            f"{first_resp.text!r}"
+        )
+
+        # Second POST (same direction) — must return 409 already_pending
+        second_resp = http_requests.post(
+            _api_url(distribution_domain, "/v1/friend-requests"),
+            json={"toUserId": b_id},
+            headers=_authed_headers(user_a["access_token"], edge_secret),
+        )
+        assert second_resp.status_code == 409, (
+            f"Expected HTTP 409 (already_pending) on second same-direction POST, "
+            f"got {second_resp.status_code}: {second_resp.text!r}"
+        )
+        body = second_resp.json()
+        assert body.get("error") == "already_pending", (
+            f"Expected error='already_pending', got {body!r}"
+        )
+
+    finally:
+        if b is not None:
+            _teardown_pair(aurora_conn, a_id, b["sub"])
+            _teardown_user(cognito_client, user_pool_id, b["email"], b["sub"], aurora_conn)

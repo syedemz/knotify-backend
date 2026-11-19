@@ -233,6 +233,18 @@ WHERE request_id = %s::uuid
   AND from_user_id = %s::uuid
 """
 
+# FR-2: reverse-pending check — locks the reverse row so a concurrent reverse POST
+# cannot race through and INSERT before we detect it. Parameters bind
+# (target_user_id, requester_id) — the REVERSE of what the new row would insert.
+_SELECT_REVERSE_PENDING_FOR_UPDATE_SQL = """
+SELECT request_id
+FROM friend_requests
+WHERE from_user_id = %s::uuid
+  AND to_user_id   = %s::uuid
+  AND status = 'pending'
+FOR UPDATE
+"""
+
 # ---------------------------------------------------------------------------
 # Pure helper functions (no I/O — fully unit-testable)
 # ---------------------------------------------------------------------------
@@ -526,13 +538,26 @@ def _handle_post_friend_requests(event: dict, user_id: str, user_sex: str) -> di
 
     Body: {"toUserId": "<uuid>"}
 
-    Transaction semantics (non-negotiable per story 6.2 PRD):
+    ## Transaction semantics
+
+    All pre-flight checks run inside the same rls_context transaction so no
+    concurrent mutation can race through between a check passing and the INSERT.
+
+    Precedence order (load-bearing for UX — do not reorder):
       BEGIN (via rls_context) →
-        is_blocked(conn, requester, target) — inside the same transaction so a
-          concurrent block cannot race the request through →
-        if blocked → ROLLBACK (implicit via exception path) → 409 {"error":"blocked"}
-        INSERT INTO friend_requests →
-        if UniqueViolation → ROLLBACK → 409 {"error":"already_pending"}
+        (1) is_blocked(conn, requester, target) — blocked takes first priority so
+              a blocker's state is not leaked by a different error code appearing
+              earlier →
+            if blocked → ROLLBACK → 409 {"error": "blocked"}
+        (2) [FR-3: already_friends check will slot here in the next commit]
+        (3) _SELECT_REVERSE_PENDING_FOR_UPDATE_SQL(target, requester) — FOR UPDATE
+              lock prevents a concurrent reverse POST from racing through →
+            if row found → ROLLBACK → 409 {"error": "reverse_pending",
+              "request_id": "<id of the reverse row>"}
+        (4) INSERT INTO friend_requests →
+            if UniqueViolation → ROLLBACK → 409 {"error": "already_pending"}
+              (covers the race where two concurrent same-direction POSTs both
+               pass the SELECT pre-check; the UNIQUE constraint catches the loser)
       COMMIT → 201 with the new request row
     """
     body_raw = event.get("body")
@@ -560,10 +585,31 @@ def _handle_post_friend_requests(event: dict, user_id: str, user_sex: str) -> di
     conn = _get_conn()
     try:
         with knotify_db.rls_context(conn, requester_id, user_sex):
-            # Block check inside the same transaction
+            # (1) Block check — first so a blocker's state is not leaked by a
+            #     different error code appearing earlier.
             if is_blocked(conn, requester_id, target_user_id):
                 return _json_response(409, {"error": "blocked"})
 
+            # (2) [FR-3: already_friends check will slot here]
+
+            # (3) Reverse-pending check — FOR UPDATE so a concurrent reverse POST
+            #     cannot race through and INSERT before we detect it.
+            #     Parameters: (target_user_id, requester_id) — the row we are
+            #     looking for is target→requester (reverse of what we are about
+            #     to insert: requester→target).
+            with conn.cursor() as cur:
+                cur.execute(
+                    _SELECT_REVERSE_PENDING_FOR_UPDATE_SQL,
+                    (target_user_id, requester_id),
+                )
+                reverse_row = cur.fetchone()
+            if reverse_row is not None:
+                return _json_response(
+                    409,
+                    {"error": "reverse_pending", "request_id": str(reverse_row[0])},
+                )
+
+            # (4) INSERT — UniqueViolation covers same-direction duplicate race.
             try:
                 with conn.cursor() as cur:
                     cur.execute(
