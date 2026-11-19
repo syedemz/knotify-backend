@@ -1,7 +1,7 @@
 phase: friend-request-correctness (hotfix, not a numbered phase)
 title: Friend-request correctness — GET direction filter, reverse/already-friends checks, Notifications-row writes
 created: 2026-11-19
-last_updated: 2026-11-19
+last_updated: 2026-11-19 (FR-3 done)
 owner: backenddeveloper
 status: in_progress
 depends_on: [phase 6 (friends Lambda), phase 8 (notifications_publisher)]
@@ -103,6 +103,7 @@ stories:
     title: Reject new friend requests when caller and target are already friends
     agent: backenddeveloper
     depends_on: []
+    done: true
     acceptance_criteria:
       - "`_handle_post_friend_requests` adds an already-friends check INSIDE the same transaction as the block + reverse-pending checks (all three run before any INSERT)."
       - "The check uses canonical pair ordering: `SELECT 1 FROM friendships WHERE user_a = %s::uuid AND user_b = %s::uuid` with `(min(caller, target), max(caller, target))`."
