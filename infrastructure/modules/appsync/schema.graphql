@@ -25,7 +25,15 @@
 # Object types — §5.4 ChatRooms table
 # ---------------------------------------------------------------------------
 
-type ChatRoom {
+# Dual-auth: the frontend's Cognito-JWT clients read this type through
+# listMyRooms / createOrGetRoom / onRoomDeactivated etc., AND the
+# room_state_publisher Lambda reads its fields back when invoking
+# _publishRoomDeactivated / _publishRoomReactivated with IAM auth (SigV4).
+# Without @aws_iam, AppSync defaults each field to the primary auth mode
+# (Cognito User Pools) and rejects the publisher's response-field reads
+# with "Not Authorized to access <field> on type ChatRoom", which aborts
+# the publish and silently kills the room-state broadcast.
+type ChatRoom @aws_iam @aws_cognito_user_pools {
   # PK: deterministic sha256(canonical_pair(userA, userB))
   roomId: ID!
   # Lexicographically smaller participant UUID
@@ -104,7 +112,16 @@ type MessageRead {
 # Object types — §5.4 Notifications table
 # ---------------------------------------------------------------------------
 
-type Notification {
+# Dual-auth: Cognito-JWT clients read this type through onNotificationForMe /
+# onFriendRequestUpdated subscriptions, AND the notifications_publisher Lambda
+# reads its fields back when invoking publishNotification /
+# _publishFriendRequestUpdated with IAM auth (SigV4). Without @aws_iam,
+# AppSync defaults each field to the primary auth mode (Cognito User Pools)
+# and rejects the publisher's response-field reads with "Not Authorized to
+# access <field> on type Notification", which aborts the publish and silently
+# kills the push notification path. Observed 2026-11-19 after the publisher
+# import error was fixed and exposed this latent auth gap.
+type Notification @aws_iam @aws_cognito_user_pools {
   # PK: user_id (recipient)
   userId: ID!
   # SK: <ISO timestamp>#<notification_id>
