@@ -1,8 +1,9 @@
 phase: friend-request-correctness (hotfix, not a numbered phase)
 title: Friend-request correctness — GET direction filter, reverse/already-friends checks, Notifications-row writes
 created: 2026-11-19
+last_updated: 2026-11-19
 owner: backenddeveloper
-status: draft
+status: in_progress
 depends_on: [phase 6 (friends Lambda), phase 8 (notifications_publisher)]
 
 context_summary: |
@@ -88,6 +89,7 @@ stories:
     title: Reject reverse-pending friend requests on POST /v1/friend-requests
     agent: backenddeveloper
     depends_on: []
+    done: true
     acceptance_criteria:
       - "`_handle_post_friend_requests` adds a reverse-pending check INSIDE the same transaction as the `is_blocked` check (same transactional guarantee reasoning — a concurrent request creation must not race through)."
       - "The check: `SELECT 1 FROM friend_requests WHERE from_user_id = %s::uuid AND to_user_id = %s::uuid AND status = 'pending' FOR UPDATE` using `(target_user_id, requester_id)` (reverse of what the new row would insert)."
