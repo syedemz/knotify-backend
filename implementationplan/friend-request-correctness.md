@@ -1,7 +1,7 @@
 phase: friend-request-correctness (hotfix, not a numbered phase)
 title: Friend-request correctness — GET direction filter, reverse/already-friends checks, Notifications-row writes
 created: 2026-11-19
-last_updated: 2026-11-19 (FR-1..FR-4 done)
+last_updated: 2026-11-19 (FR-1..FR-5 done)
 owner: backenddeveloper
 status: in_progress
 depends_on: [phase 6 (friends Lambda), phase 8 (notifications_publisher)]
@@ -131,6 +131,7 @@ stories:
     title: Write Notifications row on POST /v1/friend-requests to trigger `onNotificationForMe` for recipient
     agent: backenddeveloper
     depends_on: [FR-2, FR-3, FR-4]
+    done: true
     acceptance_criteria:
       - After the Aurora transaction in `_handle_post_friend_requests` commits successfully, PutItem into DynamoDB `Notifications` table with the schema the `notifications_publisher` Lambda (phase 8.9c) expects.
       - "Notifications row fields: `user_id = <recipient_id>` (PK — the person receiving the request; drives subscription filtering), `created_at_notification_id = <ISO8601>#<ulid>` (SK), `notification_id = <ulid>`, `type = 'friend_request_received'`, `payload = JSON_STRING({request_id, from_user_id})`, `sender_user_id = <requester_id>`, `sender_name = <requester_first_name>` (looked up from users table in the same request), `read = false`, `delivered = false`, `created_at = <ISO8601>`."
