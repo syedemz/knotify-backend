@@ -119,11 +119,13 @@ def mock_publish():
 # ---------------------------------------------------------------------------
 
 
-def test_given_insert_friend_request_received_when_processed_then_publish_notification_called_once(
+def test_given_insert_friend_request_received_when_processed_then_publish_notification_called(
     mock_publish,
 ):
     """
-    AC-A: INSERT record type=friend_request_received → publishNotification called once.
+    AC-A: INSERT record type=friend_request_received → publishNotification is called
+    (keeps the onNotificationForMe pipeline fed; also-publishes to
+    _publishFriendRequestUpdated, verified separately below).
     """
     from notifications_publisher import handler
 
@@ -137,10 +139,9 @@ def test_given_insert_friend_request_received_when_processed_then_publish_notifi
     )
     handler.handler({"Records": [record]}, None)
 
-    mock_publish.assert_called_once()
-    mutation_name, payload = mock_publish.call_args.args
-    assert mutation_name == "publishNotification", (
-        f"expected 'publishNotification', got {mutation_name!r}"
+    call_mutations = [c.args[0] for c in mock_publish.call_args_list]
+    assert "publishNotification" in call_mutations, (
+        f"expected 'publishNotification' among calls, got {call_mutations!r}"
     )
 
 
@@ -149,6 +150,8 @@ def test_given_insert_friend_request_received_when_processed_then_payload_contai
 ):
     """
     AC-H: publishNotification payload must include user_id from the row PK.
+    Asserted on the publishNotification call specifically (dual-publish also
+    hits _publishFriendRequestUpdated with the same payload — tested separately).
     """
     from notifications_publisher import handler
 
@@ -162,9 +165,77 @@ def test_given_insert_friend_request_received_when_processed_then_payload_contai
     )
     handler.handler({"Records": [record]}, None)
 
-    _, payload = mock_publish.call_args.args
+    publish_calls = [
+        c for c in mock_publish.call_args_list if c.args[0] == "publishNotification"
+    ]
+    assert len(publish_calls) == 1, (
+        f"expected exactly one publishNotification call, got {publish_calls!r}"
+    )
+    _, payload = publish_calls[0].args
     assert payload.get("userId") == user_id, (
         f"payload['userId'] must equal PK user_id={user_id!r}, got {payload.get('userId')!r}"
+    )
+
+
+def test_given_insert_friend_request_received_when_processed_then_also_publishes_friend_request_updated(
+    mock_publish,
+):
+    """
+    Dual-publish behaviour: INSERT record type=friend_request_received must ALSO
+    call _publishFriendRequestUpdated so the frontend's onFriendRequestUpdated
+    subscription (used by FriendRequestSubscriptionListener) receives it in
+    real time — not only on cache refresh via the poll-based fallback.
+    """
+    from notifications_publisher import handler
+
+    user_id = "user-recipient-fr-received-dual"
+    record = _make_record(
+        "INSERT",
+        new_image=_notification_image(
+            user_id=user_id,
+            notification_type="friend_request_received",
+        ),
+    )
+    handler.handler({"Records": [record]}, None)
+
+    call_mutations = [c.args[0] for c in mock_publish.call_args_list]
+    assert call_mutations.count("publishNotification") == 1, (
+        f"expected exactly one publishNotification call, got {call_mutations!r}"
+    )
+    assert call_mutations.count("_publishFriendRequestUpdated") == 1, (
+        f"expected exactly one _publishFriendRequestUpdated call (dual-publish),"
+        f" got {call_mutations!r}"
+    )
+
+    # Payload must match on both calls — same userId, same type.
+    for c in mock_publish.call_args_list:
+        _, payload = c.args
+        assert payload.get("userId") == user_id
+        assert payload.get("type") == "friend_request_received"
+
+
+def test_given_insert_bookmark_when_processed_then_does_not_also_publish_friend_request_updated(
+    mock_publish,
+):
+    """
+    Dual-publish is scoped to friend_request_received ONLY. Other generic types
+    (bookmark, match, etc.) must NOT be forwarded to _publishFriendRequestUpdated —
+    that subscription is friend-request-specific.
+    """
+    from notifications_publisher import handler
+
+    record = _make_record(
+        "INSERT",
+        new_image=_notification_image(
+            user_id="user-recipient-bm-no-dual",
+            notification_type="bookmark",
+        ),
+    )
+    handler.handler({"Records": [record]}, None)
+
+    call_mutations = [c.args[0] for c in mock_publish.call_args_list]
+    assert call_mutations == ["publishNotification"], (
+        f"bookmark should only publish via publishNotification, got {call_mutations!r}"
     )
 
 
@@ -354,8 +425,9 @@ def test_given_batch_with_mixed_records_when_processed_then_dispatched_by_type(
     """
     AC-I: batch of 4 records — 1 friend_request_received (INSERT), 1 bookmark
     (INSERT), 1 friend_request_accepted (INSERT), 1 MODIFY (delivered update) —
-    should result in exactly 2 publishNotification calls and 1
-    _publishFriendRequestUpdated call (MODIFY ignored).
+    should result in exactly 2 publishNotification calls (fr_received + bookmark)
+    and 2 _publishFriendRequestUpdated calls (fr_received dual-publish + fr_accepted).
+    MODIFY ignored.
     """
     from notifications_publisher import handler
 
@@ -393,10 +465,10 @@ def test_given_batch_with_mixed_records_when_processed_then_dispatched_by_type(
 
     handler.handler({"Records": records}, None)
 
-    assert mock_publish.call_count == 3
+    assert mock_publish.call_count == 4
     call_mutations = [c.args[0] for c in mock_publish.call_args_list]
     assert call_mutations.count("publishNotification") == 2
-    assert call_mutations.count("_publishFriendRequestUpdated") == 1
+    assert call_mutations.count("_publishFriendRequestUpdated") == 2
 
 
 # ---------------------------------------------------------------------------

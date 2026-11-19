@@ -1335,6 +1335,9 @@ module "notifications_publisher" {
   role_arn                 = module.iam_roles.role_arns["notifications_publisher"]
   notifications_stream_arn = module.dynamodb.notifications_stream_arn
   appsync_graphql_url      = module.appsync.graphql_url
+  layers = [
+    module.observability_layer.layer_arn,
+  ]
 }
 
 # ---------------------------------------------------------------------------
