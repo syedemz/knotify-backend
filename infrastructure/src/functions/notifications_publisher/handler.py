@@ -67,12 +67,32 @@ _FRIEND_REQUEST_RECEIVED_TYPE = "friend_request_received"
 # GraphQL mutation bodies for the two notification publish paths
 # ---------------------------------------------------------------------------
 
+# The mutation's selection set determines what AppSync broadcasts to
+# @aws_subscribe subscribers. Any field NOT selected here is stripped from
+# the broadcast payload even if the resolver produced it. Subscribers in
+# FriendRequestSubscriptionListener select { type, payload, createdAt };
+# omitting any of these from the selection set below causes AppSync to
+# deliver null for that field, which — because createdAt is non-null on
+# the Notification type — violates the GraphQL non-null constraint and
+# makes the entire subscription event null. The subscriber then sees
+# data.onFriendRequestUpdated === null, drops it via `if (!notification)
+# return;`, and no modal fires. Observed and verified via device-side
+# subscription-callback logs 2026-11-19.
+#
+# Full Notification selection set is the safest future-proof choice —
+# any field a subscriber adds in the future works without a publisher
+# change.
 _PUBLISH_NOTIFICATION_MUTATION = """
 mutation PublishNotification($notification: AWSJSON!) {
   publishNotification(notification: $notification) {
     userId
+    createdAt
     notificationId
     type
+    payload
+    senderUserId
+    senderName
+    senderAvatar
     read
     delivered
   }
@@ -83,8 +103,13 @@ _PUBLISH_FRIEND_REQUEST_UPDATED_MUTATION = """
 mutation PublishFriendRequestUpdated($payload: AWSJSON!) {
   _publishFriendRequestUpdated(payload: $payload) {
     userId
+    createdAt
     notificationId
     type
+    payload
+    senderUserId
+    senderName
+    senderAvatar
     read
     delivered
   }
