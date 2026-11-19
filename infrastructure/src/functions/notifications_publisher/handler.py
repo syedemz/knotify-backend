@@ -230,6 +230,13 @@ def _build_notification_payload(new_image: dict) -> dict:
         # subscription pipeline resolver (check_identity_match) can filter
         # onNotificationForMe / onFriendRequestUpdated to the correct subscriber.
         "userId": _extract_str(new_image, "user_id"),
+        # Non-nullable on the Notification GraphQL type (AWSDateTime!). If
+        # omitted the subscription delivery is silently dropped by AppSync
+        # because the subscriber selects createdAt and it cannot resolve to
+        # null on a non-null field. The DB row always has created_at written
+        # by the knotify-friends Lambda at notification-write time, so this
+        # is always present on real production rows.
+        "createdAt": _extract_str(new_image, "created_at"),
         "notificationId": _extract_str(new_image, "notification_id"),
         "type": _extract_str(new_image, "type"),
         "senderUserId": _extract_str(new_image, "sender_user_id"),
