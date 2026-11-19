@@ -61,6 +61,7 @@ AWS_REGION: str = os.environ.get("AWS_REGION", "eu-central-1")
 # ---------------------------------------------------------------------------
 
 _FRIEND_REQUEST_ACCEPTED_TYPE = "friend_request_accepted"
+_FRIEND_REQUEST_RECEIVED_TYPE = "friend_request_received"
 
 # ---------------------------------------------------------------------------
 # GraphQL mutation bodies for the two notification publish paths
@@ -186,6 +187,20 @@ def _process_record(record: dict) -> None:
             extra={"type": notification_type, "user_id": user_id},
         )
         _publish_to_appsync("publishNotification", payload)
+
+        # Dual-publish friend_request_received to _publishFriendRequestUpdated
+        # so the frontend's existing onFriendRequestUpdated subscription (used
+        # by FriendRequestSubscriptionListener for the accepted-modal path)
+        # also picks up incoming requests in real time — not just on cache
+        # refresh via the poll-based fallback. The frontend treats both
+        # subscriptions with latest-wins modal semantics, so a client
+        # subscribed to both channels sees a single modal, not a flicker.
+        if notification_type == _FRIEND_REQUEST_RECEIVED_TYPE:
+            logger.info(
+                "type=friend_request_received — also publishing _publishFriendRequestUpdated",
+                extra={"user_id": user_id},
+            )
+            _publish_to_appsync("_publishFriendRequestUpdated", payload)
     else:
         logger.warning(
             "Notification row missing type field — skipping",

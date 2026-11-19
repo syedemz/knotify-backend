@@ -22,3 +22,9 @@ variable "appsync_graphql_url" {
   description = "HTTPS URL of the AppSync GraphQL endpoint. Injected as APPSYNC_GRAPHQL_URL env var so the Lambda can POST the publish mutation."
   type        = string
 }
+
+variable "layers" {
+  description = "List of Lambda layer ARNs to attach. The observability layer supplies `requests` (needed to POST the signed GraphQL mutation to AppSync). Without it the zip is missing `requests` because build_package.py strips layer-provided packages from per-function requirements.txt."
+  type        = list(string)
+  default     = []
+}

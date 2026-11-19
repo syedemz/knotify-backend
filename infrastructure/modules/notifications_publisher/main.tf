@@ -28,9 +28,16 @@ terraform {
 # limit of 2 simultaneous consumers per DynamoDB stream.  A third consumer
 # would require Kinesis Data Streams for DynamoDB or a fan-out Lambda.
 #
-# No layers: this Lambda only needs boto3/botocore (Lambda runtime) and
-# requests (bundled into the zip).  It does NOT connect to Aurora and does NOT
-# need knotify_db or knotify_obs.
+# Layers: attaches the observability layer so `requests` is available at
+# runtime.  The build script (build_package.py) strips every package listed
+# in the observability layer manifest from per-function requirements.txt,
+# including `requests`.  That strip is unconditional — if the layer isn't
+# attached, the stripped package is simply missing from the deployment zip
+# and the Lambda fails to import at cold start with
+# "No module named 'requests'". Attaching the layer here lets the build-script
+# strip stay correct and keeps the deployment zip thin.
+#
+# This Lambda does NOT connect to Aurora, so the db layer is NOT attached.
 #
 # Architecture: ARM64 (Graviton2) — consistent with all other Lambda functions.
 # Timeout: 30s — each invocation may POST multiple AppSync mutations in sequence.
@@ -44,6 +51,7 @@ module "lambda" {
   filename      = var.filename
   role_arn      = var.role_arn
   architectures = ["arm64"]
+  layers        = var.layers
   timeout       = 30
 
   # No vpc_config — Lambda runs OUTSIDE the VPC (see placement note above).
