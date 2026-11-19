@@ -245,6 +245,15 @@ WHERE from_user_id = %s::uuid
 FOR UPDATE
 """
 
+# FR-3: already-friends check — uses canonical pair ordering (lex-min, lex-max)
+# matching _canonical_pair(). Parameters bind (user_a, user_b) in canonical order.
+_SELECT_FRIENDSHIP_SQL = """
+SELECT 1
+FROM friendships
+WHERE user_a = %s::uuid
+  AND user_b = %s::uuid
+"""
+
 # ---------------------------------------------------------------------------
 # Pure helper functions (no I/O — fully unit-testable)
 # ---------------------------------------------------------------------------
@@ -549,7 +558,10 @@ def _handle_post_friend_requests(event: dict, user_id: str, user_sex: str) -> di
               a blocker's state is not leaked by a different error code appearing
               earlier →
             if blocked → ROLLBACK → 409 {"error": "blocked"}
-        (2) [FR-3: already_friends check will slot here in the next commit]
+        (2) _SELECT_FRIENDSHIP_SQL(canonical_pair) — already-friends check runs
+              second so the caller sees "already friends" rather than "you already
+              requested" when both are true after an accept-then-request race →
+            if row found → ROLLBACK → 409 {"error": "already_friends"}
         (3) _SELECT_REVERSE_PENDING_FOR_UPDATE_SQL(target, requester) — FOR UPDATE
               lock prevents a concurrent reverse POST from racing through →
             if row found → ROLLBACK → 409 {"error": "reverse_pending",
@@ -590,7 +602,15 @@ def _handle_post_friend_requests(event: dict, user_id: str, user_sex: str) -> di
             if is_blocked(conn, requester_id, target_user_id):
                 return _json_response(409, {"error": "blocked"})
 
-            # (2) [FR-3: already_friends check will slot here]
+            # (2) Already-friends check — second so "already friends" takes
+            #     precedence over "you already requested" when both are true
+            #     after an accept-then-request race.
+            user_a, user_b = _canonical_pair(requester_id, target_user_id)
+            with conn.cursor() as cur:
+                cur.execute(_SELECT_FRIENDSHIP_SQL, (user_a, user_b))
+                friendship_row = cur.fetchone()
+            if friendship_row is not None:
+                return _json_response(409, {"error": "already_friends"})
 
             # (3) Reverse-pending check — FOR UPDATE so a concurrent reverse POST
             #     cannot race through and INSERT before we detect it.

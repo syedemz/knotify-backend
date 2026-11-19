@@ -1114,6 +1114,168 @@ def test_given_no_reverse_pending_when_post_friend_request_then_201_regression(
             _teardown_user(cognito_client, user_pool_id, b["email"], b["sub"], aurora_conn)
 
 
+# ---------------------------------------------------------------------------
+# FR-3: already-friends check on POST /v1/friend-requests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("completed_profile_user", ["Male"], indirect=True)
+def test_given_already_friends_when_a_sends_request_to_b_then_409_already_friends(
+    completed_profile_user,
+):
+    """
+    FR-3 AC: when A and B are already in the friendships table and A tries to
+    send a friend request to B, POST must return 409 {"error": "already_friends"}.
+
+    Setup:
+      - user_a = Male (from fixture), user_b = Female (minted inline).
+      - A sends a request to B → 201, B accepts → 200 (friendship row exists).
+      - A sends ANOTHER request to B → must return 409 already_friends.
+    """
+    _check_integration_gate()
+
+    try:
+        import boto3
+        import requests as http_requests
+    except ImportError:
+        pytest.skip("boto3 or requests not installed — live AWS environment required")
+
+    distribution_domain = _require_env("DISTRIBUTION_DOMAIN_NAME")
+    edge_secret = _require_env("EDGE_SECRET")
+    region = _require_env("AWS_REGION")
+    user_pool_id = _require_env("COGNITO_USER_POOL_ID")
+    integration_client_id = _require_env("COGNITO_INTEGRATION_TEST_CLIENT_ID")
+
+    cognito_client = boto3.client("cognito-idp", region_name=region)
+
+    user_a = completed_profile_user
+    a_id = user_a["sub"]
+    aurora_conn = user_a["_aurora_conn"]
+
+    b: dict | None = None
+
+    try:
+        b = _mint_user(
+            cognito_client, integration_client_id, user_pool_id,
+            distribution_domain, edge_secret, "Female", http_requests,
+        )
+        b_id = b["sub"]
+
+        # A sends a friend request to B → expect 201
+        post_ab = http_requests.post(
+            _api_url(distribution_domain, "/v1/friend-requests"),
+            json={"toUserId": b_id},
+            headers=_authed_headers(user_a["access_token"], edge_secret),
+        )
+        assert post_ab.status_code in (200, 201), (
+            f"A->B POST /v1/friend-requests returned HTTP {post_ab.status_code}: "
+            f"{post_ab.text!r}"
+        )
+        ab_request_id = post_ab.json().get("request_id")
+        assert ab_request_id, (
+            f"Expected 'request_id' in A->B response, got {post_ab.json()!r}"
+        )
+
+        # B accepts the request → friendship row now exists
+        accept_resp = http_requests.post(
+            _api_url(distribution_domain, f"/v1/friend-requests/{ab_request_id}/accept"),
+            headers=_authed_headers(b["access_token"], edge_secret),
+        )
+        assert accept_resp.status_code == 200, (
+            f"POST .../accept returned HTTP {accept_resp.status_code}: {accept_resp.text!r}"
+        )
+        assert _friendship_exists(aurora_conn, a_id, b_id), (
+            "friendships row must exist after accept before testing already_friends path"
+        )
+
+        # A sends ANOTHER request to B → must return 409 already_friends
+        post_ab2 = http_requests.post(
+            _api_url(distribution_domain, "/v1/friend-requests"),
+            json={"toUserId": b_id},
+            headers=_authed_headers(user_a["access_token"], edge_secret),
+        )
+        assert post_ab2.status_code == 409, (
+            f"Expected HTTP 409 (already_friends) when A re-sends request to B after "
+            f"accept, got {post_ab2.status_code}: {post_ab2.text!r}"
+        )
+        body = post_ab2.json()
+        assert body.get("error") == "already_friends", (
+            f"Expected error='already_friends', got {body!r}"
+        )
+
+    finally:
+        if b is not None:
+            _teardown_pair(aurora_conn, a_id, b["sub"])
+            _teardown_user(cognito_client, user_pool_id, b["email"], b["sub"], aurora_conn)
+
+
+@pytest.mark.parametrize("completed_profile_user", ["Male"], indirect=True)
+def test_given_not_yet_friends_when_a_sends_request_to_b_then_201_regression(
+    completed_profile_user,
+):
+    """
+    FR-3 regression: when no friendship row exists between A and B, the
+    already-friends check must NOT block the request — POST must succeed
+    with 201.
+
+    This guards that the new already_friends check does not regress the
+    normal happy-path where the two users have never been friends.
+    """
+    _check_integration_gate()
+
+    try:
+        import boto3
+        import requests as http_requests
+    except ImportError:
+        pytest.skip("boto3 or requests not installed — live AWS environment required")
+
+    distribution_domain = _require_env("DISTRIBUTION_DOMAIN_NAME")
+    edge_secret = _require_env("EDGE_SECRET")
+    region = _require_env("AWS_REGION")
+    user_pool_id = _require_env("COGNITO_USER_POOL_ID")
+    integration_client_id = _require_env("COGNITO_INTEGRATION_TEST_CLIENT_ID")
+
+    cognito_client = boto3.client("cognito-idp", region_name=region)
+
+    user_a = completed_profile_user
+    a_id = user_a["sub"]
+    aurora_conn = user_a["_aurora_conn"]
+
+    b: dict | None = None
+
+    try:
+        b = _mint_user(
+            cognito_client, integration_client_id, user_pool_id,
+            distribution_domain, edge_secret, "Female", http_requests,
+        )
+        b_id = b["sub"]
+
+        # Confirm no friendship row exists before sending (regression guard)
+        assert not _friendship_exists(aurora_conn, a_id, b_id), (
+            "Precondition failed: friendships row must NOT exist before this test"
+        )
+
+        # A sends a friend request to B — no friendship row exists; must succeed
+        post_resp = http_requests.post(
+            _api_url(distribution_domain, "/v1/friend-requests"),
+            json={"toUserId": b_id},
+            headers=_authed_headers(user_a["access_token"], edge_secret),
+        )
+        assert post_resp.status_code in (200, 201), (
+            f"POST /v1/friend-requests (not-yet-friends) returned HTTP "
+            f"{post_resp.status_code}: {post_resp.text!r}"
+        )
+        resp_body = post_resp.json()
+        assert resp_body.get("request_id"), (
+            f"Expected 'request_id' in 201 response, got {resp_body!r}"
+        )
+
+    finally:
+        if b is not None:
+            _teardown_pair(aurora_conn, a_id, b["sub"])
+            _teardown_user(cognito_client, user_pool_id, b["email"], b["sub"], aurora_conn)
+
+
 @pytest.mark.parametrize("completed_profile_user", ["Male"], indirect=True)
 def test_given_existing_pending_request_when_same_direction_duplicate_then_409_already_pending(
     completed_profile_user,
