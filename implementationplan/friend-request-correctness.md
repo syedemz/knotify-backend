@@ -1,7 +1,7 @@
 phase: friend-request-correctness (hotfix, not a numbered phase)
 title: Friend-request correctness — GET direction filter, reverse/already-friends checks, Notifications-row writes
 created: 2026-11-19
-last_updated: 2026-11-19 (FR-1..FR-5 done)
+last_updated: 2026-11-19 (FR-1..FR-6 done)
 owner: backenddeveloper
 status: in_progress
 depends_on: [phase 6 (friends Lambda), phase 8 (notifications_publisher)]
@@ -159,6 +159,7 @@ stories:
     title: Write Notifications row on POST /v1/friend-requests/{id}/accept to trigger `onFriendRequestUpdated` for sender
     agent: backenddeveloper
     depends_on: [FR-5]
+    done: true
     acceptance_criteria:
       - After the Aurora transaction in `_handle_accept_friend_request` commits (friend_requests UPDATE + friendships INSERT), PutItem into DynamoDB `Notifications` table addressed to the ORIGINAL SENDER (not the acceptor).
       - "Notifications row fields: `user_id = <original_sender_id>` (PK — the person who sent the request; now being notified of acceptance), `created_at_notification_id = <ISO8601>#<ulid>` (SK), `notification_id = <ulid>`, `type = 'friend_request_accepted'`, `payload = JSON_STRING({request_id, from_user_id: <acceptor_id>})`, `sender_user_id = <acceptor_id>`, `sender_name = <acceptor_first_name>`, `read = false`, `delivered = false`, `created_at = <ISO8601>`."
