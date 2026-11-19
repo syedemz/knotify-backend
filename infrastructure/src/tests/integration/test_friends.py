@@ -595,3 +595,365 @@ def test_given_block_when_post_friend_request_returns_409_and_stale_accept_retur
             _teardown_user(cognito_client, user_pool_id, c["email"], c["sub"], aurora_conn)
         if d is not None:
             _teardown_user(cognito_client, user_pool_id, d["email"], d["sub"], aurora_conn)
+
+
+# ---------------------------------------------------------------------------
+# FR-1: direction query parameter on GET /v1/friend-requests
+# ---------------------------------------------------------------------------
+
+_KNOTIFY_RUN_INTEGRATION = os.environ.get("KNOTIFY_RUN_INTEGRATION", "")
+
+
+def _check_integration_gate() -> None:
+    """Skip unless KNOTIFY_RUN_INTEGRATION=1 is set."""
+    if _KNOTIFY_RUN_INTEGRATION != "1":
+        pytest.skip(
+            "FR-1 direction tests require KNOTIFY_RUN_INTEGRATION=1 "
+            "and all required env vars set against a live dev environment."
+        )
+
+
+def _teardown_pair(aurora_conn, a_id: str, b_id: str) -> None:
+    """
+    Idempotent teardown: delete all friend_requests and friendships rows
+    for the given pair. Errors are suppressed.
+    """
+    import sys
+
+    try:
+        with aurora_conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM friend_requests WHERE "
+                "(from_user_id = %s::uuid AND to_user_id = %s::uuid) "
+                "OR (from_user_id = %s::uuid AND to_user_id = %s::uuid)",
+                (a_id, b_id, b_id, a_id),
+            )
+    except Exception as exc:
+        print(f"WARN: _teardown_pair friend_requests failed: {exc}", file=sys.stderr)
+
+    try:
+        user_a, user_b = _canonical_pair(a_id, b_id)
+        with aurora_conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM friendships WHERE user_a = %s::uuid AND user_b = %s::uuid",
+                (user_a, user_b),
+            )
+    except Exception as exc:
+        print(f"WARN: _teardown_pair friendships failed: {exc}", file=sys.stderr)
+
+
+@pytest.mark.parametrize("completed_profile_user", ["Male"], indirect=True)
+def test_given_a_sent_request_to_b_when_b_queries_direction_incoming_then_sees_only_incoming(
+    completed_profile_user,
+):
+    """
+    FR-1 AC: direction='incoming' returns only requests where to_user_id == caller.
+
+    Setup: A (Male) sends a friend request to B (Female).
+    B calls GET /v1/friend-requests?direction=incoming.
+    Assert: response contains the A→B row; none of the rows have
+    from_user_id == B (i.e. no outgoing rows bleed into the result).
+    """
+    _check_integration_gate()
+
+    try:
+        import boto3
+        import requests as http_requests
+    except ImportError:
+        pytest.skip("boto3 or requests not installed — live AWS environment required")
+
+    distribution_domain = _require_env("DISTRIBUTION_DOMAIN_NAME")
+    edge_secret = _require_env("EDGE_SECRET")
+    region = _require_env("AWS_REGION")
+    user_pool_id = _require_env("COGNITO_USER_POOL_ID")
+    integration_client_id = _require_env("COGNITO_INTEGRATION_TEST_CLIENT_ID")
+
+    cognito_client = boto3.client("cognito-idp", region_name=region)
+
+    user_a = completed_profile_user
+    a_id = user_a["sub"]
+    aurora_conn = user_a["_aurora_conn"]
+
+    b: dict | None = None
+
+    try:
+        b = _mint_user(
+            cognito_client, integration_client_id, user_pool_id,
+            distribution_domain, edge_secret, "Female", http_requests,
+        )
+        b_id = b["sub"]
+
+        # A sends a friend request to B
+        post_resp = http_requests.post(
+            _api_url(distribution_domain, "/v1/friend-requests"),
+            json={"toUserId": b_id},
+            headers=_authed_headers(user_a["access_token"], edge_secret),
+        )
+        assert post_resp.status_code in (200, 201), (
+            f"POST /v1/friend-requests returned HTTP {post_resp.status_code}: {post_resp.text!r}"
+        )
+
+        # B queries direction=incoming — expects exactly the A→B row and no others
+        get_resp = http_requests.get(
+            _api_url(distribution_domain, "/v1/friend-requests"),
+            params={"direction": "incoming"},
+            headers=_authed_headers(b["access_token"], edge_secret),
+        )
+        assert get_resp.status_code == 200, (
+            f"GET /v1/friend-requests?direction=incoming returned HTTP "
+            f"{get_resp.status_code}: {get_resp.text!r}"
+        )
+        body = get_resp.json()
+        reqs = body.get("friend_requests", [])
+
+        # At least one request must be present (A→B)
+        to_ids = [r.get("to_user_id") for r in reqs]
+        assert b_id in to_ids, (
+            f"Expected B's incoming request list to contain A's request (to_user_id={b_id!r}), "
+            f"got to_user_ids={to_ids!r}"
+        )
+
+        # No outgoing rows must appear — none of the rows should have from_user_id == B
+        from_ids = [r.get("from_user_id") for r in reqs]
+        assert b_id not in from_ids, (
+            f"direction=incoming must not return outgoing rows; "
+            f"B's own outgoing requests leaked: from_ids={from_ids!r}"
+        )
+
+    finally:
+        if b is not None:
+            _teardown_pair(aurora_conn, a_id, b["sub"])
+            _teardown_user(cognito_client, user_pool_id, b["email"], b["sub"], aurora_conn)
+
+
+@pytest.mark.parametrize("completed_profile_user", ["Male"], indirect=True)
+def test_given_a_sent_request_to_b_when_a_queries_direction_outgoing_then_sees_only_outgoing(
+    completed_profile_user,
+):
+    """
+    FR-1 AC: direction='outgoing' returns only requests where from_user_id == caller.
+
+    Setup: A (Male) sends a friend request to B (Female).
+    A calls GET /v1/friend-requests?direction=outgoing.
+    Assert: response contains A's outgoing row; to_user_id of every row != A
+    (i.e. no incoming rows bleed into the result).
+    """
+    _check_integration_gate()
+
+    try:
+        import boto3
+        import requests as http_requests
+    except ImportError:
+        pytest.skip("boto3 or requests not installed — live AWS environment required")
+
+    distribution_domain = _require_env("DISTRIBUTION_DOMAIN_NAME")
+    edge_secret = _require_env("EDGE_SECRET")
+    region = _require_env("AWS_REGION")
+    user_pool_id = _require_env("COGNITO_USER_POOL_ID")
+    integration_client_id = _require_env("COGNITO_INTEGRATION_TEST_CLIENT_ID")
+
+    cognito_client = boto3.client("cognito-idp", region_name=region)
+
+    user_a = completed_profile_user
+    a_id = user_a["sub"]
+    aurora_conn = user_a["_aurora_conn"]
+
+    b: dict | None = None
+
+    try:
+        b = _mint_user(
+            cognito_client, integration_client_id, user_pool_id,
+            distribution_domain, edge_secret, "Female", http_requests,
+        )
+        b_id = b["sub"]
+
+        # A sends a friend request to B
+        post_resp = http_requests.post(
+            _api_url(distribution_domain, "/v1/friend-requests"),
+            json={"toUserId": b_id},
+            headers=_authed_headers(user_a["access_token"], edge_secret),
+        )
+        assert post_resp.status_code in (200, 201), (
+            f"POST /v1/friend-requests returned HTTP {post_resp.status_code}: {post_resp.text!r}"
+        )
+
+        # A queries direction=outgoing — expects the A→B row and no incoming rows
+        get_resp = http_requests.get(
+            _api_url(distribution_domain, "/v1/friend-requests"),
+            params={"direction": "outgoing"},
+            headers=_authed_headers(user_a["access_token"], edge_secret),
+        )
+        assert get_resp.status_code == 200, (
+            f"GET /v1/friend-requests?direction=outgoing returned HTTP "
+            f"{get_resp.status_code}: {get_resp.text!r}"
+        )
+        body = get_resp.json()
+        reqs = body.get("friend_requests", [])
+
+        # At least one request must be present (A→B)
+        from_ids = [r.get("from_user_id") for r in reqs]
+        assert a_id in from_ids, (
+            f"Expected A's outgoing list to contain A's own request (from_user_id={a_id!r}), "
+            f"got from_ids={from_ids!r}"
+        )
+
+        # No incoming rows must appear — none of the rows should have to_user_id == A
+        to_ids = [r.get("to_user_id") for r in reqs]
+        assert a_id not in to_ids, (
+            f"direction=outgoing must not return incoming rows; "
+            f"A appeared as a recipient: to_ids={to_ids!r}"
+        )
+
+    finally:
+        if b is not None:
+            _teardown_pair(aurora_conn, a_id, b["sub"])
+            _teardown_user(cognito_client, user_pool_id, b["email"], b["sub"], aurora_conn)
+
+
+@pytest.mark.parametrize("completed_profile_user", ["Male"], indirect=True)
+def test_given_requests_in_both_directions_when_no_direction_param_then_both_returned(
+    completed_profile_user,
+):
+    """
+    FR-1 AC: missing direction param preserves current behaviour (both directions).
+
+    Setup: A (Male) sends a request to B (Female).  B sends a separate request
+    to a third user C (Male) so A's view has no incoming rows — only outgoing.
+    A calls GET /v1/friend-requests with NO direction param.
+    Assert: A sees his outgoing request (to B). Then B calls without direction
+    and sees both her incoming request (from A) and her outgoing request (to C).
+    This proves both directions are returned when direction is omitted.
+    """
+    _check_integration_gate()
+
+    try:
+        import boto3
+        import requests as http_requests
+    except ImportError:
+        pytest.skip("boto3 or requests not installed — live AWS environment required")
+
+    distribution_domain = _require_env("DISTRIBUTION_DOMAIN_NAME")
+    edge_secret = _require_env("EDGE_SECRET")
+    region = _require_env("AWS_REGION")
+    user_pool_id = _require_env("COGNITO_USER_POOL_ID")
+    integration_client_id = _require_env("COGNITO_INTEGRATION_TEST_CLIENT_ID")
+
+    cognito_client = boto3.client("cognito-idp", region_name=region)
+
+    user_a = completed_profile_user
+    a_id = user_a["sub"]
+    aurora_conn = user_a["_aurora_conn"]
+
+    b: dict | None = None
+    c: dict | None = None
+
+    try:
+        b = _mint_user(
+            cognito_client, integration_client_id, user_pool_id,
+            distribution_domain, edge_secret, "Female", http_requests,
+        )
+        b_id = b["sub"]
+
+        c = _mint_user(
+            cognito_client, integration_client_id, user_pool_id,
+            distribution_domain, edge_secret, "Male", http_requests,
+        )
+        c_id = c["sub"]
+
+        # A → B: outgoing from A, incoming to B
+        post_ab = http_requests.post(
+            _api_url(distribution_domain, "/v1/friend-requests"),
+            json={"toUserId": b_id},
+            headers=_authed_headers(user_a["access_token"], edge_secret),
+        )
+        assert post_ab.status_code in (200, 201), (
+            f"A→B POST returned HTTP {post_ab.status_code}: {post_ab.text!r}"
+        )
+
+        # B → C: outgoing from B, incoming to C
+        post_bc = http_requests.post(
+            _api_url(distribution_domain, "/v1/friend-requests"),
+            json={"toUserId": c_id},
+            headers=_authed_headers(b["access_token"], edge_secret),
+        )
+        assert post_bc.status_code in (200, 201), (
+            f"B→C POST returned HTTP {post_bc.status_code}: {post_bc.text!r}"
+        )
+
+        # B calls GET /v1/friend-requests with NO direction param
+        # Must see BOTH the incoming A→B request AND the outgoing B→C request
+        get_resp = http_requests.get(
+            _api_url(distribution_domain, "/v1/friend-requests"),
+            headers=_authed_headers(b["access_token"], edge_secret),
+        )
+        assert get_resp.status_code == 200, (
+            f"GET /v1/friend-requests (no direction) returned HTTP "
+            f"{get_resp.status_code}: {get_resp.text!r}"
+        )
+        body = get_resp.json()
+        reqs = body.get("friend_requests", [])
+
+        from_ids = [r.get("from_user_id") for r in reqs]
+        to_ids = [r.get("to_user_id") for r in reqs]
+
+        # Incoming: A→B — b is the recipient
+        assert b_id in to_ids, (
+            f"No-direction call must include incoming A→B row (to_user_id={b_id!r}); "
+            f"got to_ids={to_ids!r}"
+        )
+        # Outgoing: B→C — b is the sender
+        assert b_id in from_ids, (
+            f"No-direction call must include outgoing B→C row (from_user_id={b_id!r}); "
+            f"got from_ids={from_ids!r}"
+        )
+
+    finally:
+        if b is not None and c is not None:
+            _teardown_pair(aurora_conn, b_id, c["sub"])
+        if b is not None:
+            _teardown_pair(aurora_conn, a_id, b["sub"])
+            _teardown_user(cognito_client, user_pool_id, b["email"], b["sub"], aurora_conn)
+        if c is not None:
+            _teardown_user(cognito_client, user_pool_id, c["email"], c["sub"], aurora_conn)
+
+
+@pytest.mark.parametrize("completed_profile_user", ["Male"], indirect=True)
+def test_given_invalid_direction_param_when_get_friend_requests_then_returns_400(
+    completed_profile_user,
+):
+    """
+    FR-1 AC: direction='foo' (or any value other than 'incoming'/'outgoing'/missing)
+    returns 400 {"error": "invalid_direction"}.
+
+    The endpoint must not silently return the wrong data for an unrecognised
+    direction value.
+    """
+    _check_integration_gate()
+
+    try:
+        import boto3
+        import requests as http_requests
+    except ImportError:
+        pytest.skip("boto3 or requests not installed — live AWS environment required")
+
+    distribution_domain = _require_env("DISTRIBUTION_DOMAIN_NAME")
+    edge_secret = _require_env("EDGE_SECRET")
+    region = _require_env("AWS_REGION")
+
+    user_a = completed_profile_user
+    aurora_conn = user_a["_aurora_conn"]  # noqa: F841 — kept for consistency
+
+    # Attempt GET with an invalid direction value
+    get_resp = http_requests.get(
+        _api_url(distribution_domain, "/v1/friend-requests"),
+        params={"direction": "foo"},
+        headers=_authed_headers(user_a["access_token"], edge_secret),
+    )
+    assert get_resp.status_code == 400, (
+        f"Expected HTTP 400 for direction='foo', got {get_resp.status_code}: "
+        f"{get_resp.text!r}"
+    )
+    body = get_resp.json()
+    assert body.get("error") == "invalid_direction", (
+        f"Expected error='invalid_direction', got {body!r}"
+    )

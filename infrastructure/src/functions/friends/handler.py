@@ -4,7 +4,10 @@ knotify-friends Lambda handler.
 Implements seven HTTP API Gateway v2 routes:
   GET    /v1/friends                          — block-filtered friend list
   DELETE /v1/friends/{userId}                 — remove a friendship
-  GET    /v1/friend-requests                  — block-filtered incoming/outgoing requests
+  GET    /v1/friend-requests[?direction=incoming|outgoing]  — block-filtered requests
+                                                             direction=incoming: only to_user_id=me
+                                                             direction=outgoing: only from_user_id=me
+                                                             missing: both (backward-compat)
   POST   /v1/friend-requests                  — send a friend request (block-aware)
   POST   /v1/friend-requests/{id}/accept      — accept a pending request
   POST   /v1/friend-requests/{id}/decline     — decline a pending request
@@ -148,10 +151,37 @@ WHERE (user_a = %s::uuid AND user_b = %s::uuid)
 # Table is aliased `fr` so block_filter() can reference fr.from_user_id /
 # fr.to_user_id (correlated subqueries must use the outer alias, not the bare
 # table name).
+#
+# Three variants (FR-1): select the right constant based on the `direction`
+# query parameter.  block_filter fragments are always applied to BOTH columns
+# regardless of direction so a blocked user's requests are filtered from all
+# three views.
 _SELECT_FRIEND_REQUESTS_SQL = (
     "SELECT fr.request_id, fr.from_user_id, fr.to_user_id, fr.status, fr.created_at "
     "FROM friend_requests fr "
     "WHERE (fr.from_user_id = %s::uuid OR fr.to_user_id = %s::uuid) "
+    "  AND fr.status = 'pending' "
+    "  AND {bf_from} "
+    "  AND {bf_to}"
+)
+
+# FR-1: direction='incoming' — only requests sent TO the caller.
+# Parameters: %s::uuid (to_user_id = me), %s %s (bf_from), %s %s (bf_to) → 5 bindings.
+_SELECT_FRIEND_REQUESTS_INCOMING_SQL = (
+    "SELECT fr.request_id, fr.from_user_id, fr.to_user_id, fr.status, fr.created_at "
+    "FROM friend_requests fr "
+    "WHERE fr.to_user_id = %s::uuid "
+    "  AND fr.status = 'pending' "
+    "  AND {bf_from} "
+    "  AND {bf_to}"
+)
+
+# FR-1: direction='outgoing' — only requests sent BY the caller.
+# Parameters: %s::uuid (from_user_id = me), %s %s (bf_from), %s %s (bf_to) → 5 bindings.
+_SELECT_FRIEND_REQUESTS_OUTGOING_SQL = (
+    "SELECT fr.request_id, fr.from_user_id, fr.to_user_id, fr.status, fr.created_at "
+    "FROM friend_requests fr "
+    "WHERE fr.from_user_id = %s::uuid "
     "  AND fr.status = 'pending' "
     "  AND {bf_from} "
     "  AND {bf_to}"
@@ -436,20 +466,42 @@ def _handle_get_friend_requests(event: dict, user_id: str, user_sex: str) -> dic
     """
     GET /v1/friend-requests — return block-filtered pending requests for the caller.
 
-    Shows both incoming (to_user_id = me) and outgoing (from_user_id = me) requests.
-    Block filter applied against both from_user_id and to_user_id.
+    Optional query parameter `direction`:
+      - missing / omitted: returns BOTH incoming and outgoing requests (backward-compat).
+      - 'incoming': returns only requests where to_user_id = caller.
+      - 'outgoing': returns only requests where from_user_id = caller.
+      - any other value: 400 {"error": "invalid_direction"}.
+
+    block_filter is always applied to BOTH fr.from_user_id and fr.to_user_id
+    regardless of direction, so a blocked user's requests are suppressed in all views.
+
+    Parameter binding counts (bf_from and bf_to each consume 2 bindings):
+      - both (no direction): 2 (OR clause) + 2 (bf_from) + 2 (bf_to) = 6
+      - incoming / outgoing: 1 (single equality) + 2 (bf_from) + 2 (bf_to) = 5
     """
+    qsp = event.get("queryStringParameters") or {}
+    direction = qsp.get("direction")
+
+    _VALID_DIRECTIONS = {"incoming", "outgoing"}
+    if direction is not None and direction not in _VALID_DIRECTIONS:
+        return _json_response(400, {"error": "invalid_direction"})
+
     bf_from = block_filter("fr.from_user_id")
     bf_to = block_filter("fr.to_user_id")
 
-    sql = _SELECT_FRIEND_REQUESTS_SQL.format(bf_from=bf_from, bf_to=bf_to)
-
-    # Parameters:
-    #   %s::uuid (from_user_id = me)
-    #   %s::uuid (to_user_id   = me)
-    #   %s, %s for bf_from (other_user = fr.from_user_id; bind me twice)
-    #   %s, %s for bf_to   (other_user = fr.to_user_id;   bind me twice)
-    params = (user_id, user_id, user_id, user_id, user_id, user_id)
+    if direction == "incoming":
+        sql = _SELECT_FRIEND_REQUESTS_INCOMING_SQL.format(bf_from=bf_from, bf_to=bf_to)
+        # 1 binding for to_user_id + 2 for bf_from + 2 for bf_to = 5
+        params = (user_id, user_id, user_id, user_id, user_id)
+    elif direction == "outgoing":
+        sql = _SELECT_FRIEND_REQUESTS_OUTGOING_SQL.format(bf_from=bf_from, bf_to=bf_to)
+        # 1 binding for from_user_id + 2 for bf_from + 2 for bf_to = 5
+        params = (user_id, user_id, user_id, user_id, user_id)
+    else:
+        # direction is None — both directions (backward-compat)
+        sql = _SELECT_FRIEND_REQUESTS_SQL.format(bf_from=bf_from, bf_to=bf_to)
+        # 2 bindings for OR clause + 2 for bf_from + 2 for bf_to = 6
+        params = (user_id, user_id, user_id, user_id, user_id, user_id)
 
     conn = _get_conn()
     try:
@@ -464,8 +516,8 @@ def _handle_get_friend_requests(event: dict, user_id: str, user_sex: str) -> dic
         _conn = None
         raise
 
-    requests = [_row_to_dict(row, description) for row in rows]
-    return _json_response(200, {"friend_requests": requests})
+    friend_requests = [_row_to_dict(row, description) for row in rows]
+    return _json_response(200, {"friend_requests": friend_requests})
 
 
 def _handle_post_friend_requests(event: dict, user_id: str, user_sex: str) -> dict:
