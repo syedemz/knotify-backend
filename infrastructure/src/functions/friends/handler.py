@@ -508,6 +508,82 @@ def _write_notification_received(
         return False
 
 
+def _write_notification_accepted(
+    original_sender_id: str,
+    acceptor_id: str,
+    request_id: str,
+    acceptor_first_name: str,
+) -> bool:
+    """
+    Write a type='friend_request_accepted' row to the Notifications DynamoDB table.
+
+    Called AFTER the Aurora transaction in _handle_accept_friend_request commits
+    and AFTER _set_friendship_active().
+
+    ## Schema (matches the notifications_publisher consumer expectation)
+
+    PK  user_id                     = original_sender_id  (the person notified of acceptance)
+    SK  created_at_notification_id  = "<ISO8601>#<uuid_hex>"
+        notification_id             = <uuid_hex>
+        type                        = 'friend_request_accepted'
+        payload                     = JSON string {"request_id": ..., "from_user_id": <acceptor_id>}
+        sender_user_id              = acceptor_id
+        sender_name                 = acceptor_first_name
+        read                        = False
+        delivered                   = False
+        created_at                  = <ISO8601>
+
+    ## Best-effort semantics
+
+    Returns True on success. Returns False on any DynamoDB error (duck-typed
+    via getattr(exc, 'response', None)) without propagating the exception so
+    the Aurora commit is never rolled back.  The caller surfaces failure as
+    notification_pending: true in the HTTP response body.
+    """
+    table = os.environ.get("TABLE_NOTIFICATIONS", _TABLE_NOTIFICATIONS)
+    now_iso = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
+    notif_id = _new_notification_id()
+    sk = f"{now_iso}#{notif_id}"
+
+    payload_str = json.dumps(
+        {"request_id": request_id, "from_user_id": acceptor_id}
+    )
+
+    try:
+        _get_dynamo().put_item(
+            TableName=table,
+            Item={
+                "user_id": {"S": original_sender_id},
+                "created_at_notification_id": {"S": sk},
+                "notification_id": {"S": notif_id},
+                "type": {"S": "friend_request_accepted"},
+                "payload": {"S": payload_str},
+                "sender_user_id": {"S": acceptor_id},
+                "sender_name": {"S": acceptor_first_name},
+                "read": {"BOOL": False},
+                "delivered": {"BOOL": False},
+                "created_at": {"S": now_iso},
+            },
+        )
+        return True
+    except Exception as exc:
+        # Duck-type botocore.exceptions.ClientError via .response attribute so
+        # this module does not require a top-level botocore import.
+        error_response = getattr(exc, "response", None)
+        if error_response is None:
+            raise
+        code = error_response.get("Error", {}).get("Code", "")
+        logger.error(
+            "accept-friend-request: DynamoDB Notifications PutItem failed",
+            extra={
+                "original_sender_id": original_sender_id,
+                "acceptor_id": acceptor_id,
+                "dynamo_error_code": code,
+            },
+        )
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Sub-handlers
 # ---------------------------------------------------------------------------
@@ -812,16 +888,33 @@ def _handle_accept_friend_request(
         if not found → 404 {"error":"not_found"} (row was deleted by a block)
         UPDATE friend_requests SET status = 'accepted'
         INSERT INTO friendships using lex-min/max canonical ordering
+        SELECT first_name FROM users WHERE user_id = <acceptor> (same connection,
+          no extra round trip after commit — value used for the post-commit
+          Notifications PutItem)
       COMMIT → 200
 
     AFTER the Aurora transaction commits, calls DynamoDB to set friendship_active=true
     on the ChatRooms row (story 8.9b).  ConditionalCheckFailed → no-op (no room yet;
     the next createOrGetRoom sets the flag at creation time).  Other DynamoDB errors
     → 200 with chat_room_update_pending: true (Aurora commit is never rolled back).
+
+    ## Side effects
+
+    After _set_friendship_active(), writes a type='friend_request_accepted' row to
+    the DynamoDB Notifications table addressed to the ORIGINAL SENDER (from_user_id),
+    not the acceptor.  The row drives the notifications_publisher Lambda →
+    _publishFriendRequestUpdated → onFriendRequestUpdated subscription, which opens
+    the RequestAcceptedModal on the sender's device.
+
+    This write is best-effort: if the DynamoDB PutItem fails, the Aurora commit is
+    NOT rolled back and the response carries notification_pending: true so the
+    frontend can surface a fallback.  The chat_room_update_pending and
+    notification_pending flags are independent — either, both, or neither may be set.
     """
     conn = _get_conn()
     from_user_id: str = ""
     to_user_id: str = ""
+    acceptor_first_name: str = ""
     try:
         with knotify_db.rls_context(conn, user_id, user_sex):
             with conn.cursor() as cur:
@@ -840,6 +933,14 @@ def _handle_accept_friend_request(
                 cur.execute(_UPDATE_REQUEST_ACCEPTED_SQL, (request_id,))
                 cur.execute(_INSERT_FRIENDSHIP_SQL, (user_a, user_b))
 
+            # Acceptor first-name lookup — inside the transaction (same connection,
+            # no extra round trip after commit) so the value is available for the
+            # post-commit Notifications PutItem.  user_id is the JWT caller = acceptor.
+            with conn.cursor() as cur:
+                cur.execute(_SELECT_USER_FIRST_NAME_SQL, (user_id,))
+                name_row = cur.fetchone()
+            acceptor_first_name = name_row[0] if name_row else ""
+
     except Exception:
         conn.close()
         global _conn
@@ -847,12 +948,21 @@ def _handle_accept_friend_request(
         raise
 
     # Aurora transaction has committed at this point.
-    # Now call DynamoDB — NEVER roll back Aurora if this fails.
+    # Now call DynamoDB — NEVER roll back Aurora if either of these fails.
     dynamo_ok = _set_friendship_active(from_user_id, to_user_id)
+
+    notif_ok = _write_notification_accepted(
+        original_sender_id=from_user_id,
+        acceptor_id=user_id,
+        request_id=request_id,
+        acceptor_first_name=acceptor_first_name,
+    )
 
     response_body: dict = {"accepted": True, "request_id": request_id}
     if not dynamo_ok:
         response_body["chat_room_update_pending"] = True
+    if not notif_ok:
+        response_body["notification_pending"] = True
 
     return _json_response(200, response_body)
 
