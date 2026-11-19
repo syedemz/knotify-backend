@@ -420,6 +420,29 @@ resource "aws_iam_role_policy" "friends_writer_dynamodb" {
   policy = data.aws_iam_policy_document.friends_writer_dynamodb.json
 }
 
+# Allow DynamoDB PutItem on the Notifications table ONLY (FR-5).
+# Kept separate from friends_writer_dynamodb (ChatRooms-only) so reviewers
+# see the scope expansion as its own diff and the two grants remain narrowly
+# scoped: ChatRooms→UpdateItem, Notifications→PutItem.
+data "aws_iam_policy_document" "friends_writer_notifications" {
+  statement {
+    sid    = "NotificationsPutItem"
+    effect = "Allow"
+    actions = [
+      "dynamodb:PutItem",
+    ]
+    resources = [
+      var.notifications_table_arn != "" ? var.notifications_table_arn : "arn:aws:dynamodb:*:*:table/Notifications",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "friends_writer_notifications" {
+  name   = "friends-writer-notifications"
+  role   = aws_iam_role.friends_writer.name
+  policy = data.aws_iam_policy_document.friends_writer_notifications.json
+}
+
 # ===========================================================================
 # Role: stepfn_task
 #
