@@ -1,9 +1,9 @@
 phase: friend-request-correctness (hotfix, not a numbered phase)
 title: Friend-request correctness — GET direction filter, reverse/already-friends checks, Notifications-row writes
 created: 2026-11-19
-last_updated: 2026-11-19 (FR-1..FR-6 done)
+last_updated: 2026-11-19 (FR-1..FR-7 done — hotfix complete)
 owner: backenddeveloper
-status: in_progress
+status: done
 depends_on: [phase 6 (friends Lambda), phase 8 (notifications_publisher)]
 
 context_summary: |
@@ -178,6 +178,7 @@ stories:
     title: End-to-end regression suite covering FR-1 … FR-6
     agent: backenddeveloper
     depends_on: [FR-1, FR-2, FR-3, FR-4, FR-5, FR-6]
+    done: true
     acceptance_criteria:
       - Add a new integration test file `infrastructure/src/tests/integration/test_friend_requests_e2e.py` that walks the complete flow using the `completed_profile_user(sex)` fixture pair.
       - "Test sequence (one test function, sequential assertions):
