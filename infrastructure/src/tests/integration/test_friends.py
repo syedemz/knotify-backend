@@ -1276,6 +1276,186 @@ def test_given_not_yet_friends_when_a_sends_request_to_b_then_201_regression(
             _teardown_user(cognito_client, user_pool_id, b["email"], b["sub"], aurora_conn)
 
 
+# ---------------------------------------------------------------------------
+# FR-5: Notifications row written on POST /v1/friend-requests
+# ---------------------------------------------------------------------------
+
+
+def _teardown_notifications_row(dynamo_client, table_name: str, user_id: str) -> None:
+    """
+    Delete all Notifications rows for user_id by scanning the SK prefix.
+
+    Uses a Query on the PK (user_id) then deletes each row individually.
+    Errors are suppressed — this is a best-effort teardown.
+    """
+    import sys
+
+    try:
+        resp = dynamo_client.query(
+            TableName=table_name,
+            KeyConditionExpression="user_id = :uid",
+            ExpressionAttributeValues={":uid": {"S": user_id}},
+        )
+        for item in resp.get("Items", []):
+            sk = item.get("created_at_notification_id", {}).get("S", "")
+            if not sk:
+                continue
+            dynamo_client.delete_item(
+                TableName=table_name,
+                Key={
+                    "user_id": {"S": user_id},
+                    "created_at_notification_id": {"S": sk},
+                },
+            )
+    except Exception as exc:
+        print(
+            f"WARN: _teardown_notifications_row(user_id={user_id!r}) failed: {exc}",
+            file=sys.stderr,
+        )
+
+
+@pytest.mark.parametrize("completed_profile_user", ["Male"], indirect=True)
+def test_given_a_sends_request_to_b_when_post_succeeds_then_notifications_row_written(
+    completed_profile_user,
+):
+    """
+    FR-5 AC: after a successful POST /v1/friend-requests, a Notifications row
+    must be written in DynamoDB with the correct schema fields.
+
+    Setup: A (Male, from fixture) sends a friend request to B (Female, minted).
+    Assert:
+      - POST returns 201.
+      - DynamoDB Query on Notifications table (PK user_id = B's sub) returns
+        at least one row whose 'type' == 'friend_request_received'.
+      - That row has sender_user_id == A's sub.
+      - That row has sender_name == A's first_name ("Test").
+      - That row's payload JSON contains 'request_id' matching the POST response.
+      - That row has read == False and delivered == False.
+
+    Does NOT assert on live AppSync subscription (FR-7 scope).
+
+    Gated on KNOTIFY_RUN_INTEGRATION=1.
+    """
+    _check_integration_gate()
+
+    notifications_table = os.environ.get("DYNAMODB_TABLE_NOTIFICATIONS", "")
+    if not notifications_table:
+        pytest.skip(
+            "DYNAMODB_TABLE_NOTIFICATIONS env var not set — "
+            "set it to the Notifications DynamoDB table name and re-run."
+        )
+
+    try:
+        import boto3
+        import requests as http_requests
+    except ImportError:
+        pytest.skip("boto3 or requests not installed — live AWS environment required")
+
+    distribution_domain = _require_env("DISTRIBUTION_DOMAIN_NAME")
+    edge_secret = _require_env("EDGE_SECRET")
+    region = _require_env("AWS_REGION")
+    user_pool_id = _require_env("COGNITO_USER_POOL_ID")
+    integration_client_id = _require_env("COGNITO_INTEGRATION_TEST_CLIENT_ID")
+
+    cognito_client = boto3.client("cognito-idp", region_name=region)
+    dynamo_client = boto3.client("dynamodb", region_name=region)
+
+    user_a = completed_profile_user
+    a_id = user_a["sub"]
+    # A's first name is "Test" per build_profile_completion_payload in conftest.py.
+    a_first_name = "Test"
+    aurora_conn = user_a["_aurora_conn"]
+
+    b: dict | None = None
+
+    try:
+        b = _mint_user(
+            cognito_client, integration_client_id, user_pool_id,
+            distribution_domain, edge_secret, "Female", http_requests,
+        )
+        b_id = b["sub"]
+
+        # A sends friend request to B — POST must succeed with 201.
+        post_resp = http_requests.post(
+            _api_url(distribution_domain, "/v1/friend-requests"),
+            json={"toUserId": b_id},
+            headers=_authed_headers(user_a["access_token"], edge_secret),
+        )
+        assert post_resp.status_code in (200, 201), (
+            f"POST /v1/friend-requests returned HTTP {post_resp.status_code}: "
+            f"{post_resp.text!r}"
+        )
+        resp_body = post_resp.json()
+        request_id = resp_body.get("request_id")
+        assert request_id, f"Expected 'request_id' in response body, got {resp_body!r}"
+
+        # Query Notifications table for recipient B — there should be a row with
+        # type='friend_request_received'.  The Lambda writes the row synchronously
+        # before returning 201 so no sleep is needed; a DynamoDB PutItem completes
+        # well within the HTTP round-trip.
+        query_resp = dynamo_client.query(
+            TableName=notifications_table,
+            KeyConditionExpression="user_id = :uid",
+            ExpressionAttributeValues={":uid": {"S": b_id}},
+        )
+        items = query_resp.get("Items", [])
+
+        # Find the row with type='friend_request_received'
+        received_rows = [
+            item for item in items
+            if item.get("type", {}).get("S") == "friend_request_received"
+        ]
+        assert received_rows, (
+            f"Expected a Notifications row with type='friend_request_received' "
+            f"for recipient {b_id!r}, but got items={items!r}"
+        )
+
+        row = received_rows[0]
+
+        # sender_user_id must be A's sub.
+        actual_sender = row.get("sender_user_id", {}).get("S")
+        assert actual_sender == a_id, (
+            f"Expected sender_user_id={a_id!r}, got {actual_sender!r}"
+        )
+
+        # sender_name must be A's first name.
+        actual_sender_name = row.get("sender_name", {}).get("S")
+        assert actual_sender_name == a_first_name, (
+            f"Expected sender_name={a_first_name!r}, got {actual_sender_name!r}"
+        )
+
+        # payload must be a JSON string containing 'request_id'.
+        payload_str = row.get("payload", {}).get("S", "")
+        try:
+            payload_obj = json.loads(payload_str)
+        except (json.JSONDecodeError, TypeError) as exc:
+            pytest.fail(
+                f"Notifications row payload is not valid JSON: {payload_str!r} ({exc})"
+            )
+        assert payload_obj.get("request_id") == request_id, (
+            f"Expected payload.request_id={request_id!r}, "
+            f"got payload={payload_obj!r}"
+        )
+
+        # read and delivered must both be False.
+        actual_read = row.get("read", {}).get("BOOL")
+        actual_delivered = row.get("delivered", {}).get("BOOL")
+        assert actual_read is False, (
+            f"Expected read=False, got {actual_read!r}"
+        )
+        assert actual_delivered is False, (
+            f"Expected delivered=False, got {actual_delivered!r}"
+        )
+
+    finally:
+        if b is not None:
+            b_id_td = b["sub"]
+            # Teardown: remove Notifications rows for B (recipient).
+            _teardown_notifications_row(dynamo_client, notifications_table, b_id_td)
+            _teardown_pair(aurora_conn, a_id, b_id_td)
+            _teardown_user(cognito_client, user_pool_id, b["email"], b_id_td, aurora_conn)
+
+
 @pytest.mark.parametrize("completed_profile_user", ["Male"], indirect=True)
 def test_given_existing_pending_request_when_same_direction_duplicate_then_409_already_pending(
     completed_profile_user,

@@ -909,9 +909,10 @@ module "friends" {
   vpc_config = local.db_vpc_config
 
   environment_variables = merge(local.db_env_vars, {
-    DB_SECRET_NAME   = "knotify-${var.environment}-app-user-credential"
-    EDGE_SECRET      = module.cloudfront.edge_secret
-    TABLE_CHAT_ROOMS = module.dynamodb.chat_rooms_table_name
+    DB_SECRET_NAME      = "knotify-${var.environment}-app-user-credential"
+    EDGE_SECRET         = module.cloudfront.edge_secret
+    TABLE_CHAT_ROOMS    = module.dynamodb.chat_rooms_table_name
+    TABLE_NOTIFICATIONS = module.dynamodb.notifications_table_name
   })
 }
 

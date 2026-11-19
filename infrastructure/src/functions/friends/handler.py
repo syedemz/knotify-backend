@@ -9,6 +9,10 @@ Implements seven HTTP API Gateway v2 routes:
                                                              direction=outgoing: only from_user_id=me
                                                              missing: both (backward-compat)
   POST   /v1/friend-requests                  — send a friend request (block-aware)
+                                               Side effect: writes a Notifications row
+                                               (type='friend_request_received') to DynamoDB
+                                               so the notifications_publisher Lambda can fan
+                                               out to onNotificationForMe (FR-5, story 8.9c).
   POST   /v1/friend-requests/{id}/accept      — accept a pending request
   POST   /v1/friend-requests/{id}/decline     — decline a pending request
   DELETE /v1/friend-requests/{id}             — cancel an outgoing request
@@ -47,9 +51,11 @@ Dependencies (Lambda layers):
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import re
+import uuid
 from typing import Any
 
 import psycopg2.errors
@@ -64,6 +70,18 @@ logger = init_logger("knotify_friends")
 
 _DB_SECRET_NAME: str = os.environ.get("DB_SECRET_NAME", "")
 _TABLE_CHAT_ROOMS: str = os.environ.get("TABLE_CHAT_ROOMS", "ChatRooms")
+_TABLE_NOTIFICATIONS: str = os.environ.get("TABLE_NOTIFICATIONS", "Notifications")
+
+
+def _new_notification_id() -> str:
+    """
+    Return a 32-character hex string suitable for use as a notification ID.
+
+    No ULID package is bundled in the knotify_obs / knotify_db layers, so we
+    use uuid4().hex.  The SK format is '<ISO8601>#<id>' which preserves
+    per-user time ordering for all practical notification volumes.
+    """
+    return uuid.uuid4().hex
 
 _conn = None
 _dynamo = None
@@ -254,6 +272,15 @@ WHERE user_a = %s::uuid
   AND user_b = %s::uuid
 """
 
+# FR-5: requester first-name lookup — single point-lookup run inside the POST
+# transaction before COMMIT so no extra round trip after Aurora commits.
+# Parameters bind (user_id,).
+_SELECT_USER_FIRST_NAME_SQL = """
+SELECT first_name
+FROM users
+WHERE user_id = %s::uuid
+"""
+
 # ---------------------------------------------------------------------------
 # Pure helper functions (no I/O — fully unit-testable)
 # ---------------------------------------------------------------------------
@@ -394,6 +421,87 @@ def _clear_friendship_active(user_id_a: str, user_id_b: str) -> bool:
             extra={
                 "user_id_a": user_id_a,
                 "user_id_b": user_id_b,
+                "dynamo_error_code": code,
+            },
+        )
+        return False
+
+
+def _write_notification_received(
+    recipient_id: str,
+    requester_id: str,
+    request_id: str,
+    requester_first_name: str,
+) -> bool:
+    """
+    Write a type='friend_request_received' row to the Notifications DynamoDB table.
+
+    Called AFTER the Aurora transaction in _handle_post_friend_requests commits.
+
+    ## Schema (matches the notifications_publisher consumer expectation)
+
+    PK  user_id                     = recipient_id
+    SK  created_at_notification_id  = "<ISO8601>#<uuid_hex>"
+        notification_id             = <uuid_hex>
+        type                        = 'friend_request_received'
+        payload                     = JSON string {"request_id": ..., "from_user_id": ...}
+        sender_user_id              = requester_id
+        sender_name                 = requester_first_name
+        read                        = False
+        delivered                   = False
+        created_at                  = <ISO8601>
+
+    ## Best-effort semantics
+
+    Returns True on success. Returns False on any DynamoDB error (duck-typed
+    via getattr(exc, 'response', None)) without propagating the exception so
+    the Aurora commit is never rolled back.  The caller surfaces failure as
+    notification_pending: true in the HTTP response body.
+
+    ## ULID note
+
+    Neither knotify_obs nor knotify_db layers include a ULID package, so the
+    notification ID is uuid4().hex (32 chars).  _new_notification_id() wraps
+    the generator for clarity and future replaceability.
+    """
+    table = os.environ.get("TABLE_NOTIFICATIONS", _TABLE_NOTIFICATIONS)
+    now_iso = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
+    notif_id = _new_notification_id()
+    sk = f"{now_iso}#{notif_id}"
+
+    payload_str = json.dumps(
+        {"request_id": request_id, "from_user_id": requester_id}
+    )
+
+    try:
+        _get_dynamo().put_item(
+            TableName=table,
+            Item={
+                "user_id": {"S": recipient_id},
+                "created_at_notification_id": {"S": sk},
+                "notification_id": {"S": notif_id},
+                "type": {"S": "friend_request_received"},
+                "payload": {"S": payload_str},
+                "sender_user_id": {"S": requester_id},
+                "sender_name": {"S": requester_first_name},
+                "read": {"BOOL": False},
+                "delivered": {"BOOL": False},
+                "created_at": {"S": now_iso},
+            },
+        )
+        return True
+    except Exception as exc:
+        # Duck-type botocore.exceptions.ClientError via .response attribute so
+        # this module does not require a top-level botocore import.
+        error_response = getattr(exc, "response", None)
+        if error_response is None:
+            raise
+        code = error_response.get("Error", {}).get("Code", "")
+        logger.error(
+            "post-friend-request: DynamoDB Notifications PutItem failed",
+            extra={
+                "recipient_id": recipient_id,
+                "requester_id": requester_id,
                 "dynamo_error_code": code,
             },
         )
@@ -570,7 +678,23 @@ def _handle_post_friend_requests(event: dict, user_id: str, user_sex: str) -> di
             if UniqueViolation → ROLLBACK → 409 {"error": "already_pending"}
               (covers the race where two concurrent same-direction POSTs both
                pass the SELECT pre-check; the UNIQUE constraint catches the loser)
+        (5) SELECT first_name FROM users WHERE user_id = requester — free point
+              lookup in the same transaction before COMMIT; value forwarded to
+              the post-commit DynamoDB write.
       COMMIT → 201 with the new request row
+
+    ## Side effects
+
+    After Aurora commits, _write_notification_received() performs a DynamoDB
+    PutItem into the Notifications table (TABLE_NOTIFICATIONS env var) addressed
+    to the recipient (target_user_id).  This is OUTSIDE the Aurora transaction —
+    best-effort semantics:
+      - On success: 201 response body contains only the new request row fields.
+      - On failure: Aurora commit stands; 201 response body gains
+        notification_pending: true so the caller (or a polling fallback) knows
+        the real-time push did not fire.
+    The notifications_publisher Lambda (story 8.9c) consumes the Notifications
+    DynamoDB stream and fans out to the onNotificationForMe AppSync subscription.
     """
     body_raw = event.get("body")
     if not body_raw:
@@ -641,6 +765,14 @@ def _handle_post_friend_requests(event: dict, user_id: str, user_sex: str) -> di
             except psycopg2.errors.UniqueViolation:
                 return _json_response(409, {"error": "already_pending"})
 
+            # (5) Requester first-name lookup — inside the transaction (same
+            #     connection, no extra round trip after commit) so the value
+            #     is available for the post-commit Notifications PutItem.
+            with conn.cursor() as cur:
+                cur.execute(_SELECT_USER_FIRST_NAME_SQL, (requester_id,))
+                name_row = cur.fetchone()
+            requester_first_name: str = name_row[0] if name_row else ""
+
     except Exception as exc:
         # Re-raise if it's not one of the handled 409 paths.
         # The 409 returns above exit the with-block cleanly via rls_context's
@@ -651,7 +783,21 @@ def _handle_post_friend_requests(event: dict, user_id: str, user_sex: str) -> di
         raise
 
     new_request = _row_to_dict(row, description) if row else {}
-    return _json_response(201, new_request)
+
+    # Aurora has committed. Best-effort DynamoDB Notifications write.
+    # Never roll back Aurora if this fails — see ## Side effects in the docstring.
+    notif_ok = _write_notification_received(
+        recipient_id=target_user_id,
+        requester_id=requester_id,
+        request_id=str(new_request.get("request_id", "")),
+        requester_first_name=requester_first_name,
+    )
+
+    response_body = dict(new_request)
+    if not notif_ok:
+        response_body["notification_pending"] = True
+
+    return _json_response(201, response_body)
 
 
 def _handle_accept_friend_request(
