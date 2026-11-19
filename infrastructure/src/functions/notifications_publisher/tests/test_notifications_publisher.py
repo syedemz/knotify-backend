@@ -63,17 +63,21 @@ def _notification_image(
     notification_id: str = "notif-001",
     notification_type: str = "friend_request_received",
     sender_id: str = "user-sender-xyz",
-    created_at: str = "2026-06-18T10:00:00.000000#notif-001",
+    created_at_sk: str = "2026-06-18T10:00:00.000000#notif-001",
+    created_at_iso: str = "2026-06-18T10:00:00.000000Z",
 ) -> dict:
     """
     Build a Notifications row DynamoDB image.
 
     PK: user_id (recipient's Cognito sub)
     SK: <ISO timestamp>#<notification_id>
+    Includes the standalone `created_at` column (ISO 8601 / RFC 3339) that
+    gets forwarded to the Notification type's non-null `createdAt` field.
     """
     return {
         "user_id": _ddb_str(user_id),
-        "created_at_notification_id": _ddb_str(created_at),
+        "created_at_notification_id": _ddb_str(created_at_sk),
+        "created_at": _ddb_str(created_at_iso),
         "notification_id": _ddb_str(notification_id),
         "type": _ddb_str(notification_type),
         "sender_user_id": _ddb_str(sender_id),
@@ -499,13 +503,18 @@ def test_build_notification_payload_returns_camelcase_fields():
     """
     AC-K: _build_notification_payload converts a DynamoDB NewImage dict into
     a plain Python dict with camelCase keys matching the GraphQL Notification type.
-    user_id must be present as userId.
+    user_id must be present as userId. created_at must be forwarded as createdAt
+    so the AppSync subscription delivery can resolve the non-null `createdAt`
+    field; omitting it causes AppSync to silently drop delivery (observed
+    2026-11-19 — no modal fires on the counterpart device despite publisher
+    success).
     """
     from notifications_publisher.handler import _build_notification_payload
 
     new_image = {
         "user_id": _ddb_str("user-recipient-xyz"),
         "created_at_notification_id": _ddb_str("2026-06-18T10:00:00.000000#notif-001"),
+        "created_at": _ddb_str("2026-06-18T10:00:00.000000Z"),
         "notification_id": _ddb_str("notif-001"),
         "type": _ddb_str("friend_request_received"),
         "sender_user_id": _ddb_str("user-sender-abc"),
@@ -518,6 +527,7 @@ def test_build_notification_payload_returns_camelcase_fields():
     payload = _build_notification_payload(new_image)
 
     assert payload["userId"] == "user-recipient-xyz"
+    assert payload["createdAt"] == "2026-06-18T10:00:00.000000Z"
     assert payload["notificationId"] == "notif-001"
     assert payload["type"] == "friend_request_received"
     assert payload["senderUserId"] == "user-sender-abc"
