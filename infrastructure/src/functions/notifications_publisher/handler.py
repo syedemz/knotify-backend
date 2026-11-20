@@ -269,10 +269,34 @@ def _build_notification_payload(new_image: dict) -> dict:
         "senderAvatar": _extract_str(new_image, "sender_avatar"),
         "read": _extract_bool(new_image, "read"),
         "delivered": _extract_bool(new_image, "delivered"),
-        # Optional JSON payload (e.g. for friend_request_accepted)
-        "payload": _extract_str(new_image, "payload"),
+        # Optional JSON payload (e.g. for friend_request_accepted). The DB
+        # stores this as a JSON STRING (e.g. '{"request_id":"abc",
+        # "from_user_id":"..."}'). The Notification.payload GraphQL field is
+        # typed AWSJSON — AppSync JSON-stringifies the value on output, so if
+        # we forward a string here, subscribers receive a quoted string
+        # literal ('"{\"request_id\":...}"') and their JSON.parse resolves to
+        # the inner string, not an object. The handler then reads
+        # parsed['request_id'] on a string → undefined → drops the event as
+        # "payload missing required fields". Parse into an object so AppSync
+        # serializes it as a proper JSON object string. Verified via
+        # device-side subscription-callback log 2026-11-20.
+        "payload": _parse_payload_json(_extract_str(new_image, "payload")),
     }
     return payload
+
+
+def _parse_payload_json(raw: str | None) -> dict | list | str | None:
+    """
+    Parse a stored JSON string into a Python value. Returns None for empty
+    input; on parse failure, returns the raw string so a non-JSON payload is
+    still delivered (caller's choice how to handle).
+    """
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return raw
 
 
 # ---------------------------------------------------------------------------

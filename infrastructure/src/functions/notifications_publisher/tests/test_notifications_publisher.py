@@ -539,8 +539,12 @@ def test_build_notification_payload_returns_camelcase_fields():
 
 def test_build_notification_payload_optional_payload_field_preserved():
     """
-    _build_notification_payload must include the optional 'payload' JSON string
-    when present in the image (used by friend_request_accepted rows).
+    _build_notification_payload must parse the optional JSON string `payload`
+    column into a dict (NOT keep it as a string). AppSync JSON-stringifies
+    AWSJSON values on output; forwarding a string here causes the subscriber
+    to receive a quote-wrapped literal (e.g. '"{\\"friendId\\":...}"') which
+    JSON.parse resolves back to the inner string, not an object. Handler
+    then reads parsed['friendId'] on a string → undefined → dropped event.
     """
     from notifications_publisher.handler import _build_notification_payload
 
@@ -552,4 +556,30 @@ def test_build_notification_payload_optional_payload_field_preserved():
 
     result = _build_notification_payload(new_image)
 
-    assert result.get("payload") == '{"friendId":"user-xyz"}'
+    # Parsed into an object so the subscriber's JSON.parse(payload) reaches
+    # the actual fields.
+    assert result.get("payload") == {"friendId": "user-xyz"}
+
+
+def test_build_notification_payload_handles_missing_payload_column():
+    """Missing or empty payload column must not crash the publisher."""
+    from notifications_publisher.handler import _build_notification_payload
+
+    new_image = _notification_image(user_id="user-no-payload")
+    # The base fixture omits the payload column entirely
+    result = _build_notification_payload(new_image)
+    assert result.get("payload") is None
+
+
+def test_build_notification_payload_handles_malformed_payload_json():
+    """
+    If the DB happens to contain a non-JSON string in the payload column,
+    fall back to the raw string rather than raising.
+    """
+    from notifications_publisher.handler import _build_notification_payload
+
+    new_image = _notification_image(user_id="user-malformed")
+    new_image["payload"] = _ddb_str("not-json-at-all")
+
+    result = _build_notification_payload(new_image)
+    assert result.get("payload") == "not-json-at-all"
