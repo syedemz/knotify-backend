@@ -719,12 +719,23 @@ run "identity_scoped_resolvers_pipeline_config_references_identity_function" {
 }
 
 # ---------------------------------------------------------------------------
-# Regression guard (hotfix): all 7 subscription pipeline resolvers must use
-# response_template = "null" so AppSync does not type-check the pipeline
-# function's auth-check result (ChatRoomMembership item with snake_case keys)
-# against the subscription field's return type at subscribe time. Returning
-# $util.toJson($ctx.result) here caused "Cannot return null for non-nullable
-# field" errors on subscribe and broke onMessageInRoom end-to-end.
+# Regression guard (hotfix): the 5 room-scoped subscription pipeline resolvers
+# must use response_template = "null" so AppSync does not type-check the
+# pipeline function's auth-check result (ChatRoomMembership item with
+# snake_case keys) against the subscription field's return type at subscribe
+# time. Returning $util.toJson($ctx.result) here caused "Cannot return null
+# for non-nullable field" errors on subscribe and broke onMessageInRoom
+# end-to-end.
+#
+# The 2 identity-scoped subscription resolvers (onNotificationForMe,
+# onFriendRequestUpdated) also return null as their subscribe-time ack value,
+# but BEFORE returning null they must call
+# $extensions.setSubscriptionFilter($filter) to register a per-subscriber
+# Enhanced Subscription Filter that AppSync evaluates on every published
+# event. Those templates are checked by
+# identity_scoped_resolvers_register_delivery_filter below rather than this
+# run block — a literal == "null" check on them would permit the filter to
+# be removed (reopening the fanout leak observed 2026-11-20).
 # ---------------------------------------------------------------------------
 run "subscription_resolvers_return_null_at_subscribe_time" {
   command = plan
@@ -767,15 +778,89 @@ run "subscription_resolvers_return_null_at_subscribe_time" {
     condition     = aws_appsync_resolver.on_read_receipt.response_template == "null"
     error_message = "onReadReceipt response_template must be \"null\""
   }
+}
 
+# ---------------------------------------------------------------------------
+# Regression guard (hotfix 2026-11-20): the 2 identity-scoped subscription
+# resolvers must register a per-subscriber delivery filter via
+# $extensions.setSubscriptionFilter so that each authenticated subscriber
+# only receives events where payload.userId == identity.sub.
+#
+# Context: onNotificationForMe and onFriendRequestUpdated declare no
+# GraphQL argument, so AppSync's native @aws_subscribe arg-to-field filter
+# cannot engage. Without an explicit setSubscriptionFilter every
+# authenticated subscriber receives every published notification — observed
+# as the sender seeing their own "request received" modal on a two-device
+# test and verified as a privacy leak (any authenticated user learns every
+# other user's notification payloads). The response template below
+# registers the filter before returning null.
+#
+# These assertions check:
+#   - the template calls $extensions.setSubscriptionFilter
+#   - the filter is anchored to $context.identity.sub (Cognito-verified,
+#     not a client-controlled argument — a malicious client cannot forge
+#     a filter that lets them read another user's events)
+#   - the filter field name is userId (the recipient's user_id field the
+#     notifications_publisher populates on every published payload)
+#   - the template still returns null as the subscribe-time ack value
+# ---------------------------------------------------------------------------
+run "identity_scoped_resolvers_register_delivery_filter" {
+  command = plan
+
+  variables {
+    environment                     = "test"
+    user_pool_id                    = "eu-central-1_TESTPOOL"
+    appsync_logs_role_arn           = "arn:aws:iam::123456789012:role/knotify-test-appsync-logs"
+    appsync_invoke_role_arn         = "arn:aws:iam::123456789012:role/knotify-test-appsync-invoke"
+    chat_resolver_lambda_arn        = "arn:aws:lambda:eu-central-1:123456789012:function:knotify-chat-resolver-test:live"
+    chat_room_membership_table_name = "ChatRoomMembership"
+    chat_messages_table_name        = "ChatMessages"
+    message_reads_table_name        = "MessageReads"
+    notifications_table_name        = "Notifications"
+    chat_rooms_table_name           = "ChatRooms"
+    dynamodb_role_arn               = "arn:aws:iam::123456789012:role/knotify-test-ddb-role"
+  }
+
+  # onNotificationForMe — delivery filter must be registered.
   assert {
-    condition     = aws_appsync_resolver.on_notification_for_me.response_template == "null"
-    error_message = "onNotificationForMe response_template must be \"null\""
+    condition     = can(regex("\\$extensions\\.setSubscriptionFilter", aws_appsync_resolver.on_notification_for_me.response_template))
+    error_message = "onNotificationForMe response_template must call $extensions.setSubscriptionFilter — without it every authenticated subscriber receives every published notification (privacy leak observed 2026-11-20)"
   }
 
   assert {
-    condition     = aws_appsync_resolver.on_friend_request_updated.response_template == "null"
-    error_message = "onFriendRequestUpdated response_template must be \"null\""
+    condition     = can(regex("\\$context\\.identity\\.sub", aws_appsync_resolver.on_notification_for_me.response_template))
+    error_message = "onNotificationForMe filter must reference $context.identity.sub so the Cognito-verified subscriber id — not a client-controlled argument — is the filter value"
+  }
+
+  assert {
+    condition     = can(regex("\"fieldName\"\\s*:\\s*\"userId\"", aws_appsync_resolver.on_notification_for_me.response_template))
+    error_message = "onNotificationForMe filter must match on fieldName \"userId\" — this is the recipient's user_id that notifications_publisher populates on every published payload"
+  }
+
+  assert {
+    condition     = can(regex("(?s)\\$extensions\\.setSubscriptionFilter.*null", aws_appsync_resolver.on_notification_for_me.response_template))
+    error_message = "onNotificationForMe response_template must still return null as the subscribe-time ack value AFTER registering the filter (AppSync type-check requirement)"
+  }
+
+  # onFriendRequestUpdated — delivery filter must be registered.
+  assert {
+    condition     = can(regex("\\$extensions\\.setSubscriptionFilter", aws_appsync_resolver.on_friend_request_updated.response_template))
+    error_message = "onFriendRequestUpdated response_template must call $extensions.setSubscriptionFilter — without it every authenticated subscriber receives every published notification (privacy leak observed 2026-11-20)"
+  }
+
+  assert {
+    condition     = can(regex("\\$context\\.identity\\.sub", aws_appsync_resolver.on_friend_request_updated.response_template))
+    error_message = "onFriendRequestUpdated filter must reference $context.identity.sub so the Cognito-verified subscriber id — not a client-controlled argument — is the filter value"
+  }
+
+  assert {
+    condition     = can(regex("\"fieldName\"\\s*:\\s*\"userId\"", aws_appsync_resolver.on_friend_request_updated.response_template))
+    error_message = "onFriendRequestUpdated filter must match on fieldName \"userId\" — this is the recipient's user_id that notifications_publisher populates on every published payload"
+  }
+
+  assert {
+    condition     = can(regex("(?s)\\$extensions\\.setSubscriptionFilter.*null", aws_appsync_resolver.on_friend_request_updated.response_template))
+    error_message = "onFriendRequestUpdated response_template must still return null as the subscribe-time ack value AFTER registering the filter (AppSync type-check requirement)"
   }
 }
 

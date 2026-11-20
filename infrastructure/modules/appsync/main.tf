@@ -598,8 +598,43 @@ resource "aws_appsync_resolver" "on_read_receipt" {
 #
 # Fields: onNotificationForMe, onFriendRequestUpdated
 #
-# Uses check_identity_match (NONE datasource) — no roomId argument; access
-# is controlled by identity.sub.
+# Dual-layer access control:
+#   1. check_identity_match (pipeline function, NONE datasource) runs on
+#      SUBSCRIBE and rejects anonymous/unauthenticated connections.
+#   2. $extensions.setSubscriptionFilter(...) in the response template
+#      registers a per-subscriber Enhanced Subscription Filter that AppSync
+#      evaluates on EVERY published event. Only events whose payload's
+#      userId field equals the subscriber's Cognito-verified identity.sub
+#      are delivered over that subscriber's WebSocket.
+#
+# Why the filter is required:
+#   Both subscriptions omit a GraphQL argument (identity-scoped, not
+#   argument-scoped), so AppSync's native @aws_subscribe arg-to-field
+#   filter cannot engage — without an explicit setSubscriptionFilter
+#   every authenticated subscriber receives every published event, which
+#   is both a UX bug (sender sees their own "request received" modal)
+#   AND a privacy leak (any authenticated user learns every notification
+#   payload of every other user). Observed 2026-11-20 on a two-device
+#   test when real-time delivery became reliable end-to-end for the first
+#   time.
+#
+# Why we filter on userId (not senderUserId):
+#   notifications_publisher sets payload.userId = recipient's user_id
+#   (the Notifications table partition key, which is the Cognito sub of
+#   the user who OWNS the notification row). That is the correct
+#   discriminator for both notification types this schema delivers:
+#     - friend_request_received  → userId = the request's recipient
+#     - friend_request_accepted  → userId = the original requester
+#   In each case, matching identity.sub against payload.userId delivers
+#   the event to the intended party and nobody else.
+#
+# Filter shape:
+#   $extensions.setSubscriptionFilter accepts a filterGroup with one or
+#   more filters; each filter names a top-level field on the published
+#   payload, an operator, and a value drawn from the subscriber's
+#   resolver context. value is sourced from $context.identity.sub so a
+#   malicious client cannot forge it — the Cognito authorizer already
+#   validated the JWT before this resolver runs.
 # ---------------------------------------------------------------------------
 
 resource "aws_appsync_resolver" "on_notification_for_me" {
@@ -612,10 +647,26 @@ resource "aws_appsync_resolver" "on_notification_for_me" {
     functions = [aws_appsync_function.check_identity_match.function_id]
   }
 
-  # response_template returns null at subscribe time; see comment on
-  # on_message_in_room above for the rationale.
-  request_template  = "{}"
-  response_template = "null"
+  request_template = "{}"
+  # Returns null (subscribe-time ack value) AFTER registering the
+  # per-subscriber delivery filter via $extensions.
+  response_template = <<-VTL
+    #set($filter = {
+      "filterGroup": [
+        {
+          "filters": [
+            {
+              "fieldName": "userId",
+              "operator": "eq",
+              "value": "$context.identity.sub"
+            }
+          ]
+        }
+      ]
+    })
+    $extensions.setSubscriptionFilter($filter)
+    null
+  VTL
 }
 
 resource "aws_appsync_resolver" "on_friend_request_updated" {
@@ -629,7 +680,23 @@ resource "aws_appsync_resolver" "on_friend_request_updated" {
   }
 
   request_template  = "{}"
-  response_template = "null"
+  response_template = <<-VTL
+    #set($filter = {
+      "filterGroup": [
+        {
+          "filters": [
+            {
+              "fieldName": "userId",
+              "operator": "eq",
+              "value": "$context.identity.sub"
+            }
+          ]
+        }
+      ]
+    })
+    $extensions.setSubscriptionFilter($filter)
+    null
+  VTL
 }
 
 # ---------------------------------------------------------------------------
