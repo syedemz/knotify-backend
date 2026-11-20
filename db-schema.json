@@ -1,0 +1,305 @@
+{
+  "_meta": {
+    "description": "Knotify backend database schema for the React Native frontend. Mirrors infrastructure/db/migrations/ and db_tables_summary.txt. Use it to generate TypeScript types, form validators, and API client models. The frontend never talks to Postgres directly — it hits REST/AppSync endpoints declared in backend-config.json — but response payloads for /profile/*, /profiles/*, /match/deck etc. are shaped from these columns.",
+    "schemaVersion": "1.1.0",
+    "generatedAt": "2026-11-10",
+    "sourceOfTruth": "infrastructure/db/migrations/",
+    "backendRepo": "knotify-backend",
+    "migrationsCovered": "0000-0020",
+    "tablesCovered": ["users", "siblings", "friendships", "friend_requests", "bookmarks", "blocks"],
+    "viewsCovered": ["deck_view"],
+    "schemaChangesSince1_0_0": "Migrations 0019 and 0020 land in this version but neither changes column shapes or constraints relevant to the frontend — 0019 disables Supabase-auto-enabled RLS on the six grant-based tables (siblings, friendships, friend_requests, bookmarks, blocks, refresh_log) so app_user's grants function as designed; 0020 revokes Supabase's default PostgREST grants from anon/authenticated/service_role on all public-schema tables (security hotfix — frontend never used the PostgREST surface so this is transparent). Payload shapes and field semantics are unchanged from 1.0.0."
+  },
+
+  "conventions": {
+    "primaryKeyType": "UUID (Cognito sub for users, gen_random_uuid() elsewhere)",
+    "timestamps": "TIMESTAMPTZ, default NOW()",
+    "softDelete": "users.deleted_at IS NULL means live; NOT NULL means soft-deleted",
+    "cascadeRule": "All FKs to users(user_id) use ON DELETE CASCADE",
+    "textVsVarchar": "All string columns are TEXT (unbounded); frontend imposes its own max lengths",
+    "booleans": "Native BOOLEAN, serialized as true/false in JSON payloads",
+    "jsonb": "users.preferences is JSONB — sent/received as a plain object",
+    "vector": "users.preference_vector is pgvector vector(20) — backend-computed, never sent to frontend"
+  },
+
+  "enums": {
+    "sex": ["Male", "Female"],
+    "friendRequestStatus": ["pending", "accepted", "declined", "cancelled"]
+  },
+
+  "tables": {
+    "users": {
+      "description": "Primary profile table. One row per Cognito user. Bootstrap row is inserted by the post-confirmation Lambda with email only; the remaining required fields are filled by the profile-completion flow (phase 6). Setting profile_complete_verified=true is gated by a 34-field CHECK constraint (see requiredForCompletion).",
+      "migration": "0002_create_users.sql",
+      "primaryKey": "user_id",
+      "softDelete": "deleted_at",
+      "generatedColumns": ["age"],
+      "immutableAfterSet": ["first_name", "last_name", "sex", "birthday", "religion", "subsect"],
+      "immutableTrigger": {
+        "name": "trg_users_immutable",
+        "migration": "0008_immutable_fields_trigger.sql",
+        "behavior": "BEFORE UPDATE trigger. Once one of the immutable-after-set fields is non-NULL, any change to a different non-NULL value raises 'Attempted to modify immutable field' (SQLSTATE P0001). NULL -> first-value transition is allowed exactly once. Soft-delete rewrite exception added in 0018.",
+        "frontendGuidance": "Grey out or disable these fields in the edit-profile UI after they have been populated. Show a tooltip explaining they cannot be changed."
+      },
+      "columns": {
+        "user_id":                   { "type": "UUID",        "nullable": false, "primaryKey": true, "notes": "Cognito sub" },
+        "email":                     { "type": "TEXT",        "nullable": false, "unique": true, "check": "email_format ('^[^@]+@[^@]+\\.[^@]+$')" },
+        "phone_number":              { "type": "TEXT",        "nullable": true },
+        "username":                  { "type": "TEXT",        "nullable": true, "unique": "case-insensitive partial (lower(username) WHERE username IS NOT NULL) — migration 0010", "notes": "Required at profile completion. Rename rate-limit (1 per 30 days) enforced in API layer, not DB." },
+
+        "first_name":                { "type": "TEXT",        "nullable": true, "immutableAfterSet": true, "requiredForCompletion": true },
+        "last_name":                 { "type": "TEXT",        "nullable": true, "immutableAfterSet": true, "requiredForCompletion": true },
+        "sex":                       { "type": "TEXT",        "nullable": true, "immutableAfterSet": true, "requiredForCompletion": true, "enum": "sex" },
+        "birthday":                  { "type": "DATE",        "nullable": true, "immutableAfterSet": true, "requiredForCompletion": true, "notes": "ISO-8601 date string (YYYY-MM-DD) in JSON" },
+        "religion":                  { "type": "TEXT",        "nullable": true, "immutableAfterSet": true, "requiredForCompletion": true },
+        "subsect":                   { "type": "TEXT",        "nullable": true, "immutableAfterSet": true, "requiredForCompletion": true },
+
+        "age":                       { "type": "INTEGER",     "nullable": true, "generated": "ALWAYS AS (_age_from_birthday(birthday)) STORED", "notes": "Read-only. Never send in PATCH payloads." },
+        "chosen_profile_avatar":     { "type": "TEXT",        "nullable": true },
+        "photo_url":                 { "type": "TEXT",        "nullable": true, "notes": "Direct URL. Phase-12 photo pipeline (S3+CloudFront) will replace this." },
+        "college_name":              { "type": "TEXT",        "nullable": true, "requiredForCompletion": true },
+        "current_residence_city":    { "type": "TEXT",        "nullable": true, "requiredForCompletion": true },
+        "current_residence_country": { "type": "TEXT",        "nullable": true, "requiredForCompletion": true },
+        "resident_country_code":     { "type": "CHAR(2)",     "nullable": true, "requiredForCompletion": true, "notes": "ISO 3166-1 alpha-2" },
+        "district":                  { "type": "TEXT",        "nullable": true, "requiredForCompletion": true },
+        "education_level":           { "type": "TEXT",        "nullable": true, "requiredForCompletion": true },
+        "employer_name":             { "type": "TEXT",        "nullable": true, "requiredForCompletion": true },
+        "employment_type":           { "type": "TEXT",        "nullable": true, "requiredForCompletion": true },
+        "family_residence_address":  { "type": "TEXT",        "nullable": true, "requiredForCompletion": true },
+        "father_retired":            { "type": "TEXT",        "nullable": true, "requiredForCompletion": true, "notes": "Stored as TEXT, not boolean" },
+        "fathers_job":               { "type": "TEXT",        "nullable": true, "requiredForCompletion": true },
+        "fathers_name":              { "type": "TEXT",        "nullable": true, "requiredForCompletion": true },
+        "graduation_year":           { "type": "INTEGER",     "nullable": true },
+        "has_children":              { "type": "BOOLEAN",     "nullable": true, "requiredForCompletion": true },
+        "higher_secondary":          { "type": "TEXT",        "nullable": true, "requiredForCompletion": true },
+        "higher_secondary_passing_year": { "type": "INTEGER", "nullable": true },
+        "highest_degree":            { "type": "TEXT",        "nullable": true, "requiredForCompletion": true },
+        "high_school":               { "type": "TEXT",        "nullable": true, "requiredForCompletion": true },
+        "high_school_passing_year":  { "type": "INTEGER",     "nullable": true },
+        "job_title":                 { "type": "TEXT",        "nullable": true, "requiredForCompletion": true },
+        "marital_status":            { "type": "TEXT",        "nullable": true, "requiredForCompletion": true },
+        "marriage_time":             { "type": "TEXT",        "nullable": true, "default": "'Not Provided'", "notes": "Backfilled by 0012; never NULL for new rows. NOT in requiredForCompletion." },
+        "mother_retired":            { "type": "TEXT",        "nullable": true, "requiredForCompletion": true },
+        "mothers_job":               { "type": "TEXT",        "nullable": true, "requiredForCompletion": true },
+        "mothers_name":              { "type": "TEXT",        "nullable": true, "requiredForCompletion": true },
+        "move_abroad":               { "type": "BOOLEAN",     "nullable": true, "requiredForCompletion": true },
+        "office_address":            { "type": "TEXT",        "nullable": true, "requiredForCompletion": true },
+        "partners_religious_level":  { "type": "TEXT",        "nullable": true },
+        "professional_category":     { "type": "TEXT",        "nullable": true, "requiredForCompletion": true },
+        "profile_complete_verified": { "type": "BOOLEAN",     "nullable": true, "default": "false", "notes": "Server-controlled. Flipped to true only when all requiredForCompletion fields are non-NULL. Mirrored into Cognito JWT as the custom:profile_complete claim." },
+        "relation":                  { "type": "TEXT",        "nullable": true, "requiredForCompletion": true },
+        "religious_level":           { "type": "TEXT",        "nullable": true, "requiredForCompletion": true },
+        "salary_range":              { "type": "TEXT",        "nullable": true, "requiredForCompletion": true },
+
+        "preferences":               { "type": "JSONB",       "nullable": true, "default": "'{}'::jsonb", "notes": "Free-form object. GIN-indexed for @> containment queries. Frontend sends/receives a plain JS object." },
+        "preference_vector":         { "type": "vector(20)",  "nullable": true, "notes": "Backend-computed from preferences. NEVER exposed to the frontend — API responses strip this field." },
+
+        "created_at":                { "type": "TIMESTAMPTZ", "nullable": false, "default": "NOW()" },
+        "updated_at":                { "type": "TIMESTAMPTZ", "nullable": false, "default": "NOW()" },
+        "deleted_at":                { "type": "TIMESTAMPTZ", "nullable": true, "notes": "Soft-delete marker" }
+      },
+      "requiredForCompletion": [
+        "first_name", "last_name", "sex", "birthday", "username",
+        "religion", "subsect", "religious_level",
+        "current_residence_city", "current_residence_country", "resident_country_code", "district",
+        "education_level", "highest_degree", "high_school", "higher_secondary", "college_name",
+        "job_title", "employer_name", "employment_type", "office_address",
+        "professional_category", "salary_range",
+        "fathers_name", "fathers_job", "father_retired",
+        "mothers_name", "mothers_job", "mother_retired",
+        "family_residence_address",
+        "marital_status", "has_children", "move_abroad", "relation"
+      ],
+      "checkConstraints": {
+        "email_format": "email ~* '^[^@]+@[^@]+\\.[^@]+$'",
+        "sex_domain": "sex IS NULL OR sex IN ('Male','Female')",
+        "profile_complete_requires_required_fields": "If profile_complete_verified=true, all 34 fields in requiredForCompletion must be NOT NULL (widened in 0012 from the original 5-field check)."
+      },
+      "indexes": {
+        "idx_users_sex_country_religion": "(sex, current_residence_country, religion) WHERE deleted_at IS NULL",
+        "idx_users_age": "(age) WHERE deleted_at IS NULL",
+        "idx_users_prefs_gin": "GIN (preferences)",
+        "idx_users_vector": "HNSW (preference_vector vector_cosine_ops)",
+        "users_username_lower_unique": "UNIQUE (lower(username)) WHERE username IS NOT NULL — migration 0010"
+      }
+    },
+
+    "siblings": {
+      "description": "1-to-many with users. Free-text sibling records for the family section of the profile.",
+      "migration": "0003_create_siblings.sql",
+      "primaryKey": "sibling_id",
+      "foreignKeys": {
+        "user_id": { "references": "users(user_id)", "onDelete": "CASCADE" }
+      },
+      "columns": {
+        "sibling_id":     { "type": "UUID",        "nullable": false, "primaryKey": true, "default": "gen_random_uuid()" },
+        "user_id":        { "type": "UUID",        "nullable": false },
+        "name":           { "type": "TEXT",        "nullable": true },
+        "gender":         { "type": "TEXT",        "nullable": true, "notes": "Free-text (no CHECK constraint)" },
+        "sibling_age":    { "type": "TEXT",        "nullable": true, "notes": "Stored as TEXT to allow entries like 'late 20s'" },
+        "marital_status": { "type": "TEXT",        "nullable": true },
+        "profession":     { "type": "TEXT",        "nullable": true },
+        "created_at":     { "type": "TIMESTAMPTZ", "nullable": true, "default": "NOW()" }
+      },
+      "indexes": {
+        "idx_siblings_user": "(user_id) — supports 'all siblings for user' lookup"
+      }
+    },
+
+    "friendships": {
+      "description": "Confirmed mutual friendships. One row per pair, canonicalized so user_a < user_b (Postgres UUID comparison). Application code MUST canonicalize before inserting: user_a=MIN(id1,id2), user_b=MAX(id1,id2).",
+      "migration": "0004_create_friendships.sql",
+      "primaryKey": ["user_a", "user_b"],
+      "foreignKeys": {
+        "user_a": { "references": "users(user_id)", "onDelete": "CASCADE" },
+        "user_b": { "references": "users(user_id)", "onDelete": "CASCADE" }
+      },
+      "columns": {
+        "user_a":     { "type": "UUID",        "nullable": false, "notes": "Smaller UUID of the pair" },
+        "user_b":     { "type": "UUID",        "nullable": false, "notes": "Larger UUID of the pair" },
+        "created_at": { "type": "TIMESTAMPTZ", "nullable": true, "default": "NOW()" }
+      },
+      "checkConstraints": {
+        "canonical_order": "user_a < user_b"
+      },
+      "indexes": {
+        "friendships_pkey": "PK (user_a, user_b)",
+        "idx_friendships_b": "(user_b) — reverse-direction lookup"
+      },
+      "frontendGuidance": "The API exposes friends via GET /friends and DELETE /friends/{userId} — you never need to think about user_a/user_b ordering. The endpoint returns the other user's profile regardless of which side of the pair the current user is on."
+    },
+
+    "friend_requests": {
+      "description": "In-flight friend requests with a status lifecycle: pending -> accepted | declined | cancelled.",
+      "migration": "0005_create_friend_requests.sql",
+      "primaryKey": "request_id",
+      "foreignKeys": {
+        "from_user_id": { "references": "users(user_id)", "onDelete": "CASCADE" },
+        "to_user_id":   { "references": "users(user_id)", "onDelete": "CASCADE" }
+      },
+      "columns": {
+        "request_id":   { "type": "UUID",        "nullable": false, "primaryKey": true, "default": "gen_random_uuid()" },
+        "from_user_id": { "type": "UUID",        "nullable": false, "notes": "Sender" },
+        "to_user_id":   { "type": "UUID",        "nullable": false, "notes": "Recipient" },
+        "status":       { "type": "TEXT",        "nullable": false, "enum": "friendRequestStatus" },
+        "created_at":   { "type": "TIMESTAMPTZ", "nullable": true, "default": "NOW()" },
+        "responded_at": { "type": "TIMESTAMPTZ", "nullable": true, "notes": "Set when status transitions out of 'pending'" }
+      },
+      "uniqueConstraints": {
+        "unique_from_to_status": "(from_user_id, to_user_id, status) — prevents duplicate pending requests but allows one accepted/declined/cancelled row to coexist"
+      },
+      "indexes": {
+        "idx_fr_to_pending":   "(to_user_id) WHERE status='pending' — incoming pending",
+        "idx_fr_from_pending": "(from_user_id) WHERE status='pending' — outgoing pending"
+      }
+    },
+
+    "bookmarks": {
+      "description": "Users a given user has bookmarked (saved for later review). Directional: (user_id) bookmarked (bookmarked_user_id).",
+      "migration": "0006_create_bookmarks_and_blocks.sql",
+      "primaryKey": ["user_id", "bookmarked_user_id"],
+      "foreignKeys": {
+        "user_id":            { "references": "users(user_id)", "onDelete": "CASCADE" },
+        "bookmarked_user_id": { "references": "users(user_id)", "onDelete": "CASCADE" }
+      },
+      "columns": {
+        "user_id":            { "type": "UUID",        "nullable": false, "notes": "The user doing the bookmarking" },
+        "bookmarked_user_id": { "type": "UUID",        "nullable": false, "notes": "The user being bookmarked" },
+        "created_at":         { "type": "TIMESTAMPTZ", "nullable": true, "default": "NOW()" }
+      },
+      "indexes": {
+        "bookmarks_pkey": "PK (user_id, bookmarked_user_id)",
+        "idx_bookmarks_target": "(bookmarked_user_id) — 'who bookmarked me?'"
+      }
+    },
+
+    "blocks": {
+      "description": "Unidirectional block relationships. Enforced bidirectionally in match/chat queries: if A blocks B, neither sees the other in deck, search, or chat.",
+      "migration": "0006_create_bookmarks_and_blocks.sql",
+      "primaryKey": ["blocker_id", "blocked_id"],
+      "foreignKeys": {
+        "blocker_id": { "references": "users(user_id)", "onDelete": "CASCADE" },
+        "blocked_id": { "references": "users(user_id)", "onDelete": "CASCADE" }
+      },
+      "columns": {
+        "blocker_id": { "type": "UUID",        "nullable": false },
+        "blocked_id": { "type": "UUID",        "nullable": false },
+        "created_at": { "type": "TIMESTAMPTZ", "nullable": true, "default": "NOW()" }
+      },
+      "indexes": {
+        "blocks_pkey": "PK (blocker_id, blocked_id)",
+        "idx_blocks_blocked": "(blocked_id) — 'who has blocked me?' / bilateral exclusion"
+      }
+    }
+  },
+
+  "views": {
+    "deck_view": {
+      "description": "Materialized view of swipe-deck-eligible users (deleted_at IS NULL AND profile_complete_verified=true). Backing store for GET /match/deck. Refreshed CONCURRENTLY every 15 minutes by a scheduled Lambda.",
+      "type": "MATERIALIZED VIEW",
+      "migrations": [
+        "0009_deck_view.sql (initial 14 columns)",
+        "0011_deck_view_extended.sql (+preference_vector, +religion -> 16 columns)",
+        "0014_refresh_deck_view_security_definer.sql",
+        "0015_refresh_deck_view_schema_qualify.sql"
+      ],
+      "source": "users",
+      "filter": "deleted_at IS NULL AND profile_complete_verified = true",
+      "columns": {
+        "user_id":                   { "type": "UUID",        "sourceColumn": "users.user_id" },
+        "email":                     { "type": "TEXT",        "sourceColumn": "users.email" },
+        "age":                       { "type": "INTEGER",     "sourceColumn": "users.age" },
+        "chosen_profile_avatar":     { "type": "TEXT",        "sourceColumn": "users.chosen_profile_avatar" },
+        "current_residence_city":    { "type": "TEXT",        "sourceColumn": "users.current_residence_city" },
+        "current_residence_country": { "type": "TEXT",        "sourceColumn": "users.current_residence_country" },
+        "first_name":                { "type": "TEXT",        "sourceColumn": "users.first_name" },
+        "job_title":                 { "type": "TEXT",        "sourceColumn": "users.job_title" },
+        "last_name":                 { "type": "TEXT",        "sourceColumn": "users.last_name" },
+        "photo_url":                 { "type": "TEXT",        "sourceColumn": "users.photo_url" },
+        "profile_complete_verified": { "type": "BOOLEAN",     "sourceColumn": "users.profile_complete_verified" },
+        "resident_country_code":     { "type": "CHAR(2)",     "sourceColumn": "users.resident_country_code" },
+        "sex":                       { "type": "TEXT",        "sourceColumn": "users.sex" },
+        "username":                  { "type": "TEXT",        "sourceColumn": "users.username" },
+        "preference_vector":         { "type": "vector(20)",  "sourceColumn": "users.preference_vector", "notes": "Added in 0011. Backend-only — stripped from API responses." },
+        "religion":                  { "type": "TEXT",        "sourceColumn": "users.religion", "notes": "Added in 0011. Used by the religion hard filter." }
+      },
+      "indexes": {
+        "idx_deck_user": "UNIQUE (user_id) — required for REFRESH MATERIALIZED VIEW CONCURRENTLY"
+      },
+      "refresh": {
+        "function": "refresh_deck_view()",
+        "body": "REFRESH MATERIALIZED VIEW CONCURRENTLY deck_view",
+        "cadence": "Every 15 minutes via a scheduled admin Lambda; also triggerable manually after data migrations",
+        "grants": "SELECT on deck_view granted to app_user (Lambda role). EXECUTE on refresh_deck_view() NOT granted to app_user."
+      },
+      "frontendGuidance": "You do not query this view directly. GET /match/deck returns an already-filtered, already-ranked list built from this view. The response strips preference_vector and email."
+    }
+  },
+
+  "relationships": {
+    "users.user_id": {
+      "referencedBy": [
+        "siblings.user_id",
+        "friendships.user_a", "friendships.user_b",
+        "friend_requests.from_user_id", "friend_requests.to_user_id",
+        "bookmarks.user_id", "bookmarks.bookmarked_user_id",
+        "blocks.blocker_id", "blocks.blocked_id"
+      ],
+      "onDelete": "CASCADE (every reference)"
+    }
+  },
+
+  "extensions": {
+    "pgcrypto": "gen_random_uuid() — used as DEFAULT for UUID primary keys on siblings and friend_requests",
+    "pgvector": "vector(20) type + HNSW index for cosine similarity on users.preference_vector"
+  },
+
+  "notesForFrontend": {
+    "profileCompleteFlow": "profile_complete_verified is a server-controlled boolean. Once true it is mirrored into the Cognito JWT as custom:profile_complete. /match/* endpoints require it and return 403 otherwise. Route the user back to onboarding on 403 from a /match/* endpoint.",
+    "immutableFields": "Grey-out first_name, last_name, sex, birthday, religion, subsect in the edit-profile UI once populated. A PATCH attempting to change them will 4xx.",
+    "usernameCasing": "Username uniqueness is case-insensitive. 'Alice' and 'alice' collide. Preserve display casing on the client but treat matching as lower(username).",
+    "hiddenFields": "preference_vector and internal audit columns are never included in API responses. Do not build UI around them.",
+    "softDelete": "Deleted users disappear from all endpoints. If your cached list contains a user_id that no longer resolves, treat it as deleted and drop it.",
+    "deckDataFreshness": "deck_view is refreshed every 15 minutes — a newly-completed profile may not appear in another user's deck for up to that window."
+  }
+}
